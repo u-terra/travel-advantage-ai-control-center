@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Сборка
+build/
+dist/
+*.egg-info/
+
+# Среды разработки
+.idea/
+.vscode/
+*.swp
+
+# Секреты и локальные данные
+.env
+data/
+*.sqlite3
+*.db
+
+# Логи и ОС-мусор
+*.log
+Thumbs.db
+.DS_Store
