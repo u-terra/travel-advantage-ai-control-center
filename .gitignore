@@ -29,3 +29,12 @@ data/
 *.log
 Thumbs.db
 .DS_Store
+
+# Local backups, temporary files and unfinished deploy tooling
+*.bak-*
+*.new
+*.patch
+*.tar.gz
+apply_safety_layer_patch.py
+tools/Deploy-TAUpdate.ps1
+tools/*.bak-*
