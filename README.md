@@ -70,3 +70,16 @@ python -m app
 
 Можно также написать задачу обычным текстом. Бот разложит смешанные задачи на части,
 отметит, нужен ли Safety Layer, и предложит ручной следующий шаг.
+
+## OpenClaw: агент и автоматический обзор Lead Radar
+
+В проект добавлен отдельный агент OpenClaw `travel-advantage-orchestrator`.
+
+- Роль и ограничения агента описаны в `AGENTS.md`.
+- Собственный workspace-skill находится в `skills/travel-advantage-orchestrator/SKILL.md`.
+- Источник данных — локальная SQLite-база Travel Lead Radar в read-only режиме.
+- Настроен Cron Job `Travel Lead Radar Daily Review`: по будням в 09:15, часовой пояс `Europe/Samara`.
+- Задача запускает локальный Python-скрипт `scripts/generate_lead_radar_report.py` и формирует внутренний отчёт `reports/lead-radar-daily-review.md`.
+- Автоматизация не запускает новый сбор данных, не вызывает LLM-анализ, не меняет SQLite-базу и не отправляет сообщения потенциальным клиентам.
+
+Подробности: [docs/openclaw_automation.md](docs/openclaw_automation.md).
