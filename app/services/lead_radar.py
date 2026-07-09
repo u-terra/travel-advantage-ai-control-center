@@ -51,6 +51,18 @@ _ACTION_PRIORITY: dict[str, int] = {
     "content": 2,
 }
 
+# Категория из Lead Radar (`ai_category`), которую вообще не показываем.
+_NOISE_CATEGORY = "noise"
+
+# Человекочитаемый тип сигнала по его категории. Для незнакомых категорий
+# остаётся нейтральный fallback — без агрессивных формулировок.
+_CATEGORY_LABELS: dict[str, str] = {
+    "content_signal": "💡 Тема для контента",
+    "market_signal": "👀 Наблюдать рынок",
+}
+
+_CATEGORY_FALLBACK = "🔹 Сигнал интереса"
+
 _ROUTE_CARD = (
     "📡 Сигналы интереса\n"
     "\n"
@@ -161,8 +173,11 @@ def _row_text(row: dict[str, object]) -> str:
 
 
 def _is_allowed_row(row: dict[str, object]) -> bool:
-    """Отсекает устаревшие, тестовые и нерелевантные финансовые записи."""
+    """Отсекает шумовые, устаревшие, тестовые и нерелевантные записи."""
     if not _is_fresh(row.get("created_at")):
+        return False
+
+    if str(row.get("ai_category") or "").strip().lower() == _NOISE_CATEGORY:
         return False
 
     url = str(row.get("item_url") or "").lower()
@@ -331,8 +346,18 @@ def _format_source(source_type: str) -> str:
     return s
 
 
+def category_label(category: str) -> str:
+    """Человекочитаемый тип сигнала по категории Lead Radar (`ai_category`).
+
+    Знакомые категории получают заданную подпись, для остальных остаётся
+    нейтральный fallback.
+    """
+    key = (category or "").strip().lower()
+    return _CATEGORY_LABELS.get(key, _CATEGORY_FALLBACK)
+
+
 def _format_signal_block(signal: LeadSignal, index: int) -> str:
-    action_text = signal.action_label or signal.recommended_action or "—"
+    header = category_label(signal.category)
     title = _truncate(signal.title or "(без заголовка)", 110)
     meta = (
         f"{_format_source(signal.source_type)} · score "
@@ -341,7 +366,7 @@ def _format_signal_block(signal: LeadSignal, index: int) -> str:
     reason = _truncate(signal.action_reason or "—", 140)
     url = signal.url or "—"
     return (
-        f"{index}. [{action_text}]\n"
+        f"{index}. {header}\n"
         f"{title}\n"
         f"{meta}\n"
         f"Почему: {reason}\n"
