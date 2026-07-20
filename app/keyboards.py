@@ -26,7 +26,7 @@ WEB_RESOURCE_LINKS: tuple[tuple[str, str], ...] = (
     ("🏭 Travel Content Factory", "https://factory.vassian-ai.ru"),
     (
         "🤖 AI Travel Assistant",
-        "https://ai-travel-assistant-vassian.uu1272638.workers.dev/#features",
+        "https://assistant.vassian-ai.ru/#features",
     ),
 )
 
