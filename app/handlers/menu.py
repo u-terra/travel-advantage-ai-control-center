@@ -20,8 +20,11 @@ from app.keyboards import (
     BTN_LAST_TASK,
     BTN_PACKAGE_MATERIALS,
     BTN_UNSURE,
+    BTN_WEB_RESOURCES,
     CATEGORY_BUTTONS,
+    WEB_RESOURCES_BACK,
     main_menu,
+    web_resources_keyboard,
 )
 from app.routing.modules import Module
 from app.routing.safety import SafetyLevel
@@ -152,6 +155,25 @@ async def on_unsure(message: Message, state: FSMContext) -> None:
     await state.update_data(forced_module=None)
     await state.set_state(AwaitTask.waiting)
     await message.answer(BUTTON_HINTS[BTN_UNSURE], reply_markup=main_menu())
+
+
+@router.message(F.text == BTN_WEB_RESOURCES)
+async def on_web_resources(message: Message) -> None:
+    await message.answer(
+        "🌐 Веб-ресурсы Travel-экосистемы. Откройте нужный сайт в браузере.",
+        reply_markup=web_resources_keyboard(),
+    )
+
+
+@router.callback_query(F.data == WEB_RESOURCES_BACK)
+async def on_web_resources_back(callback: CallbackQuery) -> None:
+    await callback.answer()
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(
+            "Главное меню. Выберите кнопку или напишите задачу текстом.",
+            reply_markup=main_menu(),
+        )
 
 
 @router.message(F.text == BTN_FIND_SIGNALS)
