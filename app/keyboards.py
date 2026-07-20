@@ -23,7 +23,7 @@ BTN_BACK = "◀️ Назад"
 WEB_RESOURCES_BACK = "web_resources_back"
 
 WEB_RESOURCE_LINKS: tuple[tuple[str, str], ...] = (
-    ("🏭 Travel Content Factory", "http://155.212.216.35/"),
+    ("🏭 Travel Content Factory", "https://factory.vassian-ai.ru"),
     (
         "🤖 AI Travel Assistant",
         "https://ai-travel-assistant-vassian.uu1272638.workers.dev/#features",
