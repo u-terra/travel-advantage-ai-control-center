@@ -3,40 +3,33 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardRemove
 
+from app.access import AllowlistMiddleware
 from app.config import load_settings
-from app.filters import IsAdmin
 from app.handlers import build_router
 from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
 from app.storage import Journal
 
 
-_STRANGER_REPLY = "Этот бот предназначен для внутренней работы владельца системы."
-
-
 def _build_dispatcher(
-    admin_id: int,
+    allowed_user_ids: frozenset[int],
     journal: Journal,
     content_factory_config: ContentFactoryConfig,
     lead_radar_config: LeadRadarConfig,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
-    owner_router = build_router()
-    owner_router.message.filter(IsAdmin(admin_id))
-    dp.include_router(owner_router)
+    # Единый централизованный guard доступа. Outer-middleware срабатывает раньше
+    # любых фильтров и хендлеров и охватывает команды, обычные сообщения и
+    # callback-кнопки. Посторонний не доходит до логики панели управления.
+    guard = AllowlistMiddleware(allowed_user_ids)
+    dp.message.outer_middleware(guard)
+    dp.callback_query.outer_middleware(guard)
 
-    stranger = Router(name="stranger")
-
-    @stranger.message()
-    async def on_stranger(message: Message) -> None:
-        await message.answer(_STRANGER_REPLY, reply_markup=ReplyKeyboardRemove())
-
-    dp.include_router(stranger)
+    dp.include_router(build_router())
 
     dp["journal"] = journal
     dp["content_factory_config"] = content_factory_config
@@ -66,7 +59,7 @@ async def _async_main() -> None:
 
     bot = Bot(settings.bot_token)
     dp = _build_dispatcher(
-        settings.admin_telegram_id,
+        settings.allowed_user_ids,
         journal,
         content_factory_config,
         lead_radar_config,
