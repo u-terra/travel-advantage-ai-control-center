@@ -4,6 +4,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass
 from typing import Optional
 
@@ -15,6 +16,7 @@ class ContentFactoryConfig:
     url: str
     token: str
     timeout_seconds: float
+    source_analysis_url: str = ""
 
     @property
     def is_configured(self) -> bool:
@@ -25,6 +27,95 @@ class ContentFactoryConfig:
 class ContentDraft:
     text: str
     warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SourceAnalysisPayload:
+    summary: str
+    key_facts: tuple[str, ...]
+    disputed_claims: tuple[str, ...]
+    audience_value: str
+    target_audiences: tuple[str, ...]
+    content_angles: tuple[str, ...]
+    recommended_formats: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+_ANALYSIS_KEYS = frozenset({
+    "summary", "key_facts", "disputed_claims", "audience_value",
+    "target_audiences", "content_angles", "recommended_formats", "warnings",
+})
+
+
+def _analysis_endpoint(config: ContentFactoryConfig) -> str | None:
+    if config.source_analysis_url.strip():
+        return config.source_analysis_url.strip()
+    parts = urlsplit(config.url.strip())
+    if parts.query or parts.fragment:
+        return None
+    path = parts.path.rstrip("/")
+    if path.endswith("/internal/generate"):
+        path = path[: -len("/internal/generate")] + "/internal/analyze-source"
+        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+    return None
+
+
+def _string_list(value: object) -> tuple[str, ...] | None:
+    if type(value) is not list:
+        return None
+    if any(type(item) is not str for item in value):
+        return None
+    return tuple(item.strip() for item in value if item.strip())
+
+
+def analyze_source_sync(
+    config: ContentFactoryConfig, *, source_text: str
+) -> SourceAnalysisPayload | None:
+    endpoint = _analysis_endpoint(config)
+    if not endpoint or not config.token:
+        return None
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(
+            {"source_text": source_text, "source_type": "text"},
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Internal-Token": config.token},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=config.timeout_seconds) as resp:
+            raw = resp.read()
+    except Exception:
+        log.warning("content_factory: source analysis request failed")
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if type(data) is not dict or data.get("ok") is not True:
+        return None
+    analysis = data.get("analysis")
+    if type(analysis) is not dict or frozenset(analysis) != _ANALYSIS_KEYS:
+        return None
+    summary = analysis["summary"]
+    audience_value = analysis["audience_value"]
+    if type(summary) is not str or not summary.strip():
+        return None
+    if type(audience_value) is not str or not audience_value.strip():
+        return None
+    parsed = {key: _string_list(analysis[key]) for key in _ANALYSIS_KEYS - {"summary", "audience_value"}}
+    if any(value is None for value in parsed.values()):
+        return None
+    return SourceAnalysisPayload(
+        summary=summary.strip(), audience_value=audience_value.strip(),
+        key_facts=parsed["key_facts"] or (),
+        disputed_claims=parsed["disputed_claims"] or (),
+        target_audiences=parsed["target_audiences"] or (),
+        content_angles=parsed["content_angles"] or (),
+        recommended_formats=parsed["recommended_formats"] or (),
+        warnings=parsed["warnings"] or (),
+    )
 
 
 @dataclass(frozen=True)

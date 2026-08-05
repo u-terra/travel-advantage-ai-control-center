@@ -107,6 +107,7 @@ def test_v2_flag_is_fail_safe(
     assert settings.v2_menu_enabled is expected
     assert settings.bot_token == "dummy-token"
     assert settings.admin_telegram_id == 586249067
+    assert settings.content_factory_source_analysis_url == ""
 
 
 def test_v1_menu_is_unchanged_and_remains_default() -> None:

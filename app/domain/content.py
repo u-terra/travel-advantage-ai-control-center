@@ -32,6 +32,22 @@ class Source:
 
 
 @dataclass(frozen=True)
+class SourceAnalysis:
+    id: int
+    source_id: int
+    workspace_id: int
+    summary: str
+    key_facts: tuple[str, ...]
+    disputed_claims: tuple[str, ...]
+    audience_value: str
+    target_audiences: tuple[str, ...]
+    content_angles: tuple[str, ...]
+    recommended_formats: tuple[str, ...]
+    warnings: tuple[str, ...]
+    created_at: str
+
+
+@dataclass(frozen=True)
 class Artifact:
     id: int
     workspace_id: int

@@ -17,6 +17,7 @@ class Settings:
     journal_db_path: Path
     log_level: str
     content_factory_url: str
+    content_factory_source_analysis_url: str
     content_factory_token: str
     content_factory_timeout_seconds: float
     lead_radar_db_path: Path
@@ -36,6 +37,7 @@ def load_settings() -> Settings:
     db_path_raw = os.environ.get("JOURNAL_DB_PATH", "data/journal.sqlite3").strip()
     log_level = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
     cf_url = os.environ.get("CONTENT_FACTORY_INTERNAL_URL", "").strip()
+    cf_analysis_url = os.environ.get("CONTENT_FACTORY_SOURCE_ANALYSIS_URL", "").strip()
     cf_token = os.environ.get("CONTENT_FACTORY_INTERNAL_TOKEN", "").strip()
     cf_timeout_raw = os.environ.get("CONTENT_FACTORY_TIMEOUT_SECONDS", "").strip()
     # Старые HTTP-настройки Lead Radar (LEAD_RADAR_INTERNAL_URL / _TOKEN /
@@ -77,6 +79,7 @@ def load_settings() -> Settings:
         journal_db_path=Path(db_path_raw),
         log_level=log_level,
         content_factory_url=cf_url,
+        content_factory_source_analysis_url=cf_analysis_url,
         content_factory_token=cf_token,
         content_factory_timeout_seconds=cf_timeout,
         lead_radar_db_path=Path(lr_db_path_raw),

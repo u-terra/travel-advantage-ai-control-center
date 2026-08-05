@@ -1,5 +1,50 @@
 from __future__ import annotations
 
+from app.domain.content import SourceAnalysis
+
+
+def source_analysis_card(analysis: SourceAnalysis, limit: int = 3900) -> str:
+    sections: list[tuple[str, str | tuple[str, ...]]] = [
+        ("Кратко:", analysis.summary),
+        ("Что важно:", analysis.key_facts),
+        ("Что требует проверки:", analysis.disputed_claims),
+        ("Ценность для аудитории:", analysis.audience_value),
+        ("Кому может быть интересно:", analysis.target_audiences),
+        ("Идеи подачи:", analysis.content_angles),
+        ("Подходящие форматы:", analysis.recommended_formats),
+        ("Предупреждения:", analysis.warnings),
+    ]
+    def clip(value: str, size: int) -> str:
+        return value if len(value) <= size else value[: size - 1].rstrip() + "…"
+
+    blocks: list[tuple[str, bool]] = []
+    for heading, value in sections:
+        if isinstance(value, tuple):
+            if not value:
+                continue
+            body = "\n".join(f"• {clip(item, 220)}" for item in value[:6])
+        else:
+            if not value.strip():
+                continue
+            body = clip(value, 1000 if heading == "Кратко:" else 700)
+        blocks.append((f"{heading}\n{body}", heading == "Предупреждения:"))
+
+    warning = next((block for block, is_warning in blocks if is_warning), None)
+    parts = ["🔎 Анализ источника"]
+    for block, is_warning in blocks:
+        if is_warning:
+            continue
+        reserved = len(warning) + 2 if warning else 0
+        remaining = limit - len("\n\n".join(parts)) - reserved - 2
+        if remaining <= 20:
+            continue
+        parts.append(clip(block, remaining))
+    if warning:
+        remaining = limit - len("\n\n".join(parts)) - 2
+        if remaining > 20:
+            parts.append(clip(warning, remaining))
+    return "\n\n".join(parts)
+
 from app.routing.modules import MODULE_DESCRIPTION, Module
 from app.routing.router import RouteDecision
 from app.routing.safety import SafetyLevel

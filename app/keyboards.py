@@ -20,6 +20,7 @@ BTN_WEB_RESOURCES = "🌐 Веб-ресурсы"
 BTN_BACK = "◀️ Назад"
 
 BTN_V2_ANALYZE_LINK = "🔗 Разобрать ссылку"
+BTN_V2_ANALYZE_MORE = "🔗 Разобрать ещё текст"
 BTN_V2_CREATE_MATERIAL = "✍️ Создать материал"
 BTN_V2_CLIENT_REPLY = "💬 Ответить клиенту"
 BTN_V2_CONTENT_PLAN = "📅 Контент-план"
@@ -51,7 +52,6 @@ CATEGORY_BUTTONS = frozenset({
 V2_CATEGORY_BUTTONS = frozenset({BTN_V2_CLIENT_REPLY, BTN_V2_CHECK_TEXT})
 
 V2_PLACEHOLDER_BUTTONS = frozenset({
-    BTN_V2_ANALYZE_LINK,
     BTN_V2_CREATE_MATERIAL,
     BTN_V2_CONTENT_PLAN,
     BTN_V2_MATERIALS,
@@ -95,6 +95,16 @@ def active_main_menu(v2_menu_enabled: bool) -> ReplyKeyboardMarkup:
 def v2_back_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=BTN_V2_MAIN_MENU)]],
+        resize_keyboard=True,
+    )
+
+
+def source_analysis_result_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_V2_ANALYZE_MORE)],
+            [KeyboardButton(text=BTN_V2_MAIN_MENU)],
+        ],
         resize_keyboard=True,
     )
 

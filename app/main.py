@@ -11,6 +11,7 @@ from app.config import load_settings
 from app.handlers import build_router
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
+from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
 from app.storage import Journal
@@ -22,6 +23,9 @@ def _build_dispatcher(
     content_factory_config: ContentFactoryConfig,
     lead_radar_config: LeadRadarConfig,
     v2_menu_enabled: bool = False,
+    partner_repository: PartnerRepository | None = None,
+    artifact_repository: ArtifactRepository | None = None,
+    source_analysis_repository: SourceAnalysisRepository | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -38,6 +42,9 @@ def _build_dispatcher(
     dp["content_factory_config"] = content_factory_config
     dp["lead_radar_config"] = lead_radar_config
     dp["v2_menu_enabled"] = v2_menu_enabled
+    dp["partner_repository"] = partner_repository
+    dp["artifact_repository"] = artifact_repository
+    dp["source_analysis_repository"] = source_analysis_repository
     return dp
 
 
@@ -58,10 +65,14 @@ async def _async_main() -> None:
     artifact_repository = ArtifactRepository(settings.journal_db_path)
     await artifact_repository.init()
 
+    source_analysis_repository = SourceAnalysisRepository(settings.journal_db_path)
+    await source_analysis_repository.initialize()
+
     content_factory_config = ContentFactoryConfig(
         url=settings.content_factory_url,
         token=settings.content_factory_token,
         timeout_seconds=settings.content_factory_timeout_seconds,
+        source_analysis_url=settings.content_factory_source_analysis_url,
     )
 
     lead_radar_config = LeadRadarConfig(
@@ -75,6 +86,9 @@ async def _async_main() -> None:
         content_factory_config,
         lead_radar_config,
         settings.v2_menu_enabled,
+        partner_repository,
+        artifact_repository,
+        source_analysis_repository,
     )
 
     await dp.start_polling(bot)
