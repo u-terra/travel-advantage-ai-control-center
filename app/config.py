@@ -20,6 +20,11 @@ class Settings:
     content_factory_token: str
     content_factory_timeout_seconds: float
     lead_radar_db_path: Path
+    v2_menu_enabled: bool
+
+
+def _parse_bool(raw: str | None) -> bool:
+    return bool(raw) and raw.strip().lower() == "true"
 
 
 def load_settings() -> Settings:
@@ -39,6 +44,9 @@ def load_settings() -> Settings:
     lr_db_path_raw = os.environ.get(
         "LEAD_RADAR_DB_PATH", "/opt/travel_lead_radar/data/leads.db"
     ).strip()
+    v2_menu_enabled = _parse_bool(
+        os.environ.get("TA_CONTROL_CENTER_V2_MENU_ENABLED")
+    )
 
     if not token:
         raise RuntimeError("BOT_TOKEN не задан. Заполните .env")
@@ -72,4 +80,5 @@ def load_settings() -> Settings:
         content_factory_token=cf_token,
         content_factory_timeout_seconds=cf_timeout,
         lead_radar_db_path=Path(lr_db_path_raw),
+        v2_menu_enabled=v2_menu_enabled,
     )

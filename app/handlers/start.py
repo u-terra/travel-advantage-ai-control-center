@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from app.keyboards import BTN_HOW_IT_WORKS, main_menu
+from app.keyboards import BTN_HOW_IT_WORKS, active_main_menu, main_menu
 
 router = Router(name="start")
 
@@ -22,10 +23,16 @@ HELP_TEXT = (
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(
+    message: Message,
+    state: FSMContext,
+    v2_menu_enabled: bool = False,
+) -> None:
+    if v2_menu_enabled:
+        await state.clear()
     await message.answer(
         "Главное меню. Выберите кнопку или напишите задачу текстом.",
-        reply_markup=main_menu(),
+        reply_markup=active_main_menu(v2_menu_enabled),
     )
 
 

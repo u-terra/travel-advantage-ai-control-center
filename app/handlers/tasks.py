@@ -8,7 +8,7 @@ from aiogram.types import Message
 
 from app.cards import build_card
 from app.handlers.menu import AwaitTask
-from app.keyboards import main_menu
+from app.keyboards import active_main_menu
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
@@ -51,6 +51,7 @@ async def on_task_after_button(
     state: FSMContext,
     journal: Journal,
     content_factory_config: ContentFactoryConfig,
+    v2_menu_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
     forced_raw = data.get("forced_module")
@@ -58,7 +59,10 @@ async def on_task_after_button(
     await state.clear()
 
     if not task_text:
-        await message.answer("Пустой запрос. Опишите задачу.", reply_markup=main_menu())
+        await message.answer(
+            "Пустой запрос. Опишите задачу.",
+            reply_markup=active_main_menu(v2_menu_enabled),
+        )
         return
 
     if forced_raw:
@@ -73,7 +77,9 @@ async def on_task_after_button(
         secondary_modules=tuple(m.value for m in decision.secondary_modules),
         safety_level=decision.safety_level.value,
     )
-    await message.answer(build_card(decision), reply_markup=main_menu())
+    await message.answer(
+        build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
+    )
     await _maybe_send_module_result(message, decision, content_factory_config)
 
 
@@ -82,10 +88,14 @@ async def on_free_text(
     message: Message,
     journal: Journal,
     content_factory_config: ContentFactoryConfig,
+    v2_menu_enabled: bool = False,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
-        await message.answer("Пустой запрос. Опишите задачу.", reply_markup=main_menu())
+        await message.answer(
+            "Пустой запрос. Опишите задачу.",
+            reply_markup=active_main_menu(v2_menu_enabled),
+        )
         return
     decision = route_text(task_text)
     await journal.add(
@@ -94,7 +104,9 @@ async def on_free_text(
         secondary_modules=tuple(m.value for m in decision.secondary_modules),
         safety_level=decision.safety_level.value,
     )
-    await message.answer(build_card(decision), reply_markup=main_menu())
+    await message.answer(
+        build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
+    )
     await _maybe_send_module_result(message, decision, content_factory_config)
 
 

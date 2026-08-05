@@ -21,6 +21,7 @@ def _build_dispatcher(
     journal: Journal,
     content_factory_config: ContentFactoryConfig,
     lead_radar_config: LeadRadarConfig,
+    v2_menu_enabled: bool = False,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -36,6 +37,7 @@ def _build_dispatcher(
     dp["journal"] = journal
     dp["content_factory_config"] = content_factory_config
     dp["lead_radar_config"] = lead_radar_config
+    dp["v2_menu_enabled"] = v2_menu_enabled
     return dp
 
 
@@ -72,6 +74,7 @@ async def _async_main() -> None:
         journal,
         content_factory_config,
         lead_radar_config,
+        settings.v2_menu_enabled,
     )
 
     await dp.start_polling(bot)

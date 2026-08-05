@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import F, Router
+from aiogram.filters import MagicData
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -21,9 +22,17 @@ from app.keyboards import (
     BTN_PACKAGE_MATERIALS,
     BTN_UNSURE,
     BTN_WEB_RESOURCES,
+    BTN_V2_CHECK_TEXT,
+    BTN_V2_CLIENT_REPLY,
+    BTN_V2_HELP,
+    BTN_V2_MAIN_MENU,
     CATEGORY_BUTTONS,
+    V2_CATEGORY_BUTTONS,
+    V2_PLACEHOLDER_BUTTONS,
     WEB_RESOURCES_BACK,
+    active_main_menu,
     main_menu,
+    v2_back_keyboard,
     web_resources_keyboard,
 )
 from app.routing.modules import Module
@@ -59,6 +68,8 @@ BUTTON_TO_MODULE: dict[str, Module] = {
     BTN_CLIENT_QUESTION: Module.TRAVEL_ASSISTANT,
     BTN_CHECK_TEXT: Module.SAFETY_LAYER,
     BTN_PACKAGE_MATERIALS: Module.PARTNER_PACKAGING,
+    BTN_V2_CLIENT_REPLY: Module.TRAVEL_ASSISTANT,
+    BTN_V2_CHECK_TEXT: Module.SAFETY_LAYER,
 }
 
 
@@ -83,6 +94,12 @@ BUTTON_HINTS: dict[str, str] = {
         "— Инструкция по Travel Content Factory.\n"
         "— Коммерческое предложение по настройке AI-инструмента.\n"
         "— Презентация продукта для нового партнёра."
+    ),
+    BTN_V2_CLIENT_REPLY: (
+        "Опишите вопрос клиента или сообщение, на которое нужно подготовить ответ."
+    ),
+    BTN_V2_CHECK_TEXT: (
+        "Пришлите текст, который нужно проверить и улучшить перед использованием."
     ),
     BTN_UNSURE: (
         "Опишите задачу обычным языком — даже если она смешанная. "
@@ -148,6 +165,48 @@ async def on_category(message: Message, state: FSMContext) -> None:
     await state.update_data(forced_module=module.value)
     await state.set_state(AwaitTask.waiting)
     await message.answer(BUTTON_HINTS[message.text], reply_markup=main_menu())
+
+
+@router.message(MagicData(F.v2_menu_enabled), F.text.in_(V2_CATEGORY_BUTTONS))
+async def on_v2_category(message: Message, state: FSMContext) -> None:
+    module = BUTTON_TO_MODULE[message.text]
+    await state.update_data(forced_module=module.value)
+    await state.set_state(AwaitTask.waiting)
+    await message.answer(
+        BUTTON_HINTS[message.text],
+        reply_markup=active_main_menu(True),
+    )
+
+
+@router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_MAIN_MENU)
+async def on_v2_main_menu(
+    message: Message, state: FSMContext
+) -> None:
+    await state.clear()
+    await message.answer(
+        "Главное меню. Выберите нужную задачу.",
+        reply_markup=active_main_menu(True),
+    )
+
+
+@router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_HELP)
+async def on_v2_help(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Здесь можно выбрать задачу: подготовить ответ клиенту, проверить текст "
+        "или открыть разделы для работы с материалами.",
+        reply_markup=v2_back_keyboard(),
+    )
+
+
+@router.message(MagicData(F.v2_menu_enabled), F.text.in_(V2_PLACEHOLDER_BUTTONS))
+async def on_v2_placeholder(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Раздел подготовлен в новой структуре. Рабочий сценарий будет подключён "
+        "на следующем этапе.",
+        reply_markup=v2_back_keyboard(),
+    )
 
 
 @router.message(F.text == BTN_UNSURE)
