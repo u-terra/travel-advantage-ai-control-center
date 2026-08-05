@@ -9,6 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from app.access import AllowlistMiddleware
 from app.config import load_settings
 from app.handlers import build_router
+from app.repositories.partner_repository import PartnerRepository
 from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
 from app.storage import Journal
@@ -46,6 +47,10 @@ async def _async_main() -> None:
 
     journal = Journal(settings.journal_db_path)
     await journal.init()
+
+    partner_repository = PartnerRepository(settings.journal_db_path)
+    await partner_repository.init()
+    await partner_repository.ensure_owner_workspace(settings.admin_telegram_id)
 
     content_factory_config = ContentFactoryConfig(
         url=settings.content_factory_url,
