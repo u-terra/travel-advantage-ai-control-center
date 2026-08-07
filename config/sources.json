@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "description": "Реестр наблюдаемых источников Travel Advantage. Источник — это НЕ база знаний и НЕ источник гарантированной истины. Публикации не копируются как готовый контент: источники используются только для поиска инфоповодов, тем, рыночных сигналов, аргументов, возражений, историй и идей для сценариев общения. Итоговый материал создаётся заново и проходит ручную проверку владельцем.",
+  "status_note": "Запись в этом файле означает НАМЕРЕНИЕ наблюдать за источником, а не факт мониторинга. В данном репозитории кода сбора нет: Control Center читает уже готовые сигналы Travel Lead Radar. Интеграция реестра со сбором — отдельный следующий этап. До неё ни один Telegram-канал из этого файла физически не читается.",
+  "sources": [
+    {
+      "id": "web_travel_content_factory",
+      "name": "Travel Content Factory",
+      "platform": "web",
+      "url": "https://factory.vassian-ai.ru",
+      "source_type": "own_web_resource",
+      "purpose": "product_reference",
+      "enabled": true,
+      "priority": 10,
+      "notes": "Собственный веб-ресурс экосистемы. Показывается в меню бота (WEB_RESOURCE_LINKS). Не является наблюдаемым внешним источником."
+    },
+    {
+      "id": "web_ai_travel_assistant",
+      "name": "AI Travel Assistant",
+      "platform": "web",
+      "url": "https://assistant.vassian-ai.ru/#features",
+      "source_type": "own_web_resource",
+      "purpose": "product_reference",
+      "enabled": true,
+      "priority": 10,
+      "notes": "Собственный веб-ресурс экосистемы. Показывается в меню бота (WEB_RESOURCE_LINKS). Не является наблюдаемым внешним источником."
+    },
+    {
+      "id": "telegram_alexperevez",
+      "name": "@alexperevez",
+      "platform": "telegram",
+      "username": "alexperevez",
+      "source_type": "monitored_source",
+      "purpose": "content_and_business_signals",
+      "enabled": true,
+      "priority": 50,
+      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+    },
+    {
+      "id": "telegram_cashflow21123",
+      "name": "@cashflow21123",
+      "platform": "telegram",
+      "username": "cashflow21123",
+      "source_type": "monitored_source",
+      "purpose": "content_and_business_signals",
+      "enabled": true,
+      "priority": 50,
+      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+    },
+    {
+      "id": "telegram_artemedanium",
+      "name": "@artemedanium",
+      "platform": "telegram",
+      "username": "artemedanium",
+      "source_type": "monitored_source",
+      "purpose": "content_and_business_signals",
+      "enabled": true,
+      "priority": 50,
+      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+    },
+    {
+      "id": "telegram_pro_biznes_zharkov",
+      "name": "@pro_biznes_zharkov",
+      "platform": "telegram",
+      "username": "pro_biznes_zharkov",
+      "source_type": "monitored_source",
+      "purpose": "content_and_business_signals",
+      "enabled": true,
+      "priority": 50,
+      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+    },
+    {
+      "id": "telegram_koroleva_60",
+      "name": "@koroleva_60",
+      "platform": "telegram",
+      "username": "koroleva_60",
+      "source_type": "monitored_source",
+      "purpose": "content_and_business_signals",
+      "enabled": true,
+      "priority": 50,
+      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+    },
+    {
+      "id": "telegram_otzivimwr",
+      "name": "@otziviMWR",
+      "platform": "telegram",
+      "username": "otziviMWR",
+      "source_type": "reviews_and_stories",
+      "purpose": "reviews_user_stories_and_content_ideas",
+      "enabled": true,
+      "priority": 30,
+      "notes": "Источник отзывов, пользовательских историй и идей для контента. Отзывы не публикуются дословно и не используются как подтверждённые факты — только как материал для анализа и новых формулировок."
+    }
+  ]
+}
