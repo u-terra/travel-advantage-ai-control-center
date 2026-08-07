@@ -8,9 +8,12 @@ import pytest
 
 from app.handlers.text_review import (
     TextReview, review_artifact, review_free_text, save_artifact_review,
-    start_free_text_review,
+    save_free_text, start_free_text_review,
 )
-from app.keyboards import ARTIFACT_REVIEW_SAVE_PREFIX, TEXT_REVIEW_SAVE
+from app.keyboards import (
+    ARTIFACT_CHECK_PREFIX, ARTIFACT_REVIEW_SAVE_PREFIX,
+    SOURCE_ACTION_MAIN_MENU, TEXT_REVIEW_SAVE,
+)
 from app.services.content_factory import (
     ContentFactoryConfig, TextCheckResult, TextSafetyFinding,
 )
@@ -62,6 +65,9 @@ def deps(workspace=True, artifact=True, version=True):
         get_artifact=AsyncMock(return_value=SimpleNamespace(id=20, current_version_id=30) if artifact else None),
         get_current_artifact_version=AsyncMock(return_value=SimpleNamespace(id=30, content="Текущая") if version else None),
         add_artifact_version_if_current=AsyncMock(return_value=SimpleNamespace(version_number=2)),
+        create_artifact_with_initial_version=AsyncMock(return_value=(
+            SimpleNamespace(id=41), SimpleNamespace(id=42, version_number=1)
+        )),
     )
     return partner, repo
 
@@ -182,3 +188,35 @@ def test_repository_failure_never_shows_success():
     run(save_artifact_review(callback, state, partner, repo))
     assert callback.message.answers == []
     assert "token-secret" not in callback.answers[-1][0]
+
+
+def test_save_free_text_shows_check_for_created_artifact_and_main_menu():
+    callback = Callback(TEXT_REVIEW_SAVE)
+    state = State({"reviewed_text": "Проверенный текст"})
+    partner, repo = deps()
+
+    run(save_free_text(callback, state, partner, repo))
+
+    created_artifact = repo.create_artifact_with_initial_version.return_value[0]
+    message_text, kwargs = callback.message.answers[-1]
+    callbacks = [
+        button.callback_data
+        for row in kwargs["reply_markup"].inline_keyboard
+        for button in row
+    ]
+    assert f"Материал №{created_artifact.id}" in message_text
+    assert f"{ARTIFACT_CHECK_PREFIX}{created_artifact.id}" in callbacks
+    assert f"{ARTIFACT_CHECK_PREFIX}20" not in callbacks
+    assert SOURCE_ACTION_MAIN_MENU in callbacks
+
+
+def test_save_free_text_failure_does_not_show_artifact_check_button():
+    callback = Callback(TEXT_REVIEW_SAVE)
+    state = State({"reviewed_text": "Проверенный текст"})
+    partner, repo = deps()
+    repo.create_artifact_with_initial_version.side_effect = RuntimeError("private")
+
+    run(save_free_text(callback, state, partner, repo))
+
+    assert callback.message.answers == []
+    assert callback.answers[-1][0] == "Не удалось сохранить материал."

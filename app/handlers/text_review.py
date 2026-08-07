@@ -13,7 +13,8 @@ from app.keyboards import (
     ARTIFACT_CHECK_PREFIX, ARTIFACT_REVIEW_KEEP, ARTIFACT_REVIEW_SAVE_PREFIX,
     BTN_V2_CHECK_TEXT, SOURCE_ACTION_MAIN_MENU, TEXT_REVIEW_SAVE,
     active_main_menu, artifact_review_complete_keyboard,
-    artifact_review_keyboard, free_text_review_keyboard, v2_back_keyboard,
+    artifact_review_keyboard, free_text_review_keyboard, material_result_keyboard,
+    v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
@@ -198,7 +199,10 @@ async def save_free_text(
     await state.clear()
     await callback.answer("Материал сохранён.")
     if callback.message is not None:
-        await callback.message.answer(f"💾 Материал №{artifact.id} сохранён как черновик.")
+        await callback.message.answer(
+            f"💾 Материал №{artifact.id} сохранён как черновик.",
+            reply_markup=material_result_keyboard(artifact.id),
+        )
 
 
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data == SOURCE_ACTION_MAIN_MENU)
