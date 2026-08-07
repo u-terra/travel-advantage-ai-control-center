@@ -45,7 +45,10 @@ def _write_registry(
     tmp_path: Path, sources: list[dict], **extra: object
 ) -> Path:
     path = tmp_path / "sources.json"
-    payload: dict[str, object] = {"schema_version": 1, "sources": sources}
+    payload: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "sources": sources,
+    }
     payload.update(extra)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return path
@@ -124,7 +127,49 @@ def test_missing_schema_version_is_treated_as_version_one(tmp_path):
 
 
 def test_future_schema_version_is_rejected(tmp_path):
-    path = _write_registry(tmp_path, [_source_payload()], schema_version=2)
+    unsupported = max(SUPPORTED_SCHEMA_VERSIONS) + 1
+    path = _write_registry(
+        tmp_path, [_source_payload()], schema_version=unsupported
+    )
+    with pytest.raises(SourceRegistryError):
+        load_registry(path)
+
+
+def test_schema_v1_file_still_loads(tmp_path):
+    # Старый формат обязан читаться: v1 — это просто источник без collector.
+    payload = _source_payload(id="tg_v1", username="legacy_channel")
+    path = _write_registry(tmp_path, [payload], schema_version=1)
+    source = load_registry(path).get("tg_v1")
+
+    assert source is not None
+    assert source.collector == {}
+    assert source.enabled is True
+
+
+def test_schema_v2_file_loads_with_collector(tmp_path):
+    payload = _source_payload(
+        id="tg_v2",
+        username="modern_channel",
+        collector={"fetch_limit": 3, "drop_promo": True, "language": "ru"},
+    )
+    path = _write_registry(tmp_path, [payload], schema_version=2)
+    source = load_registry(path).get("tg_v2")
+
+    assert source is not None
+    assert source.collector == {
+        "fetch_limit": 3,
+        "drop_promo": True,
+        "language": "ru",
+    }
+    assert source.collector_setting("drop_promo") is True
+    assert source.collector_setting("missing", "default") == "default"
+
+
+def test_collector_in_a_v1_file_is_rejected(tmp_path):
+    # Иначе файл нового формата, помеченный старой версией, прочитался бы
+    # молча и настройки сборщика потерялись бы незаметно.
+    payload = _source_payload(id="tg_mixed", collector={"fetch_limit": 3})
+    path = _write_registry(tmp_path, [payload], schema_version=1)
     with pytest.raises(SourceRegistryError):
         load_registry(path)
 
@@ -182,6 +227,91 @@ def test_registry_membership_does_not_imply_an_implemented_collector():
 def test_data_file_states_that_sources_are_not_yet_monitored():
     payload = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
     assert payload["status_note"].strip()
+
+
+# ── Валидация collector ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("bad", ["не объект", 42, ["a", "b"], True])
+def test_collector_must_be_an_object(bad, tmp_path):
+    payload = _source_payload(id="tg_bad_collector", collector=bad)
+    with pytest.raises(SourceRegistryError):
+        load_registry(_write_registry(tmp_path, [payload]))
+
+
+@pytest.mark.parametrize(
+    "collector",
+    [
+        {"posts_enabled": "false"},      # строка вместо булева — сменила бы смысл
+        {"comments_enabled": 1},
+        {"drop_promo": "yes"},
+        {"fetch_limit": "3"},
+        {"fetch_limit": -1},
+        {"fetch_limit": True},
+        {"min_score_for_llm": "70"},
+        {"analysis_profile": ""},
+        {"language": 5},
+        {"vk_screen_name": None},
+        {"vk_group_id": "123"},
+        {"vk_group_id": True},
+    ],
+)
+def test_obviously_wrong_collector_types_are_rejected(collector, tmp_path):
+    payload = _source_payload(id="tg_bad_value", collector=collector)
+    with pytest.raises(SourceRegistryError):
+        load_registry(_write_registry(tmp_path, [payload]))
+
+
+@pytest.mark.parametrize(
+    "collector",
+    [
+        {"posts_enabled": False},
+        {"fetch_limit": 0},
+        {"min_score_for_llm": 70.5},
+        {"vk_group_id": None},
+        {"vk_group_id": 12345},
+        {"analysis_profile": "publisher"},
+    ],
+)
+def test_valid_collector_values_are_accepted(collector, tmp_path):
+    payload = _source_payload(id="tg_ok", collector=collector)
+    source = load_registry(_write_registry(tmp_path, [payload])).get("tg_ok")
+
+    assert source is not None
+    assert source.collector == collector
+
+
+def test_unknown_collector_keys_are_preserved_untouched(tmp_path):
+    payload = _source_payload(
+        id="tg_future",
+        collector={"fetch_limit": 3, "some_future_setting": {"deep": [1, 2]}},
+    )
+    source = load_registry(_write_registry(tmp_path, [payload])).get("tg_future")
+
+    assert source is not None
+    assert source.collector["some_future_setting"] == {"deep": [1, 2]}
+
+
+def test_source_without_collector_gets_empty_mapping(tmp_path):
+    source = load_registry(
+        _write_registry(tmp_path, [_source_payload(id="tg_plain")])
+    ).get("tg_plain")
+
+    assert source is not None
+    assert source.collector == {}
+
+
+def test_collector_does_not_affect_top_level_enabled(tmp_path):
+    # posts_enabled=false внутри collector НЕ должен отключать сам источник:
+    # это настройка платформы, а не разрешение на использование.
+    payload = _source_payload(
+        id="tg_mode", enabled=True, collector={"posts_enabled": False}
+    )
+    source = load_registry(_write_registry(tmp_path, [payload])).get("tg_mode")
+
+    assert source is not None
+    assert source.enabled is True
+    assert source.collector_setting("posts_enabled") is False
 
 
 # ── Неизвестные поля ─────────────────────────────────────────────────────────
@@ -478,16 +608,28 @@ def test_all_six_new_telegram_sources_are_registered():
         assert expected in usernames
 
 
-def test_new_telegram_sources_are_enabled_and_have_canonical_urls():
-    active = collection_targets(platform="telegram")
-    by_username = {source.username: source for source in active}
+def test_new_telegram_sources_have_canonical_urls():
+    registry = load_registry()
+    by_username = {source.username: source for source in registry}
 
     for expected in NEW_TELEGRAM_USERNAMES:
         source = by_username[expected]
-        assert source.enabled is True
         assert source.url == f"https://t.me/{expected}"
         assert source.target == f"https://t.me/{expected}"
         assert source.handle == f"@{expected}"
+
+
+def test_new_telegram_sources_are_disabled_candidates():
+    # Этап 0: каналы зарегистрированы, но ещё не разрешены к сбору.
+    registry = load_registry()
+    by_username = {source.username: source for source in registry}
+    active_usernames = {
+        source.username for source in collection_targets(platform="telegram")
+    }
+
+    for expected in NEW_TELEGRAM_USERNAMES:
+        assert by_username[expected].enabled is False
+        assert expected not in active_usernames
 
 
 def test_reviews_source_purpose():
@@ -510,6 +652,142 @@ def test_neutral_purpose_for_sources_without_known_content():
         source = by_username[username]
         assert source.source_type == "monitored_source"
         assert source.purpose == "content_and_business_signals"
+
+
+# ── Источники, мигрированные из Travel Lead Radar ────────────────────────────
+#
+# Ожидания зашиты здесь намеренно: тест обязан быть автономным и не зависеть
+# от наличия соседнего репозитория travel_lead_radar на диске.
+
+MIGRATED_RSS = {"rss_turizm_ru"}
+
+MIGRATED_VK_POSTS = {
+    "vk_aviasales",
+    "vk_vandroukiru",
+    "vk_triptodreamru",
+    "vk_budzhetno",
+    "vk_waking_travel",
+    "vk_konechnaia",
+}
+
+MIGRATED_VK_COMMENTS = {
+    "vk_doskanabali",
+    "vk_zhilyo_abhaziya",
+    "vk_moretut25",
+}
+
+MIGRATED_TELEGRAM = {
+    "telegram_tourprom": False,
+    "telegram_gogov_rest": False,
+    "telegram_yandex_travel": True,   # drop_promo
+    "telegram_tripsterofficial": False,
+    "telegram_wild_russians": False,
+    "telegram_budzhetno": True,       # drop_promo
+}
+
+ALL_MIGRATED = (
+    MIGRATED_RSS
+    | MIGRATED_VK_POSTS
+    | MIGRATED_VK_COMMENTS
+    | set(MIGRATED_TELEGRAM)
+)
+
+
+def test_all_sixteen_radar_sources_are_migrated():
+    ids = {source.id for source in load_registry()}
+    assert len(ALL_MIGRATED) == 16
+    assert ALL_MIGRATED <= ids
+
+
+def test_migrated_sources_stay_active():
+    # Рабочий мониторинг нельзя потерять: все 16 остаются разрешёнными.
+    active = {source.id for source in collection_targets()}
+    for source_id in ALL_MIGRATED:
+        assert source_id in active
+
+
+def test_migrated_vk_posts_keep_post_mode():
+    registry = load_registry()
+    for source_id in MIGRATED_VK_POSTS:
+        source = registry.get(source_id)
+        assert source is not None
+        assert source.platform == "vk"
+        assert source.collector_setting("posts_enabled") is True
+        assert source.collector_setting("comments_enabled") is False
+        assert source.collector_setting("analysis_profile") == "publisher"
+
+
+def test_migrated_vk_comment_sources_keep_comments_only_mode():
+    # Эти три сообщества нельзя превращать в обычный сбор VK-постов.
+    registry = load_registry()
+    for source_id in MIGRATED_VK_COMMENTS:
+        source = registry.get(source_id)
+        assert source is not None
+        assert source.platform == "vk"
+        assert source.collector_setting("posts_enabled") is False
+        assert source.collector_setting("comments_enabled") is True
+        assert source.collector_setting("analysis_profile") == "user_comment"
+        assert source.source_type == "community_comments"
+
+
+def test_migrated_telegram_sources_keep_drop_promo():
+    registry = load_registry()
+    for source_id, drop_promo in MIGRATED_TELEGRAM.items():
+        source = registry.get(source_id)
+        assert source is not None
+        assert source.platform == "telegram"
+        assert source.collector_setting("drop_promo") is drop_promo
+        assert source.collector_setting("analysis_profile") == "publisher"
+
+
+def test_migrated_sources_keep_numeric_collector_settings():
+    registry = load_registry()
+    for source_id in ALL_MIGRATED - MIGRATED_RSS:
+        source = registry.get(source_id)
+        assert source is not None
+        assert source.collector_setting("fetch_limit") == 3
+        assert source.collector_setting("min_score_for_llm") == 70
+        assert source.collector_setting("language") == "ru"
+
+
+def test_migrated_rss_source_has_no_invented_settings():
+    # У RSS-источника в Radar нет ни analysis_profile, ни лимитов —
+    # выдумывать их нельзя.
+    source = load_registry().get("rss_turizm_ru")
+
+    assert source is not None
+    assert source.platform == "rss"
+    assert source.collector_setting("analysis_profile") is None
+    assert source.collector_setting("fetch_limit") is None
+    assert source.collector == {"language": "ru"}
+
+
+def test_migrated_vk_sources_keep_screen_names():
+    registry = load_registry()
+    for source_id in MIGRATED_VK_POSTS | MIGRATED_VK_COMMENTS:
+        source = registry.get(source_id)
+        assert source is not None
+        screen_name = source.collector_setting("vk_screen_name")
+        assert screen_name
+        assert source.url == f"https://vk.com/{screen_name}"
+        assert "vk_group_id" in source.collector
+
+
+# ── Платформа и назначение не смешиваются ────────────────────────────────────
+
+
+def test_source_type_never_holds_a_platform_name():
+    # В Radar `source_type` означает платформу. В Control Center — роль.
+    # Смешивать их нельзя, иначе миграция тихо переопределит смысл поля.
+    for source in load_registry():
+        assert source.source_type not in KNOWN_PLATFORMS
+
+
+def test_analysis_profile_lives_in_collector_not_in_source_type():
+    for source in load_registry():
+        profile = source.collector_setting("analysis_profile")
+        if profile is not None:
+            assert source.source_type != profile
 
 
 # ── Существующие источники не потеряны ───────────────────────────────────────

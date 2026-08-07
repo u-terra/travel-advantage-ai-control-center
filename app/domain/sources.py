@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Optional
 
 # Известные платформы. Список открытый: реестр принимает любую непустую
 # платформу, чтобы добавление новой (например, "youtube" или "dzen")
@@ -31,6 +31,10 @@ class Source:
     рыночных сигналов, аргументов и возражений, историй и отзывов, идей
     для сценариев общения. Публикации источника не копируются как готовый
     контент: на их основе создаётся новый материал с ручной проверкой.
+
+    Общие свойства источника — поля этого класса. Всё, что нужно только
+    конкретному сборщику (лимиты, фильтры, идентификаторы платформы),
+    живёт отдельно в `collector` и реестром не интерпретируется.
     """
 
     id: str
@@ -43,10 +47,15 @@ class Source:
     username: Optional[str] = None
     priority: int = 50
     notes: str = ""
+    collector: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def is_telegram(self) -> bool:
         return self.platform == PLATFORM_TELEGRAM
+
+    def collector_setting(self, key: str, default: Any = None) -> Any:
+        """Настройка сборщика по имени. Реестр её смысл не толкует."""
+        return self.collector.get(key, default)
 
     @property
     def handle(self) -> Optional[str]:

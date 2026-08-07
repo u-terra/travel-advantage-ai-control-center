@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "Реестр наблюдаемых источников Travel Advantage. Источник — это НЕ база знаний и НЕ источник гарантированной истины. Публикации не копируются как готовый контент: источники используются только для поиска инфоповодов, тем, рыночных сигналов, аргументов, возражений, историй и идей для сценариев общения. Итоговый материал создаётся заново и проходит ручную проверку владельцем.",
-  "status_note": "Запись в этом файле означает НАМЕРЕНИЕ наблюдать за источником, а не факт мониторинга. В данном репозитории кода сбора нет: Control Center читает уже готовые сигналы Travel Lead Radar. Интеграция реестра со сбором — отдельный следующий этап. До неё ни один Telegram-канал из этого файла физически не читается.",
+  "status_note": "Запись в этом файле означает РАЗРЕШЕНИЕ использовать источник, а не факт мониторинга. Control Center — владелец реестра, но сбором он не занимается: публикации собирает отдельный проект Travel Lead Radar, а Control Center читает готовые сигналы из его leads.db. На текущем этапе Radar ЕЩЁ НЕ читает этот файл — он продолжает работать со своим app/sources/sources.json. Источники Radar перенесены сюда заранее, чтобы подготовить миграцию без потери рабочего мониторинга.",
   "sources": [
     {
       "id": "web_travel_content_factory",
@@ -26,15 +26,316 @@
       "notes": "Собственный веб-ресурс экосистемы. Показывается в меню бота (WEB_RESOURCE_LINKS). Не является наблюдаемым внешним источником."
     },
     {
+      "id": "rss_turizm_ru",
+      "name": "Turizm.ru",
+      "platform": "rss",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_market_news",
+      "url": "https://www.turizm.ru/news/rss/yandex/",
+      "notes": "Новости туризма: визы, рейсы, направления, цены и туристический рынок",
+      "collector": {
+        "language": "ru"
+      }
+    },
+    {
+      "id": "vk_aviasales",
+      "name": "VK Aviasales",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "url": "https://vk.com/aviasales",
+      "notes": "Публичное редакционное сообщество: направления, рейсы, цены и темы для контента. Только мониторинг открытых публикаций.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "vk_screen_name": "aviasales",
+        "vk_group_id": null,
+        "posts_enabled": true,
+        "comments_enabled": false,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "vk_budzhetno",
+      "name": "VK Бюджетно",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "url": "https://vk.com/budzhetno",
+      "notes": "Публичное сообщество о бюджетных путешествиях: направления, цены и темы для контента. Только мониторинг открытых публикаций.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "vk_screen_name": "budzhetno",
+        "vk_group_id": null,
+        "posts_enabled": true,
+        "comments_enabled": false,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "vk_konechnaia",
+      "name": "VK Конечная",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "url": "https://vk.com/konechnaia",
+      "notes": "Публичное сообщество о путешествиях и направлениях: идеи поездок и темы для контента. Только мониторинг открытых публикаций.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "vk_screen_name": "konechnaia",
+        "vk_group_id": null,
+        "posts_enabled": true,
+        "comments_enabled": false,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "vk_triptodreamru",
+      "name": "VK Trip to Dream",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "url": "https://vk.com/triptodreamru",
+      "notes": "Публичное сообщество о путешествиях и направлениях: идеи поездок, цены и темы для контента. Только мониторинг открытых публикаций.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "vk_screen_name": "triptodreamru",
+        "vk_group_id": null,
+        "posts_enabled": true,
+        "comments_enabled": false,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "vk_vandroukiru",
+      "name": "VK Вандрушки (Вандроуки)",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "url": "https://vk.com/vandroukiru",
+      "notes": "Публичное travel-сообщество о дешёвых билетах и путешествиях: направления, рейсы, цены и темы для контента. Только мониторинг открытых публикаций.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "vk_screen_name": "vandroukiru",
+        "vk_group_id": null,
+        "posts_enabled": true,
+        "comments_enabled": false,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "vk_waking_travel",
+      "name": "VK Waking Travel",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "url": "https://vk.com/waking_travel",
+      "notes": "Публичное travel-сообщество: направления, впечатления и темы для контента. Только мониторинг открытых публикаций.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "vk_screen_name": "waking_travel",
+        "vk_group_id": null,
+        "posts_enabled": true,
+        "comments_enabled": false,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "vk_doskanabali",
+      "name": "VK Бали",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "community_comments",
+      "purpose": "travel_user_requests",
+      "url": "https://vk.com/doskanabali",
+      "notes": "Специальный источник публичных пользовательских комментариев для поиска запросов о поездках, отдыхе и размещении. Только мониторинг открытых комментариев, без сбора постов.",
+      "collector": {
+        "analysis_profile": "user_comment",
+        "posts_enabled": false,
+        "comments_enabled": true,
+        "language": "ru",
+        "vk_screen_name": "doskanabali",
+        "vk_group_id": null,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "vk_moretut25",
+      "name": "VK Жильё на море — Море ждёт",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "community_comments",
+      "purpose": "travel_user_requests",
+      "url": "https://vk.com/moretut25",
+      "notes": "Специальный источник публичных пользовательских комментариев для поиска запросов о поездках, отдыхе и размещении. Только мониторинг открытых комментариев, без сбора постов.",
+      "collector": {
+        "analysis_profile": "user_comment",
+        "posts_enabled": false,
+        "comments_enabled": true,
+        "language": "ru",
+        "vk_screen_name": "moretut25",
+        "vk_group_id": null,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "vk_zhilyo_abhaziya",
+      "name": "VK Абхазия — отдых и жильё",
+      "platform": "vk",
+      "enabled": true,
+      "source_type": "community_comments",
+      "purpose": "travel_user_requests",
+      "url": "https://vk.com/zhilyo_abhaziya",
+      "notes": "Специальный источник публичных пользовательских комментариев для поиска запросов о поездках, отдыхе и размещении. Только мониторинг открытых комментариев, без сбора постов.",
+      "collector": {
+        "analysis_profile": "user_comment",
+        "posts_enabled": false,
+        "comments_enabled": true,
+        "language": "ru",
+        "vk_screen_name": "zhilyo_abhaziya",
+        "vk_group_id": null,
+        "fetch_limit": 3,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "telegram_budzhetno",
+      "name": "Telegram Бюджетно",
+      "platform": "telegram",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "username": "budzhetno",
+      "url": "https://t.me/budzhetno",
+      "notes": "Публичный канал о бюджетных путешествиях. Часто промо/акции — включён drop_promo. Только мониторинг открытых постов через web-preview.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "fetch_limit": 3,
+        "drop_promo": true,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "telegram_gogov_rest",
+      "name": "Telegram Gogov (отдых)",
+      "platform": "telegram",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "username": "gogov_rest",
+      "url": "https://t.me/gogov_rest",
+      "notes": "Публичный канал об отдыхе и внутреннем туризме. Только мониторинг открытых постов через web-preview.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "fetch_limit": 3,
+        "drop_promo": false,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "telegram_tourprom",
+      "name": "Telegram Туропром",
+      "platform": "telegram",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "username": "tourprom",
+      "url": "https://t.me/tourprom",
+      "notes": "Публичный travel-канал: отраслевые новости, направления, темы для контента. Только мониторинг открытых постов через web-preview.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "fetch_limit": 3,
+        "drop_promo": false,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "telegram_tripsterofficial",
+      "name": "Telegram Tripster",
+      "platform": "telegram",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "username": "tripsterofficial",
+      "url": "https://t.me/tripsterofficial",
+      "notes": "Публичный канал об экскурсиях и впечатлениях. Только мониторинг открытых постов через web-preview.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "fetch_limit": 3,
+        "drop_promo": false,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "telegram_wild_russians",
+      "name": "Telegram Wild Russians",
+      "platform": "telegram",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "username": "wild_russians",
+      "url": "https://t.me/wild_russians",
+      "notes": "Публичный канал о внутреннем туризме и путешествиях по России. Только мониторинг открытых постов через web-preview.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "fetch_limit": 3,
+        "drop_promo": false,
+        "min_score_for_llm": 70
+      }
+    },
+    {
+      "id": "telegram_yandex_travel",
+      "name": "Telegram Яндекс Путешествия",
+      "platform": "telegram",
+      "enabled": true,
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "username": "yandex_travel",
+      "url": "https://t.me/yandex_travel",
+      "notes": "Публичный канал Яндекс Путешествий. Много промо/акций — включён drop_promo. Только мониторинг открытых постов через web-preview.",
+      "collector": {
+        "analysis_profile": "publisher",
+        "language": "ru",
+        "fetch_limit": 3,
+        "drop_promo": true,
+        "min_score_for_llm": 70
+      }
+    },
+    {
       "id": "telegram_alexperevez",
       "name": "@alexperevez",
       "platform": "telegram",
       "username": "alexperevez",
       "source_type": "monitored_source",
       "purpose": "content_and_business_signals",
-      "enabled": true,
+      "enabled": false,
       "priority": 50,
-      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+      "notes": "Кандидат на мониторинг. Зарегистрирован, но выключен: содержание канала в проекте не описано и сборщик за ним пока не закреплён. Назначение нейтральное: инфоповоды и деловые сигналы."
     },
     {
       "id": "telegram_cashflow21123",
@@ -43,9 +344,9 @@
       "username": "cashflow21123",
       "source_type": "monitored_source",
       "purpose": "content_and_business_signals",
-      "enabled": true,
+      "enabled": false,
       "priority": 50,
-      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+      "notes": "Кандидат на мониторинг. Зарегистрирован, но выключен: содержание канала в проекте не описано и сборщик за ним пока не закреплён. Назначение нейтральное: инфоповоды и деловые сигналы."
     },
     {
       "id": "telegram_artemedanium",
@@ -54,9 +355,9 @@
       "username": "artemedanium",
       "source_type": "monitored_source",
       "purpose": "content_and_business_signals",
-      "enabled": true,
+      "enabled": false,
       "priority": 50,
-      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+      "notes": "Кандидат на мониторинг. Зарегистрирован, но выключен: содержание канала в проекте не описано и сборщик за ним пока не закреплён. Назначение нейтральное: инфоповоды и деловые сигналы."
     },
     {
       "id": "telegram_pro_biznes_zharkov",
@@ -65,9 +366,9 @@
       "username": "pro_biznes_zharkov",
       "source_type": "monitored_source",
       "purpose": "content_and_business_signals",
-      "enabled": true,
+      "enabled": false,
       "priority": 50,
-      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+      "notes": "Кандидат на мониторинг. Зарегистрирован, но выключен: содержание канала в проекте не описано и сборщик за ним пока не закреплён. Назначение нейтральное: инфоповоды и деловые сигналы."
     },
     {
       "id": "telegram_koroleva_60",
@@ -76,9 +377,9 @@
       "username": "koroleva_60",
       "source_type": "monitored_source",
       "purpose": "content_and_business_signals",
-      "enabled": true,
+      "enabled": false,
       "priority": 50,
-      "notes": "Содержание канала в проекте не описано. Назначение нейтральное: наблюдение за инфоповодами и деловыми сигналами."
+      "notes": "Кандидат на мониторинг. Зарегистрирован, но выключен: содержание канала в проекте не описано и сборщик за ним пока не закреплён. Назначение нейтральное: инфоповоды и деловые сигналы."
     },
     {
       "id": "telegram_otzivimwr",
@@ -87,9 +388,9 @@
       "username": "otziviMWR",
       "source_type": "reviews_and_stories",
       "purpose": "reviews_user_stories_and_content_ideas",
-      "enabled": true,
+      "enabled": false,
       "priority": 30,
-      "notes": "Источник отзывов, пользовательских историй и идей для контента. Отзывы не публикуются дословно и не используются как подтверждённые факты — только как материал для анализа и новых формулировок."
+      "notes": "Кандидат на мониторинг. Зарегистрирован, но выключен. Источник отзывов, пользовательских историй и идей для контента. Отзывы не публикуются дословно и не используются как подтверждённые факты — только как материал для анализа и новых формулировок."
     }
   ]
 }

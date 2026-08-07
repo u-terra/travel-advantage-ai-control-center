@@ -22,10 +22,14 @@ DEFAULT_REGISTRY_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "sources.json"
 )
 
-# Версия формата data-файла. Поднимается только при несовместимом изменении
+# Версия формата data-файла. Поднимается при семантически значимом изменении
 # структуры; загрузчик отказывается читать файл новее, чем понимает.
-SCHEMA_VERSION = 1
-SUPPORTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({SCHEMA_VERSION})
+#   v1 — базовый формат, блока `collector` нет;
+#   v2 — добавлен необязательный `collector` с настройками сборщика.
+# v1 продолжает читаться: старый файл остаётся валидным.
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
+_COLLECTOR_SINCE_VERSION = 2
 
 # Платформы, для которых в ЭТОМ репозитории есть код сбора.
 # Пусто осознанно: Control Center сейчас ничего не собирает сам — он читает
@@ -34,6 +38,15 @@ SUPPORTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({SCHEMA_VERSION})
 IMPLEMENTED_COLLECTOR_PLATFORMS: frozenset[str] = frozenset()
 
 _REQUIRED_FIELDS = ("id", "name", "platform", "source_type", "purpose")
+
+# Известные настройки сборщика и их типы. Проверяются строго, чтобы у поля
+# не поменялся смысл молча: например, строка "false" в булевом флаге дала бы
+# True и включила сбор там, где его выключали. Неизвестные ключи сохраняются
+# как есть и реестром не интерпретируются.
+_COLLECTOR_BOOL_KEYS = ("posts_enabled", "comments_enabled", "drop_promo")
+_COLLECTOR_TEXT_KEYS = ("analysis_profile", "language", "vk_screen_name")
+_COLLECTOR_COUNT_KEYS = ("fetch_limit", "min_score_for_llm")
+_COLLECTOR_OPTIONAL_ID_KEYS = ("vk_group_id",)
 
 
 class SourceRegistryError(ValueError):
@@ -114,7 +127,52 @@ def _as_int(value: object, *, default: int) -> int:
         return default
 
 
-def _parse_source(raw: object, *, index: int) -> Source:
+def _parse_collector(raw: object, *, source_id: str) -> dict[str, object]:
+    """Проверяет блок `collector` и возвращает его как есть.
+
+    Реестр не толкует смысл настроек — он лишь следит, чтобы известные ключи
+    имели ожидаемый тип. Неизвестные ключи сохраняются нетронутыми: их поймёт
+    сборщик своей платформы.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SourceRegistryError(
+            f"источник '{source_id}': 'collector' должен быть объектом"
+        )
+
+    def fail(key: str, expected: str) -> None:
+        raise SourceRegistryError(
+            f"источник '{source_id}': 'collector.{key}' должен быть {expected}, "
+            f"получено: {raw[key]!r}"
+        )
+
+    for key in _COLLECTOR_BOOL_KEYS:
+        if key in raw and not isinstance(raw[key], bool):
+            fail(key, "булевым (true/false без кавычек)")
+
+    for key in _COLLECTOR_TEXT_KEYS:
+        if key in raw and (not isinstance(raw[key], str) or not raw[key].strip()):
+            fail(key, "непустой строкой")
+
+    for key in _COLLECTOR_COUNT_KEYS:
+        if key in raw:
+            value = raw[key]
+            # bool — подкласс int, но булев флаг здесь означал бы ошибку.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                fail(key, "числом")
+            if value < 0:
+                fail(key, "неотрицательным числом")
+
+    for key in _COLLECTOR_OPTIONAL_ID_KEYS:
+        if key in raw and raw[key] is not None:
+            if isinstance(raw[key], bool) or not isinstance(raw[key], int):
+                fail(key, "целым числом или null")
+
+    return dict(raw)
+
+
+def _parse_source(raw: object, *, index: int, schema_version: int) -> Source:
     if not isinstance(raw, dict):
         raise SourceRegistryError(f"источник #{index}: ожидался объект")
 
@@ -151,6 +209,13 @@ def _parse_source(raw: object, *, index: int) -> Source:
             f"источник '{values['id']}': нужно указать 'url' или 'username'"
         )
 
+    if "collector" in raw and schema_version < _COLLECTOR_SINCE_VERSION:
+        raise SourceRegistryError(
+            f"источник '{values['id']}': блок 'collector' появился в "
+            f"schema_version {_COLLECTOR_SINCE_VERSION}, "
+            f"а файл объявлен как версия {schema_version}"
+        )
+
     return Source(
         id=values["id"],
         name=values["name"],
@@ -162,23 +227,27 @@ def _parse_source(raw: object, *, index: int) -> Source:
         username=username,
         priority=_as_int(raw.get("priority"), default=50),
         notes=str(raw.get("notes") or "").strip(),
+        collector=_parse_collector(raw.get("collector"), source_id=values["id"]),
     )
 
 
-def _check_schema_version(payload: dict) -> None:
-    """Проверяет `schema_version`. Отсутствие поля трактуется как версия 1."""
-    raw = payload.get("schema_version", SCHEMA_VERSION)
-    try:
-        version = int(raw)
-    except (TypeError, ValueError):
+def _check_schema_version(payload: dict) -> int:
+    """Проверяет `schema_version` и возвращает её.
+
+    Отсутствие поля трактуется как версия 1: так читаются файлы, созданные
+    до появления версионирования.
+    """
+    raw = payload.get("schema_version", 1)
+    if isinstance(raw, bool) or not isinstance(raw, int):
         raise SourceRegistryError(
             f"'schema_version' должен быть целым числом, получено: {raw!r}"
-        ) from None
-    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        )
+    if raw not in SUPPORTED_SCHEMA_VERSIONS:
         raise SourceRegistryError(
-            f"неподдерживаемая версия реестра источников: {version}. "
+            f"неподдерживаемая версия реестра источников: {raw}. "
             f"Поддерживается: {sorted(SUPPORTED_SCHEMA_VERSIONS)}"
         )
+    return raw
 
 
 def parse_registry(payload: object) -> SourceRegistry:
@@ -186,7 +255,7 @@ def parse_registry(payload: object) -> SourceRegistry:
     if not isinstance(payload, dict):
         raise SourceRegistryError("ожидался объект с ключом 'sources'")
 
-    _check_schema_version(payload)
+    schema_version = _check_schema_version(payload)
 
     raw_sources = payload.get("sources")
     if not isinstance(raw_sources, list):
@@ -195,7 +264,7 @@ def parse_registry(payload: object) -> SourceRegistry:
     sources: list[Source] = []
     seen: set[str] = set()
     for index, raw in enumerate(raw_sources, start=1):
-        source = _parse_source(raw, index=index)
+        source = _parse_source(raw, index=index, schema_version=schema_version)
         if source.id in seen:
             raise SourceRegistryError(f"дублирующийся id источника: '{source.id}'")
         seen.add(source.id)
