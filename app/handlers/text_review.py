@@ -12,8 +12,8 @@ from aiogram.types import CallbackQuery, Message
 from app.keyboards import (
     ARTIFACT_CHECK_PREFIX, ARTIFACT_REVIEW_KEEP, ARTIFACT_REVIEW_SAVE_PREFIX,
     BTN_V2_CHECK_TEXT, SOURCE_ACTION_MAIN_MENU, TEXT_REVIEW_SAVE,
-    active_main_menu, artifact_review_keyboard, free_text_review_keyboard,
-    v2_back_keyboard,
+    active_main_menu, artifact_review_complete_keyboard,
+    artifact_review_keyboard, free_text_review_keyboard, v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
@@ -45,7 +45,11 @@ def _card(result: TextCheckResult) -> str:
         lines.extend(f"— {item.warning}" for item in findings)
     else:
         lines.append("— Существенных замечаний по текущим правилам нет.")
-    lines.extend(["", "Предлагаемая версия:", result.rewritten_text or "Изменённая версия не предложена.", "", _WARNING])
+    if result.rewritten_text:
+        lines.extend(["", "Предлагаемая версия:", result.rewritten_text])
+    else:
+        lines.extend(["", "Существенных замечаний нет. Текущую версию можно оставить."])
+    lines.extend(["", _WARNING])
     return "\n".join(lines)
 
 
@@ -80,8 +84,12 @@ async def review_free_text(
     if result is None:
         await message.answer(_FAILURE, reply_markup=v2_back_keyboard())
         return
+    if not result.rewritten_text:
+        await state.clear()
+        await message.answer(_card(result), reply_markup=v2_back_keyboard())
+        return
     await state.set_state(TextReview.free_result)
-    await state.update_data(reviewed_text=result.rewritten_text or source_text)
+    await state.update_data(reviewed_text=result.rewritten_text)
     await message.answer(_card(result), reply_markup=free_text_review_keyboard())
 
 
@@ -108,10 +116,16 @@ async def review_artifact(
     if result is None:
         await callback.message.answer(_ARTIFACT_FAILURE)
         return
+    if not result.rewritten_text:
+        await state.clear()
+        await callback.message.answer(
+            _card(result), reply_markup=artifact_review_complete_keyboard()
+        )
+        return
     await state.set_state(TextReview.artifact_result)
     await state.update_data(
         review_artifact_id=artifact.id, review_version_id=version.id,
-        reviewed_text=result.rewritten_text or version.content,
+        reviewed_text=result.rewritten_text,
     )
     await callback.message.answer(_card(result), reply_markup=artifact_review_keyboard(artifact.id))
 

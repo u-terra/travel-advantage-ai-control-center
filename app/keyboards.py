@@ -174,6 +174,17 @@ def artifact_review_keyboard(artifact_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def artifact_review_complete_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="❌ Оставить текущую", callback_data=ARTIFACT_REVIEW_KEEP
+        )],
+        [InlineKeyboardButton(
+            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )],
+    ])
+
+
 def free_text_review_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(

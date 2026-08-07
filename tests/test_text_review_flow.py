@@ -10,6 +10,7 @@ from app.handlers.text_review import (
     TextReview, review_artifact, review_free_text, save_artifact_review,
     start_free_text_review,
 )
+from app.keyboards import ARTIFACT_REVIEW_SAVE_PREFIX, TEXT_REVIEW_SAVE
 from app.services.content_factory import (
     ContentFactoryConfig, TextCheckResult, TextSafetyFinding,
 )
@@ -82,6 +83,18 @@ def test_free_text_calls_check_once_and_does_not_create_artifact():
     assert "Перед публикацией проверьте факты, даты, цены и ссылки." in message.answers[0][0]
 
 
+def test_menu_review_without_rewrite_has_no_save_action_or_payload():
+    message = Message("Исходник")
+    state = State({"reviewed_text": "Старый результат"})
+    with patch("app.handlers.text_review.check_text_sync", return_value=result(None)):
+        run(review_free_text(message, state, ContentFactoryConfig("u", "t", 1)))
+    markup = message.answers[-1][1]["reply_markup"]
+    assert not hasattr(markup, "inline_keyboard")
+    assert TEXT_REVIEW_SAVE not in str(markup)
+    assert state.data == {}
+    assert "Текущую версию можно оставить" in message.answers[-1][0]
+
+
 @pytest.mark.parametrize("data", ["artifact_check:x", "artifact_check:0", "artifact_check:"])
 def test_malformed_artifact_callback_fails_closed(data):
     callback, state = Callback(data), State()
@@ -110,6 +123,25 @@ def test_artifact_review_uses_current_text_once_without_changing_version():
     assert check.call_args.kwargs["source_text"] == "Текущая"
     repo.add_artifact_version_if_current.assert_not_awaited()
     assert state.data["review_version_id"] == 30
+
+
+def test_artifact_review_without_rewrite_has_no_save_or_version_payload():
+    callback = Callback("artifact_check:20")
+    state = State({
+        "review_artifact_id": 99, "review_version_id": 98,
+        "reviewed_text": "Старый результат",
+    })
+    partner, repo = deps()
+    with patch("app.handlers.text_review.check_text_sync", return_value=result(None)):
+        run(review_artifact(
+            callback, state, partner, repo, ContentFactoryConfig("u", "t", 1)
+        ))
+    markup = callback.message.answers[-1][1]["reply_markup"]
+    callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
+    assert not any(value.startswith(ARTIFACT_REVIEW_SAVE_PREFIX) for value in callbacks)
+    assert state.data == {}
+    repo.add_artifact_version_if_current.assert_not_awaited()
+    assert "Текущую версию можно оставить" in callback.message.answers[-1][0]
 
 
 def test_ai_failure_hides_token_and_creates_no_version():
