@@ -15,6 +15,7 @@ from app.keyboards import (
     BTN_V2_ANALYZE_MORE,
     BTN_V2_MAIN_MENU,
     source_analysis_result_keyboard,
+    analyzed_source_keyboard,
     v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
@@ -102,7 +103,7 @@ async def receive_source_text(
             workspace.id, source.id, payload
         )
         card = source_analysis_card(analysis)
-        await message.answer(card, reply_markup=source_analysis_result_keyboard())
+        await message.answer(card, reply_markup=analyzed_source_keyboard(source.id))
     except Exception:
         log.warning("source_analysis: processing failed")
         if analysis is not None:

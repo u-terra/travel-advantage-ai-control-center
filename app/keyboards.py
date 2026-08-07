@@ -30,6 +30,11 @@ BTN_V2_PROFILE = "⚙️ Профиль"
 BTN_V2_HELP = "ℹ️ Помощь"
 BTN_V2_MAIN_MENU = "⬅️ Главное меню"
 
+SOURCE_MATERIAL_PREFIX = "source_material:"
+SOURCE_MATERIAL_FORMAT_PREFIX = "source_material_format:"
+SOURCE_ACTION_ANALYZE_MORE = "source_action:analyze_more"
+SOURCE_ACTION_MAIN_MENU = "source_action:main_menu"
+
 
 WEB_RESOURCES_BACK = "web_resources_back"
 
@@ -52,7 +57,6 @@ CATEGORY_BUTTONS = frozenset({
 V2_CATEGORY_BUTTONS = frozenset({BTN_V2_CLIENT_REPLY, BTN_V2_CHECK_TEXT})
 
 V2_PLACEHOLDER_BUTTONS = frozenset({
-    BTN_V2_CREATE_MATERIAL,
     BTN_V2_CONTENT_PLAN,
     BTN_V2_MATERIALS,
     BTN_V2_PROFILE,
@@ -107,6 +111,47 @@ def source_analysis_result_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def analyzed_source_keyboard(source_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=BTN_V2_CREATE_MATERIAL,
+            callback_data=f"{SOURCE_MATERIAL_PREFIX}{source_id}",
+        )],
+        [InlineKeyboardButton(
+            text=BTN_V2_ANALYZE_MORE, callback_data=SOURCE_ACTION_ANALYZE_MORE
+        )],
+        [InlineKeyboardButton(
+            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )],
+    ])
+
+
+def source_material_formats_keyboard(source_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="Telegram",
+                callback_data=f"{SOURCE_MATERIAL_FORMAT_PREFIX}{source_id}:telegram",
+            ),
+            InlineKeyboardButton(
+                text="VK",
+                callback_data=f"{SOURCE_MATERIAL_FORMAT_PREFIX}{source_id}:vk",
+            ),
+        ],
+        [InlineKeyboardButton(
+            text="Отмена", callback_data=SOURCE_ACTION_MAIN_MENU
+        )],
+    ])
+
+
+def material_result_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )]
+    ])
 
 
 def web_resources_keyboard() -> InlineKeyboardMarkup:

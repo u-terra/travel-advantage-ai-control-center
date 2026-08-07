@@ -168,6 +168,60 @@ class ArtifactRepository:
             raise RuntimeError("Не удалось создать материал")
         return _artifact_from_row(row)
 
+    async def create_artifact_with_initial_version(
+        self,
+        workspace_id: int,
+        *,
+        artifact_type: str,
+        title: str,
+        content: str,
+        source_id: int | None = None,
+        status: str = "draft",
+        generation_note: str | None = None,
+    ) -> tuple[Artifact, ArtifactVersion]:
+        """Atomically create an artifact, version 1, and current-version link."""
+        _require_value(title, "title")
+        _require_value(content, "content")
+        now = _now()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                if source_id is not None and await self._source_row(
+                    db, workspace_id, source_id
+                ) is None:
+                    raise ValueError("Source не принадлежит workspace")
+                artifact_cursor = await db.execute(
+                    "INSERT INTO artifacts "
+                    "(workspace_id, source_id, artifact_type, title, status, "
+                    "current_version_id, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+                    (workspace_id, source_id, artifact_type, title, status, now, now),
+                )
+                artifact_id = artifact_cursor.lastrowid or 0
+                version_cursor = await db.execute(
+                    "INSERT INTO artifact_versions "
+                    "(artifact_id, version_number, content, generation_note, created_at) "
+                    "VALUES (?, 1, ?, ?, ?)",
+                    (artifact_id, content, generation_note, now),
+                )
+                version_id = version_cursor.lastrowid or 0
+                await db.execute(
+                    "UPDATE artifacts SET current_version_id = ?, updated_at = ? "
+                    "WHERE workspace_id = ? AND id = ?",
+                    (version_id, now, workspace_id, artifact_id),
+                )
+                artifact_row = await self._artifact_row(db, workspace_id, artifact_id)
+                version_row = await self._version_row(db, workspace_id, artifact_id, 1)
+                if artifact_row is None or version_row is None:
+                    raise RuntimeError("Не удалось создать материал и первую версию")
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _artifact_from_row(artifact_row), _version_from_row(version_row)
+
     async def get_artifact(
         self, workspace_id: int, artifact_id: int
     ) -> Artifact | None:

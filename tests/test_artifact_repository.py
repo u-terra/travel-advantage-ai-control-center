@@ -275,6 +275,27 @@ def test_versions_are_sequential_and_current_version_is_updated(tmp_path: Path) 
         _run(repository.add_artifact_version(owner_id, artifact.id, "  \t"))
 
 
+def test_create_artifact_and_initial_version_is_atomic_and_source_linked(tmp_path: Path) -> None:
+    repository, _, owner_id, other_id = _setup(tmp_path)
+    source = _run(repository.create_source(
+        owner_id, source_type="text", title="Источник", original_text="Текст"
+    ))
+    artifact, version = _run(repository.create_artifact_with_initial_version(
+        owner_id, artifact_type="post", title="Пост", content="Черновик",
+        source_id=source.id, generation_note="factory",
+    ))
+    assert artifact.source_id == source.id
+    assert version.version_number == 1 and version.content == "Черновик"
+    assert artifact.current_version_id == version.id
+    assert _run(repository.get_current_artifact_version(owner_id, artifact.id)) == version
+    with pytest.raises(ValueError, match="не принадлежит"):
+        _run(repository.create_artifact_with_initial_version(
+            other_id, artifact_type="post", title="Чужой", content="Нет",
+            source_id=source.id,
+        ))
+    assert _run(repository.list_artifacts(other_id)) == []
+
+
 def test_versions_are_hidden_from_other_workspace(tmp_path: Path) -> None:
     repository, _, owner_id, other_id = _setup(tmp_path)
     artifact = _run(

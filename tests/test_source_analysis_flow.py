@@ -42,7 +42,7 @@ def test_button_sets_dedicated_state_and_honest_prompt():
 def test_real_router_order_and_repeat_keyboard_label():
     owner = router.parent_router or build_router()
     assert [child.name for child in owner.sub_routers] == [
-        "start", "menu", "source_analysis", "tasks"
+        "start", "menu", "source_analysis", "material_generation", "tasks"
     ]
     message, state = Message(BTN_V2_ANALYZE_MORE), State()
     run(start_source_analysis(message, state))
@@ -139,6 +139,8 @@ def test_success_creates_source_before_ai_and_saves_analysis_without_artifact_or
     analyze.assert_called_once()
     analyses.save_successful_analysis.assert_awaited_once_with(10, 20, payload)
     assert "🔎 Анализ источника" in message.answers[-1][0]
+    markup = message.answers[-1][1]["reply_markup"]
+    assert markup.inline_keyboard[0][0].callback_data == "source_material:20"
     assert "Что важно" not in message.answers[-1][0]
     assert state.state is None
 

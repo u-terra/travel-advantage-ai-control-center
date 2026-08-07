@@ -12,6 +12,7 @@ from app.handlers.menu import (
     on_v2_category,
     on_v2_help,
     on_v2_main_menu,
+    on_v2_create_material,
     on_v2_placeholder,
 )
 from app.handlers import menu as menu_handlers
@@ -197,6 +198,15 @@ def test_v2_help_placeholder_and_return_use_v2_navigation() -> None:
     assert _texts(placeholder_markup) == [BTN_V2_MAIN_MENU]
     assert _texts(return_message.answers[0][1]) == V2_BUTTONS
     assert state.clear_calls == 3
+
+
+def test_v2_create_material_explains_source_first_and_offers_analysis() -> None:
+    message = _Message(BTN_V2_CREATE_MATERIAL)
+    state = _State()
+    _run(on_v2_create_material(message, state))
+    text, markup = message.answers[0]
+    assert "Сначала разберите источник" in text
+    assert _texts(markup) == [BTN_V2_ANALYZE_LINK, BTN_V2_MAIN_MENU]
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
 )
 
 from app.keyboards import (
@@ -25,6 +27,8 @@ from app.keyboards import (
     BTN_V2_CHECK_TEXT,
     BTN_V2_CLIENT_REPLY,
     BTN_V2_HELP,
+    BTN_V2_CREATE_MATERIAL,
+    BTN_V2_ANALYZE_LINK,
     BTN_V2_MAIN_MENU,
     CATEGORY_BUTTONS,
     V2_CATEGORY_BUTTONS,
@@ -206,6 +210,19 @@ async def on_v2_placeholder(message: Message, state: FSMContext) -> None:
         "Раздел подготовлен в новой структуре. Рабочий сценарий будет подключён "
         "на следующем этапе.",
         reply_markup=v2_back_keyboard(),
+    )
+
+
+@router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_CREATE_MATERIAL)
+async def on_v2_create_material(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Сначала разберите источник. После анализа можно создать материал на его основе.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=BTN_V2_ANALYZE_LINK)],
+                      [KeyboardButton(text=BTN_V2_MAIN_MENU)]],
+            resize_keyboard=True,
+        ),
     )
 
 
