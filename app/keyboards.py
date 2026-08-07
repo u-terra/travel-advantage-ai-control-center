@@ -34,6 +34,10 @@ SOURCE_MATERIAL_PREFIX = "source_material:"
 SOURCE_MATERIAL_FORMAT_PREFIX = "source_material_format:"
 SOURCE_ACTION_ANALYZE_MORE = "source_action:analyze_more"
 SOURCE_ACTION_MAIN_MENU = "source_action:main_menu"
+ARTIFACT_CHECK_PREFIX = "artifact_check:"
+ARTIFACT_REVIEW_SAVE_PREFIX = "artifact_review_save:"
+ARTIFACT_REVIEW_KEEP = "artifact_review_keep"
+TEXT_REVIEW_SAVE = "text_review_save"
 
 
 WEB_RESOURCES_BACK = "web_resources_back"
@@ -54,7 +58,7 @@ CATEGORY_BUTTONS = frozenset({
     BTN_PACKAGE_MATERIALS,
 })
 
-V2_CATEGORY_BUTTONS = frozenset({BTN_V2_CLIENT_REPLY, BTN_V2_CHECK_TEXT})
+V2_CATEGORY_BUTTONS = frozenset({BTN_V2_CLIENT_REPLY})
 
 V2_PLACEHOLDER_BUTTONS = frozenset({
     BTN_V2_CONTENT_PLAN,
@@ -146,11 +150,38 @@ def source_material_formats_keyboard(source_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def material_result_keyboard() -> InlineKeyboardMarkup:
+def material_result_keyboard(artifact_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🛡 Проверить текст",
+            callback_data=f"{ARTIFACT_CHECK_PREFIX}{artifact_id}",
+        )],
         [InlineKeyboardButton(
             text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
         )]
+    ])
+
+
+def artifact_review_keyboard(artifact_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ Сохранить улучшенную версию",
+            callback_data=f"{ARTIFACT_REVIEW_SAVE_PREFIX}{artifact_id}",
+        )],
+        [InlineKeyboardButton(
+            text="❌ Оставить текущую", callback_data=ARTIFACT_REVIEW_KEEP
+        )],
+    ])
+
+
+def free_text_review_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="💾 Сохранить как материал", callback_data=TEXT_REVIEW_SAVE
+        )],
+        [InlineKeyboardButton(
+            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )],
     ])
 
 

@@ -170,7 +170,7 @@ async def generate_source_material(
         await callback.message.answer(_FAILURE)
         return
     try:
-        await artifact_repository.create_artifact_with_initial_version(
+        artifact, _ = await artifact_repository.create_artifact_with_initial_version(
             workspace.id,
             artifact_type=_ARTIFACT_TYPE,
             title=f"{SUPPORTED_FORMATS[output_format]}: {source.title}",
@@ -184,7 +184,7 @@ async def generate_source_material(
         return
     messages = _draft_messages(output_format, draft.text, draft.warnings)
     for index, text in enumerate(messages):
-        reply_markup = material_result_keyboard() if index == len(messages) - 1 else None
+        reply_markup = material_result_keyboard(artifact.id) if index == len(messages) - 1 else None
         await callback.message.answer(text, reply_markup=reply_markup)
 
 

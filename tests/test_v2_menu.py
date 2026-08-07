@@ -17,6 +17,7 @@ from app.handlers.menu import (
 )
 from app.handlers import menu as menu_handlers
 from app.handlers import tasks as task_handlers
+from app.handlers import text_review as text_review_handlers
 from app.handlers.start import cmd_start
 from app.main import _build_dispatcher
 from app.keyboards import (
@@ -212,7 +213,6 @@ def test_v2_create_material_explains_source_first_and_offers_analysis() -> None:
 @pytest.mark.parametrize(
     ("button", "module"),
     [
-        (BTN_V2_CHECK_TEXT, Module.SAFETY_LAYER),
         (BTN_V2_CLIENT_REPLY, Module.TRAVEL_ASSISTANT),
     ],
 )
@@ -230,7 +230,9 @@ def test_v2_existing_scenarios_reuse_await_task(button: str, module: Module) -> 
 async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None:
     message = _Message(text)
     data = {"raw_state": None, **workflow_data}
-    for router in (menu_handlers.router, task_handlers.router):
+    for router in (
+        menu_handlers.router, text_review_handlers.router, task_handlers.router
+    ):
         for handler in router.message.handlers:
             matched, _ = await handler.check(message, **data)
             if matched:
@@ -244,7 +246,7 @@ async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None
         (BTN_V2_PROFILE, "on_v2_placeholder"),
         (BTN_V2_HELP, "on_v2_help"),
         (BTN_V2_MAIN_MENU, "on_v2_main_menu"),
-        (BTN_V2_CHECK_TEXT, "on_v2_category"),
+        (BTN_V2_CHECK_TEXT, "start_free_text_review"),
     ],
 )
 def test_v2_buttons_reach_menu_router_before_general_task(

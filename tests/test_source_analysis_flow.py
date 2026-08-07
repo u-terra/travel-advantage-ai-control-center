@@ -42,7 +42,8 @@ def test_button_sets_dedicated_state_and_honest_prompt():
 def test_real_router_order_and_repeat_keyboard_label():
     owner = router.parent_router or build_router()
     assert [child.name for child in owner.sub_routers] == [
-        "start", "menu", "source_analysis", "material_generation", "tasks"
+        "start", "menu", "source_analysis", "material_generation",
+        "text_review", "tasks",
     ]
     message, state = Message(BTN_V2_ANALYZE_MORE), State()
     run(start_source_analysis(message, state))

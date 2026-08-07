@@ -13,7 +13,7 @@ from app.handlers.material_generation import (
     generate_source_material,
     _draft_messages,
 )
-from app.keyboards import source_material_formats_keyboard
+from app.keyboards import ARTIFACT_CHECK_PREFIX, source_material_formats_keyboard
 from app.services.content_factory import ContentDraft, ContentFactoryConfig
 
 
@@ -58,7 +58,9 @@ def dependencies(*, workspace=True, source=True, analyzed=True):
     ) if source else None
     artifacts = SimpleNamespace(
         get_source=AsyncMock(return_value=source_value),
-        create_artifact_with_initial_version=AsyncMock(return_value=(object(), object())),
+        create_artifact_with_initial_version=AsyncMock(
+            return_value=(SimpleNamespace(id=30), object())
+        ),
     )
     analyses = SimpleNamespace(get_by_source_id=AsyncMock(
         return_value=analysis() if analyzed else None
@@ -167,6 +169,9 @@ def test_generation_calls_factory_once_then_saves_linked_artifact(output_format)
     assert "✍️ Черновик материала" in callback.message.answers[-1][0]
     assert "проверки" in callback.message.answers[-1][0]
     assert "secret" not in callback.message.answers[-1][0]
+    buttons = callback.message.answers[-1][1]["reply_markup"].inline_keyboard
+    artifact = artifacts.create_artifact_with_initial_version.return_value[0]
+    assert buttons[0][0].callback_data == f"{ARTIFACT_CHECK_PREFIX}{artifact.id}"
 
 
 def test_ai_failure_creates_no_artifact_and_hides_details():

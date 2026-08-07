@@ -312,6 +312,64 @@ class ArtifactRepository:
             raise RuntimeError("Не удалось создать версию материала")
         return _version_from_row(version_row)
 
+    async def add_artifact_version_if_current(
+        self,
+        workspace_id: int,
+        artifact_id: int,
+        expected_current_version_id: int,
+        content: str,
+        generation_note: str | None = None,
+    ) -> ArtifactVersion | None:
+        """Atomically append a version only while the reviewed version is current."""
+        _require_value(content, "content")
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                artifact_row = await self._artifact_row(db, workspace_id, artifact_id)
+                if (
+                    artifact_row is None
+                    or artifact_row["current_version_id"] != expected_current_version_id
+                ):
+                    await db.rollback()
+                    return None
+                cursor = await db.execute(
+                    "SELECT COALESCE(MAX(version_number), 0) + 1 "
+                    "FROM artifact_versions WHERE artifact_id = ?",
+                    (artifact_id,),
+                )
+                version_number = (await cursor.fetchone())[0]
+                now = _now()
+                cursor = await db.execute(
+                    "INSERT INTO artifact_versions "
+                    "(artifact_id, version_number, content, generation_note, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (artifact_id, version_number, content, generation_note, now),
+                )
+                version_id = cursor.lastrowid or 0
+                update = await db.execute(
+                    "UPDATE artifacts SET current_version_id = ?, updated_at = ? "
+                    "WHERE workspace_id = ? AND id = ? AND current_version_id = ?",
+                    (
+                        version_id, now, workspace_id, artifact_id,
+                        expected_current_version_id,
+                    ),
+                )
+                if update.rowcount != 1:
+                    await db.rollback()
+                    return None
+                version_row = await self._version_row(
+                    db, workspace_id, artifact_id, version_number
+                )
+                if version_row is None:
+                    raise RuntimeError("Не удалось создать версию материала")
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _version_from_row(version_row)
+
     async def get_artifact_version(
         self, workspace_id: int, artifact_id: int, version_number: int
     ) -> ArtifactVersion | None:

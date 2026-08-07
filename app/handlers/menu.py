@@ -73,7 +73,6 @@ BUTTON_TO_MODULE: dict[str, Module] = {
     BTN_CHECK_TEXT: Module.SAFETY_LAYER,
     BTN_PACKAGE_MATERIALS: Module.PARTNER_PACKAGING,
     BTN_V2_CLIENT_REPLY: Module.TRAVEL_ASSISTANT,
-    BTN_V2_CHECK_TEXT: Module.SAFETY_LAYER,
 }
 
 
@@ -101,9 +100,6 @@ BUTTON_HINTS: dict[str, str] = {
     ),
     BTN_V2_CLIENT_REPLY: (
         "Опишите вопрос клиента или сообщение, на которое нужно подготовить ответ."
-    ),
-    BTN_V2_CHECK_TEXT: (
-        "Пришлите текст, который нужно проверить и улучшить перед использованием."
     ),
     BTN_UNSURE: (
         "Опишите задачу обычным языком — даже если она смешанная. "
@@ -180,7 +176,6 @@ async def on_v2_category(message: Message, state: FSMContext) -> None:
         BUTTON_HINTS[message.text],
         reply_markup=active_main_menu(True),
     )
-
 
 @router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_MAIN_MENU)
 async def on_v2_main_menu(
