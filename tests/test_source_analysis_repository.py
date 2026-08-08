@@ -9,7 +9,7 @@ import pytest
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
-from app.services.content_factory import SourceAnalysisPayload
+from app.services.llm.models import SourceAnalysisPayload
 
 
 def run(value): return asyncio.run(value)

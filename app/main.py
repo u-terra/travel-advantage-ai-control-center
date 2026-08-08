@@ -14,13 +14,15 @@ from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
+from app.services.llm.base import LLMProvider
+from app.services.llm.factory import create_llm_provider
 from app.storage import Journal
 
 
 def _build_dispatcher(
     allowed_user_ids: frozenset[int],
     journal: Journal,
-    content_factory_config: ContentFactoryConfig,
+    llm_provider: LLMProvider,
     lead_radar_config: LeadRadarConfig,
     v2_menu_enabled: bool = False,
     partner_repository: PartnerRepository | None = None,
@@ -39,7 +41,7 @@ def _build_dispatcher(
     dp.include_router(build_router())
 
     dp["journal"] = journal
-    dp["content_factory_config"] = content_factory_config
+    dp["llm_provider"] = llm_provider
     dp["lead_radar_config"] = lead_radar_config
     dp["v2_menu_enabled"] = v2_menu_enabled
     dp["partner_repository"] = partner_repository
@@ -74,6 +76,11 @@ async def _async_main() -> None:
         timeout_seconds=settings.content_factory_timeout_seconds,
         source_analysis_url=settings.content_factory_source_analysis_url,
     )
+    # Неизвестный LLM_PROVIDER — ошибка на старте, а не молчаливый уход
+    # не к тому вендору.
+    llm_provider = create_llm_provider(
+        settings.llm_provider, content_factory_config=content_factory_config
+    )
 
     lead_radar_config = LeadRadarConfig(
         db_path=settings.lead_radar_db_path,
@@ -83,7 +90,7 @@ async def _async_main() -> None:
     dp = _build_dispatcher(
         settings.allowed_user_ids,
         journal,
-        content_factory_config,
+        llm_provider,
         lead_radar_config,
         settings.v2_menu_enabled,
         partner_repository,

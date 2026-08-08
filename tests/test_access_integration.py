@@ -135,7 +135,7 @@ def test_build_dispatcher_registers_guard_on_both_observers(
     dp = _build_dispatcher(
         settings.allowed_user_ids,
         journal=None,
-        content_factory_config=None,
+        llm_provider=None,
         lead_radar_config=None,
     )
 

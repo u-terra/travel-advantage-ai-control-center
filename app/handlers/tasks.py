@@ -12,11 +12,7 @@ from app.keyboards import active_main_menu
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
-from app.services.content_factory import (
-    ContentFactoryConfig,
-    check_text_sync,
-    generate_draft_sync,
-)
+from app.services.llm.base import LLMProvider
 from app.storage import Journal
 
 router = Router(name="tasks")
@@ -50,7 +46,7 @@ async def on_task_after_button(
     message: Message,
     state: FSMContext,
     journal: Journal,
-    content_factory_config: ContentFactoryConfig,
+    llm_provider: LLMProvider,
     v2_menu_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
@@ -80,14 +76,14 @@ async def on_task_after_button(
     await message.answer(
         build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
     )
-    await _maybe_send_module_result(message, decision, content_factory_config)
+    await _maybe_send_module_result(message, decision, llm_provider)
 
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_free_text(
     message: Message,
     journal: Journal,
-    content_factory_config: ContentFactoryConfig,
+    llm_provider: LLMProvider,
     v2_menu_enabled: bool = False,
 ) -> None:
     task_text = (message.text or "").strip()
@@ -107,23 +103,23 @@ async def on_free_text(
     await message.answer(
         build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
     )
-    await _maybe_send_module_result(message, decision, content_factory_config)
+    await _maybe_send_module_result(message, decision, llm_provider)
 
 
 async def _maybe_send_module_result(
     message: Message,
     decision: RouteDecision,
-    config: ContentFactoryConfig,
+    provider: LLMProvider,
 ) -> None:
     if decision.primary_module is Module.SAFETY_LAYER:
-        await _send_text_check(message, decision, config)
+        await _send_text_check(message, decision, provider)
         return
 
     if decision.primary_module is Module.PARTNER_PACKAGING:
         await _send_partner_package(message, decision)
         return
 
-    await _maybe_send_draft(message, decision, config)
+    await _maybe_send_draft(message, decision, provider)
 
 
 
@@ -201,11 +197,10 @@ async def _send_partner_package(
 async def _send_text_check(
     message: Message,
     decision: RouteDecision,
-    config: ContentFactoryConfig,
+    provider: LLMProvider,
 ) -> None:
     result = await asyncio.to_thread(
-        check_text_sync,
-        config,
+        provider.check_text,
         source_text=decision.task_text,
     )
     if result is None:
@@ -316,7 +311,7 @@ def _draft_request_for(
 async def _maybe_send_draft(
     message: Message,
     decision: RouteDecision,
-    config: ContentFactoryConfig,
+    provider: LLMProvider,
 ) -> None:
     request = _draft_request_for(decision)
     if request is None:
@@ -325,8 +320,7 @@ async def _maybe_send_draft(
     source_text, material_type, heading = request
 
     draft = await asyncio.to_thread(
-        generate_draft_sync,
-        config,
+        provider.generate_draft,
         source_text=source_text,
         material_type=material_type,
         output_format=_DRAFT_OUTPUT_FORMAT,

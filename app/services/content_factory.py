@@ -1,3 +1,12 @@
+"""HTTP-транспорт внутреннего API Travel Content Factory.
+
+Это низкоуровневый клиент, а не бизнес-сервис. Хендлеры его больше не
+импортируют: наружу он выставлен через адаптер
+``app.services.llm.openai_provider``, который приводит транспорт к общему
+интерфейсу ``LLMProvider``. Модели ответа общие для всех провайдеров и лежат
+в ``app.services.llm.models``.
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,7 +17,27 @@ from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass
 from typing import Optional
 
+from app.services.llm.models import (
+    ContentDraft,
+    SourceAnalysisPayload,
+    TextCheckResult,
+    TextSafetyFinding,
+)
+
 log = logging.getLogger(__name__)
+
+# Модели переехали в app.services.llm.models; имена сохранены здесь для
+# совместимости существующих импортов.
+__all__ = [
+    "ContentDraft",
+    "ContentFactoryConfig",
+    "SourceAnalysisPayload",
+    "TextCheckResult",
+    "TextSafetyFinding",
+    "analyze_source_sync",
+    "check_text_sync",
+    "generate_draft_sync",
+]
 
 
 @dataclass(frozen=True)
@@ -21,24 +50,6 @@ class ContentFactoryConfig:
     @property
     def is_configured(self) -> bool:
         return bool(self.url) and bool(self.token)
-
-
-@dataclass(frozen=True)
-class ContentDraft:
-    text: str
-    warnings: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class SourceAnalysisPayload:
-    summary: str
-    key_facts: tuple[str, ...]
-    disputed_claims: tuple[str, ...]
-    audience_value: str
-    target_audiences: tuple[str, ...]
-    content_angles: tuple[str, ...]
-    recommended_formats: tuple[str, ...]
-    warnings: tuple[str, ...]
 
 
 _ANALYSIS_KEYS = frozenset({
@@ -116,21 +127,6 @@ def analyze_source_sync(
         recommended_formats=parsed["recommended_formats"] or (),
         warnings=parsed["warnings"] or (),
     )
-
-
-@dataclass(frozen=True)
-class TextSafetyFinding:
-    phrase: str
-    warning: str
-
-
-@dataclass(frozen=True)
-class TextCheckResult:
-    warnings: tuple[TextSafetyFinding, ...]
-    rewritten_text: str | None
-    rewrite_warnings: tuple[TextSafetyFinding, ...]
-    generation_mode: str | None
-    ai_note: str | None
 
 
 def _parse_safety_findings(value: object) -> tuple[TextSafetyFinding, ...]:

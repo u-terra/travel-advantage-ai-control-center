@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,7 +14,8 @@ from app.handlers.material_generation import (
     _draft_messages,
 )
 from app.keyboards import ARTIFACT_CHECK_PREFIX, source_material_formats_keyboard
-from app.services.content_factory import ContentDraft, ContentFactoryConfig
+from app.services.llm.models import ContentDraft
+from tests.llm_fakes import FakeLLMProvider
 
 
 def run(value):
@@ -124,7 +125,7 @@ def test_unsupported_or_malformed_format_never_calls_dependencies(data):
     callback = Callback(data)
     partner, artifacts, analyses = dependencies()
     run(generate_source_material(
-        callback, partner, artifacts, analyses, ContentFactoryConfig("u", "t", 1)
+        callback, partner, artifacts, analyses, FakeLLMProvider()
     ))
     partner.find_workspace_by_telegram_id.assert_not_awaited()
     artifacts.create_artifact_with_initial_version.assert_not_awaited()
@@ -152,12 +153,9 @@ def test_long_draft_is_split_into_telegram_safe_messages_without_data_loss():
 def test_generation_calls_factory_once_then_saves_linked_artifact(output_format):
     callback = Callback(f"source_material_format:20:{output_format}")
     partner, artifacts, analyses = dependencies()
-    config = ContentFactoryConfig("http://factory/internal/generate", "secret", 7.5)
-    with patch(
-        "app.handlers.material_generation.generate_draft_sync",
-        return_value=ContentDraft("Черновик", ("Ручная проверка",)),
-    ) as generate:
-        run(generate_source_material(callback, partner, artifacts, analyses, config))
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ("Ручная проверка",)))
+    run(generate_source_material(callback, partner, artifacts, analyses, provider))
+    generate = provider.generate_draft
     assert generate.call_count == 1
     assert generate.call_args.kwargs["material_type"] == "market_offer"
     assert generate.call_args.kwargs["output_format"] == output_format
@@ -177,11 +175,9 @@ def test_generation_calls_factory_once_then_saves_linked_artifact(output_format)
 def test_ai_failure_creates_no_artifact_and_hides_details():
     callback = Callback("source_material_format:20:telegram")
     partner, artifacts, analyses = dependencies()
-    with patch("app.handlers.material_generation.generate_draft_sync", return_value=None):
-        run(generate_source_material(
-            callback, partner, artifacts, analyses,
-            ContentFactoryConfig("u", "secret-token", 1),
-        ))
+    run(generate_source_material(
+        callback, partner, artifacts, analyses, FakeLLMProvider(draft=None)
+    ))
     artifacts.create_artifact_with_initial_version.assert_not_awaited()
     assert "Исходный разбор сохранён" in callback.message.answers[-1][0]
     assert "secret-token" not in callback.message.answers[-1][0]
@@ -191,13 +187,10 @@ def test_persistence_failure_does_not_show_false_success():
     callback = Callback("source_material_format:20:telegram")
     partner, artifacts, analyses = dependencies()
     artifacts.create_artifact_with_initial_version.side_effect = RuntimeError("private")
-    with patch(
-        "app.handlers.material_generation.generate_draft_sync",
-        return_value=ContentDraft("Черновик", ()),
-    ):
-        run(generate_source_material(
-            callback, partner, artifacts, analyses, ContentFactoryConfig("u", "t", 1)
-        ))
+    run(generate_source_material(
+        callback, partner, artifacts, analyses,
+        FakeLLMProvider(draft=ContentDraft("Черновик", ())),
+    ))
     assert len(callback.message.answers) == 1
     assert "Не удалось" in callback.message.answers[0][0]
     assert "private" not in callback.message.answers[0][0]

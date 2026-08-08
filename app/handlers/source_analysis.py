@@ -21,7 +21,7 @@ from app.keyboards import (
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
-from app.services.content_factory import ContentFactoryConfig, analyze_source_sync
+from app.services.llm.base import LLMProvider
 
 router = Router(name="source_analysis")
 log = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ async def receive_source_text(
     partner_repository: PartnerRepository,
     artifact_repository: ArtifactRepository,
     source_analysis_repository: SourceAnalysisRepository,
-    content_factory_config: ContentFactoryConfig,
+    llm_provider: LLMProvider,
 ) -> None:
     text = (message.text or "").strip()
     if not text:
@@ -91,7 +91,7 @@ async def receive_source_text(
             original_text=text, title=title, status="new",
         )
         payload = await asyncio.to_thread(
-            analyze_source_sync, content_factory_config, source_text=text
+            llm_provider.analyze_source, source_text=text
         )
         if payload is None:
             await message.answer(

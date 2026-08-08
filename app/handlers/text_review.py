@@ -18,7 +18,8 @@ from app.keyboards import (
 )
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
-from app.services.content_factory import ContentFactoryConfig, TextCheckResult, check_text_sync
+from app.services.llm.base import LLMProvider
+from app.services.llm.models import TextCheckResult
 
 router = Router(name="text_review")
 log = logging.getLogger(__name__)
@@ -73,14 +74,14 @@ async def start_free_text_review(message: Message, state: FSMContext) -> None:
 
 @router.message(TextReview.waiting_for_text, F.text & ~F.text.startswith("/"))
 async def review_free_text(
-    message: Message, state: FSMContext, content_factory_config: ContentFactoryConfig,
+    message: Message, state: FSMContext, llm_provider: LLMProvider,
 ) -> None:
     source_text = (message.text or "").strip()
     if not source_text:
         await message.answer("Пришли непустой текст.", reply_markup=v2_back_keyboard())
         return
     result = await asyncio.to_thread(
-        check_text_sync, content_factory_config, source_text=source_text
+        llm_provider.check_text, source_text=source_text
     )
     if result is None:
         await message.answer(_FAILURE, reply_markup=v2_back_keyboard())
@@ -98,7 +99,7 @@ async def review_free_text(
 async def review_artifact(
     callback: CallbackQuery, state: FSMContext,
     partner_repository: PartnerRepository, artifact_repository: ArtifactRepository,
-    content_factory_config: ContentFactoryConfig,
+    llm_provider: LLMProvider,
 ) -> None:
     artifact_id = _positive_id(callback.data or "", ARTIFACT_CHECK_PREFIX)
     workspace = None if artifact_id is None else await _workspace(callback, partner_repository)
@@ -112,7 +113,7 @@ async def review_artifact(
         return
     await callback.answer("Проверяю текст…")
     result = await asyncio.to_thread(
-        check_text_sync, content_factory_config, source_text=version.content
+        llm_provider.check_text, source_text=version.content
     )
     if result is None:
         await callback.message.answer(_ARTIFACT_FAILURE)

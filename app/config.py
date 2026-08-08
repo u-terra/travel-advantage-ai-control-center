@@ -7,6 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from app.access import parse_allowed_user_ids
+from app.services.llm.factory import normalize_provider_name
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class Settings:
     allowed_user_ids: frozenset[int]
     journal_db_path: Path
     log_level: str
+    llm_provider: str
     content_factory_url: str
     content_factory_source_analysis_url: str
     content_factory_token: str
@@ -36,6 +38,9 @@ def load_settings() -> Settings:
     allowed_raw = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "").strip()
     db_path_raw = os.environ.get("JOURNAL_DB_PATH", "data/journal.sqlite3").strip()
     log_level = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+    # Пустое или отсутствующее значение = провайдер по умолчанию (openai),
+    # поэтому существующий .env продолжает работать без изменений.
+    llm_provider = normalize_provider_name(os.environ.get("LLM_PROVIDER"))
     cf_url = os.environ.get("CONTENT_FACTORY_INTERNAL_URL", "").strip()
     cf_analysis_url = os.environ.get("CONTENT_FACTORY_SOURCE_ANALYSIS_URL", "").strip()
     cf_token = os.environ.get("CONTENT_FACTORY_INTERNAL_TOKEN", "").strip()
@@ -78,6 +83,7 @@ def load_settings() -> Settings:
         allowed_user_ids=allowed_user_ids,
         journal_db_path=Path(db_path_raw),
         log_level=log_level,
+        llm_provider=llm_provider,
         content_factory_url=cf_url,
         content_factory_source_analysis_url=cf_analysis_url,
         content_factory_token=cf_token,

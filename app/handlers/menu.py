@@ -41,10 +41,6 @@ from app.keyboards import (
 )
 from app.routing.modules import Module
 from app.routing.safety import SafetyLevel
-from app.services.content_factory import (
-    ContentFactoryConfig,
-    generate_draft_sync,
-)
 from app.services.lead_radar import (
     LeadRadarConfig,
     build_summary,
@@ -52,6 +48,7 @@ from app.services.lead_radar import (
     route_card,
     unavailable_summary,
 )
+from app.services.llm.base import LLMProvider
 from app.storage import Journal
 
 router = Router(name="menu")
@@ -280,7 +277,7 @@ async def on_radar_content_selected(
     callback: CallbackQuery,
     state: FSMContext,
     journal: Journal,
-    content_factory_config: ContentFactoryConfig,
+    llm_provider: LLMProvider,
 ) -> None:
     raw_data = callback.data or ""
     try:
@@ -328,8 +325,7 @@ async def on_radar_content_selected(
     )
 
     draft = await asyncio.to_thread(
-        generate_draft_sync,
-        content_factory_config,
+        llm_provider.generate_draft,
         source_text=task_text,
         material_type=_DRAFT_MATERIAL_TYPE,
         output_format=_DRAFT_OUTPUT_FORMAT,

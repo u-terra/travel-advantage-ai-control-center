@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,9 +14,8 @@ from app.keyboards import (
     ARTIFACT_CHECK_PREFIX, ARTIFACT_REVIEW_SAVE_PREFIX,
     SOURCE_ACTION_MAIN_MENU, TEXT_REVIEW_SAVE,
 )
-from app.services.content_factory import (
-    ContentFactoryConfig, TextCheckResult, TextSafetyFinding,
-)
+from app.services.llm.models import TextCheckResult, TextSafetyFinding
+from tests.llm_fakes import FakeLLMProvider
 
 
 def run(value):
@@ -81,8 +80,9 @@ def test_v2_button_prompts_for_arbitrary_text():
 
 def test_free_text_calls_check_once_and_does_not_create_artifact():
     message, state = Message("Исходник"), State()
-    with patch("app.handlers.text_review.check_text_sync", return_value=result()) as check:
-        run(review_free_text(message, state, ContentFactoryConfig("u", "token", 1)))
+    provider = FakeLLMProvider(check=result())
+    run(review_free_text(message, state, provider))
+    check = provider.check_text
     check.assert_called_once()
     assert check.call_args.kwargs["source_text"] == "Исходник"
     assert "Предлагаемая версия:\nУлучшенный" in message.answers[0][0]
@@ -92,8 +92,7 @@ def test_free_text_calls_check_once_and_does_not_create_artifact():
 def test_menu_review_without_rewrite_has_no_save_action_or_payload():
     message = Message("Исходник")
     state = State({"reviewed_text": "Старый результат"})
-    with patch("app.handlers.text_review.check_text_sync", return_value=result(None)):
-        run(review_free_text(message, state, ContentFactoryConfig("u", "t", 1)))
+    run(review_free_text(message, state, FakeLLMProvider(check=result(None))))
     markup = message.answers[-1][1]["reply_markup"]
     assert not hasattr(markup, "inline_keyboard")
     assert TEXT_REVIEW_SAVE not in str(markup)
@@ -105,7 +104,7 @@ def test_menu_review_without_rewrite_has_no_save_action_or_payload():
 def test_malformed_artifact_callback_fails_closed(data):
     callback, state = Callback(data), State()
     partner, repo = deps()
-    run(review_artifact(callback, state, partner, repo, ContentFactoryConfig("u", "t", 1)))
+    run(review_artifact(callback, state, partner, repo, FakeLLMProvider()))
     partner.find_workspace_by_telegram_id.assert_not_awaited()
     assert callback.answers[-1][1]["show_alert"] is True
 
@@ -116,15 +115,16 @@ def test_malformed_artifact_callback_fails_closed(data):
 def test_missing_workspace_artifact_or_current_version_fails_closed(workspace, artifact, version):
     callback, state = Callback("artifact_check:20"), State()
     partner, repo = deps(workspace, artifact, version)
-    run(review_artifact(callback, state, partner, repo, ContentFactoryConfig("u", "t", 1)))
+    run(review_artifact(callback, state, partner, repo, FakeLLMProvider()))
     assert callback.answers[-1][1]["show_alert"] is True
 
 
 def test_artifact_review_uses_current_text_once_without_changing_version():
     callback, state = Callback("artifact_check:20"), State()
     partner, repo = deps()
-    with patch("app.handlers.text_review.check_text_sync", return_value=result()) as check:
-        run(review_artifact(callback, state, partner, repo, ContentFactoryConfig("u", "t", 1)))
+    provider = FakeLLMProvider(check=result())
+    run(review_artifact(callback, state, partner, repo, provider))
+    check = provider.check_text
     check.assert_called_once()
     assert check.call_args.kwargs["source_text"] == "Текущая"
     repo.add_artifact_version_if_current.assert_not_awaited()
@@ -138,10 +138,9 @@ def test_artifact_review_without_rewrite_has_no_save_or_version_payload():
         "reviewed_text": "Старый результат",
     })
     partner, repo = deps()
-    with patch("app.handlers.text_review.check_text_sync", return_value=result(None)):
-        run(review_artifact(
-            callback, state, partner, repo, ContentFactoryConfig("u", "t", 1)
-        ))
+    run(review_artifact(
+        callback, state, partner, repo, FakeLLMProvider(check=result(None))
+    ))
     markup = callback.message.answers[-1][1]["reply_markup"]
     callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
     assert not any(value.startswith(ARTIFACT_REVIEW_SAVE_PREFIX) for value in callbacks)
@@ -153,8 +152,7 @@ def test_artifact_review_without_rewrite_has_no_save_or_version_payload():
 def test_ai_failure_hides_token_and_creates_no_version():
     callback, state = Callback("artifact_check:20"), State()
     partner, repo = deps()
-    with patch("app.handlers.text_review.check_text_sync", return_value=None):
-        run(review_artifact(callback, state, partner, repo, ContentFactoryConfig("u", "secret", 1)))
+    run(review_artifact(callback, state, partner, repo, FakeLLMProvider(check=None)))
     text = callback.message.answers[-1][0]
     assert "Исходный черновик сохранён и не изменён" in text and "secret" not in text
     repo.add_artifact_version_if_current.assert_not_awaited()

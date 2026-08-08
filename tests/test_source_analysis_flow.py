@@ -11,7 +11,8 @@ from app.keyboards import (
     BTN_V2_ANALYZE_LINK, BTN_V2_ANALYZE_MORE, BTN_V2_MAIN_MENU,
     source_analysis_result_keyboard,
 )
-from app.services.content_factory import ContentFactoryConfig, SourceAnalysisPayload
+from app.services.llm.models import SourceAnalysisPayload
+from tests.llm_fakes import FakeLLMProvider
 
 
 def run(value): return asyncio.run(value)
@@ -95,7 +96,7 @@ def test_empty_and_too_long_do_not_create_source():
         message, state = Message(text), State()
         state.state = AnalyzeSource.waiting_for_text
         partner, artifacts, analyses = dependencies()
-        run(receive_source_text(message, state, partner, artifacts, analyses, ContentFactoryConfig("", "", 1)))
+        run(receive_source_text(message, state, partner, artifacts, analyses, FakeLLMProvider()))
         artifacts.create_source.assert_not_called()
         assert state.state == AnalyzeSource.waiting_for_text
 
@@ -121,7 +122,7 @@ def test_router_navigation_and_disabled_manual_label_regressions():
 def test_missing_workspace_does_not_create_source():
     message, state = Message("Текст"), State()
     partner, artifacts, analyses = dependencies(False)
-    run(receive_source_text(message, state, partner, artifacts, analyses, ContentFactoryConfig("", "", 1)))
+    run(receive_source_text(message, state, partner, artifacts, analyses, FakeLLMProvider()))
     artifacts.create_source.assert_not_called()
     assert state.state is None
 
@@ -130,8 +131,9 @@ def test_success_creates_source_before_ai_and_saves_analysis_without_artifact_or
     message, state = Message(" Заголовок\nТекст "), State()
     partner, artifacts, analyses = dependencies()
     payload = SourceAnalysisPayload("Итог", (), (), "Польза", (), (), (), ())
-    with patch("app.handlers.source_analysis.analyze_source_sync", return_value=payload) as analyze:
-        run(receive_source_text(message, state, partner, artifacts, analyses, ContentFactoryConfig("u", "t", 1)))
+    provider = FakeLLMProvider(analysis=payload)
+    run(receive_source_text(message, state, partner, artifacts, analyses, provider))
+    analyze = provider.analyze_source
     artifacts.create_source.assert_awaited_once()
     assert artifacts.create_source.call_args.kwargs == {
         "source_type": "text", "original_url": None,
@@ -158,8 +160,10 @@ def test_repository_and_pre_source_exceptions_clear_processing_state():
         else:
             analyses.save_successful_analysis.side_effect = RuntimeError("internal")
         payload = SourceAnalysisPayload("Итог", (), (), "Польза", (), (), (), ())
-        with patch("app.handlers.source_analysis.analyze_source_sync", return_value=payload):
-            run(receive_source_text(message, state, partner, artifacts, analyses, ContentFactoryConfig("u", "t", 1)))
+        run(receive_source_text(
+            message, state, partner, artifacts, analyses,
+            FakeLLMProvider(analysis=payload),
+        ))
         assert state.state is None
         assert len(message.answers) == 1
         assert "internal" not in message.answers[0][0]
@@ -169,10 +173,13 @@ def test_card_formatting_exception_clears_state_and_reports_saved_analysis():
     message, state = Message("Текст"), State()
     partner, artifacts, analyses = dependencies()
     payload = SourceAnalysisPayload("Итог", (), (), "Польза", (), (), (), ())
-    with patch("app.handlers.source_analysis.analyze_source_sync", return_value=payload), patch(
+    with patch(
         "app.handlers.source_analysis.source_analysis_card", side_effect=RuntimeError("internal")
     ):
-        run(receive_source_text(message, state, partner, artifacts, analyses, ContentFactoryConfig("u", "t", 1)))
+        run(receive_source_text(
+            message, state, partner, artifacts, analyses,
+            FakeLLMProvider(analysis=payload),
+        ))
     assert state.state is None
     assert len(message.answers) == 1
     assert "Анализ сохранён" in message.answers[0][0]
@@ -186,8 +193,9 @@ def test_navigation_labels_are_not_received_as_source_during_processing():
 def test_api_error_leaves_persistence_to_new_source_only():
     message, state = Message("Текст"), State()
     partner, artifacts, analyses = dependencies()
-    with patch("app.handlers.source_analysis.analyze_source_sync", return_value=None):
-        run(receive_source_text(message, state, partner, artifacts, analyses, ContentFactoryConfig("u", "t", 1)))
+    run(receive_source_text(
+        message, state, partner, artifacts, analyses, FakeLLMProvider(analysis=None)
+    ))
     artifacts.create_source.assert_awaited_once()
     assert artifacts.create_source.call_args.kwargs["status"] == "new"
     analyses.save_successful_analysis.assert_not_called()

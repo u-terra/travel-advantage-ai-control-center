@@ -132,7 +132,7 @@ def test_dispatcher_exposes_boolean_flag_as_workflow_data(
     dispatcher = _build_dispatcher(
         frozenset(),
         journal=None,
-        content_factory_config=None,
+        llm_provider=None,
         lead_radar_config=None,
         v2_menu_enabled=True,
     )

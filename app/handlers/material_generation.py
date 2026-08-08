@@ -21,7 +21,7 @@ from app.keyboards import (
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
-from app.services.content_factory import ContentFactoryConfig, generate_draft_sync
+from app.services.llm.base import LLMProvider
 
 router = Router(name="material_generation")
 log = logging.getLogger(__name__)
@@ -138,7 +138,7 @@ async def generate_source_material(
     partner_repository: PartnerRepository,
     artifact_repository: ArtifactRepository,
     source_analysis_repository: SourceAnalysisRepository,
-    content_factory_config: ContentFactoryConfig,
+    llm_provider: LLMProvider,
 ) -> None:
     data = (callback.data or "").removeprefix(SOURCE_MATERIAL_FORMAT_PREFIX)
     parts = data.split(":")
@@ -159,8 +159,7 @@ async def generate_source_material(
         return
     await callback.answer("Готовлю черновик…")
     draft = await asyncio.to_thread(
-        generate_draft_sync,
-        content_factory_config,
+        llm_provider.generate_draft,
         source_text=build_source_context(source, analysis),
         material_type=_MATERIAL_TYPE,
         output_format=output_format,

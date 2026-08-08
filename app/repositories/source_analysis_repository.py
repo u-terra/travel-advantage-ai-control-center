@@ -7,7 +7,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.domain.content import SourceAnalysis
-from app.services.content_factory import SourceAnalysisPayload
+from app.services.llm.models import SourceAnalysisPayload
 
 
 _SCHEMA = """
