@@ -1,8 +1,12 @@
 """Read-only просмотр реестра источников.
 
 Ничего не собирает, никуда не ходит по сети и ничего не меняет: просто
-печатает, какие источники активны сейчас и какие отключены. Управление
-источниками выполняется правкой data-файла `config/sources.json`.
+печатает, какие источники активны сейчас и какие отключены.
+
+Читается активный реестр: рабочий файл, если он уже развёрнут, иначе
+стартовый набор из `config/sources.json`. Скрипт рабочий файл не создаёт —
+это делает приложение при запуске. Управлять источниками можно правкой
+рабочего файла или через раздел «Источники» в боте.
 
 Запуск:
     python -m scripts.list_sources
@@ -17,8 +21,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from dotenv import load_dotenv  # noqa: E402
+
+# Тот же .env, что читает приложение: иначе скрипт показывал бы реестр
+# по пути по умолчанию, а бот работал бы с другим файлом.
+load_dotenv()
+
 from app.services.source_registry import (  # noqa: E402
     SourceRegistryError,
+    active_registry_path,
     collection_targets,
     load_registry,
 )
@@ -37,6 +48,7 @@ def main() -> int:
 
     active = collection_targets(platform=args.platform, registry=registry)
 
+    print(f"Файл реестра: {active_registry_path()}")
     print(f"Всего источников в реестре: {len(registry)}")
     print(f"Активных для сбора: {len(active)}")
     print("")

@@ -38,6 +38,7 @@ from app.keyboards import (
     BTN_V2_MAIN_MENU,
     BTN_V2_MATERIALS,
     BTN_V2_PROFILE,
+    BTN_V2_SOURCES,
     BTN_WEB_RESOURCES,
     active_main_menu,
     main_menu,
@@ -64,6 +65,7 @@ V2_BUTTONS = [
     BTN_V2_CONTENT_PLAN,
     BTN_V2_CHECK_TEXT,
     BTN_V2_MATERIALS,
+    BTN_V2_SOURCES,
     BTN_V2_PROFILE,
     BTN_V2_HELP,
 ]

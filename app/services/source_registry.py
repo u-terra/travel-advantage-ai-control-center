@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -16,11 +17,48 @@ from app.domain.sources import (
 
 log = logging.getLogger(__name__)
 
-# Единственное место, где перечислены конкретные источники, — этот data-файл.
-# Чтобы добавить новый канал, правится только он: Python-код менять не нужно.
-DEFAULT_REGISTRY_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "sources.json"
-)
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# Реестр живёт в двух файлах с разными ролями.
+#
+# SEED — стартовый набор источников. Лежит в репозитории, деплоится вместе с
+# кодом и во время работы приложения НЕ изменяется. Из него один раз
+# разворачивается runtime-файл.
+#
+# RUNTIME — рабочее состояние: сюда попадают источники, добавленные владельцем.
+# Файл в Git не отслеживается (`data/` в .gitignore) и деплоем не переносится,
+# поэтому обновление кода не может стереть добавленные источники.
+#
+# Разделение существует именно ради этого: один файл не может быть
+# одновременно версионируемой частью поставки и изменяемым состоянием — при
+# следующем деплое версия из репозитория затёрла бы правки владельца.
+SEED_REGISTRY_PATH = _PROJECT_ROOT / "config" / "sources.json"
+DEFAULT_RUNTIME_REGISTRY_PATH = _PROJECT_ROOT / "data" / "sources.json"
+
+# Путь runtime-файла можно переопределить — так же, как JOURNAL_DB_PATH.
+RUNTIME_REGISTRY_PATH_ENV = "SOURCE_REGISTRY_PATH"
+
+# Историческое имя: раньше seed и runtime были одним файлом. Оставлено, чтобы
+# существующий код и тесты, которым нужен именно стартовый набор, продолжали
+# работать без правок.
+DEFAULT_REGISTRY_PATH = SEED_REGISTRY_PATH
+
+
+def runtime_registry_path() -> Path:
+    """Путь рабочего файла реестра (может не существовать до bootstrap)."""
+    raw = os.environ.get(RUNTIME_REGISTRY_PATH_ENV, "").strip()
+    return Path(raw) if raw else DEFAULT_RUNTIME_REGISTRY_PATH
+
+
+def active_registry_path() -> Path:
+    """Файл, который является источником истины прямо сейчас.
+
+    После bootstrap это всегда runtime-файл. Пока его нет — seed, чтобы
+    read-only сценарии (например, `scripts/list_sources.py`) работали на
+    свежей машине и НЕ создавали рабочее состояние побочным эффектом чтения.
+    """
+    runtime = runtime_registry_path()
+    return runtime if runtime.exists() else SEED_REGISTRY_PATH
 
 # Версия формата data-файла. Поднимается при семантически значимом изменении
 # структуры; загрузчик отказывается читать файл новее, чем понимает.
@@ -228,6 +266,12 @@ def _parse_source(raw: object, *, index: int, schema_version: int) -> Source:
         priority=_as_int(raw.get("priority"), default=50),
         notes=str(raw.get("notes") or "").strip(),
         collector=_parse_collector(raw.get("collector"), source_id=values["id"]),
+        # Отметки времени намеренно не привязаны к schema_version: читатель
+        # старого кода просто их игнорирует, и поведение сбора от этого не
+        # меняется — в отличие от `collector`, где потеря настройки изменила бы
+        # режим работы.
+        created_at=str(raw.get("created_at") or "").strip(),
+        updated_at=str(raw.get("updated_at") or "").strip(),
     )
 
 
@@ -263,11 +307,23 @@ def parse_registry(payload: object) -> SourceRegistry:
 
     sources: list[Source] = []
     seen: set[str] = set()
+    # Два активных источника с одним адресом дали бы двойной сбор и двойной
+    # счёт сигналов, поэтому это ошибка файла, а не мелочь. Выключенная копия
+    # допустима: так живут кандидаты рядом с работающим источником.
+    seen_addresses: dict[str, str] = {}
     for index, raw in enumerate(raw_sources, start=1):
         source = _parse_source(raw, index=index, schema_version=schema_version)
         if source.id in seen:
             raise SourceRegistryError(f"дублирующийся id источника: '{source.id}'")
         seen.add(source.id)
+        if source.enabled and source.identity_key:
+            previous = seen_addresses.get(source.identity_key)
+            if previous is not None:
+                raise SourceRegistryError(
+                    f"источник '{source.id}' повторяет адрес активного "
+                    f"источника '{previous}': {source.target}"
+                )
+            seen_addresses[source.identity_key] = source.id
         sources.append(source)
 
     return SourceRegistry(sources=tuple(sources))
@@ -276,12 +332,15 @@ def parse_registry(payload: object) -> SourceRegistry:
 def load_registry(path: Optional[Path] = None, *, use_cache: bool = True) -> SourceRegistry:
     """Читает реестр источников из data-файла.
 
-    По умолчанию используется `config/sources.json`. Ошибки чтения и
-    валидации поднимаются как `SourceRegistryError` — тихо подставлять
-    пустой список нельзя: молчаливо пустой реестр выглядел бы как
+    Без явного пути читается активный реестр (`active_registry_path()`):
+    рабочее состояние, если оно уже развёрнуто, иначе seed. Так UI, сбор и
+    консольные скрипты всегда видят один и тот же набор источников.
+
+    Ошибки чтения и валидации поднимаются как `SourceRegistryError` — тихо
+    подставлять пустой список нельзя: молчаливо пустой реестр выглядел бы как
     «источников нет», хотя на самом деле сломан файл.
     """
-    registry_path = Path(path) if path is not None else DEFAULT_REGISTRY_PATH
+    registry_path = Path(path) if path is not None else active_registry_path()
 
     try:
         stat = registry_path.stat()

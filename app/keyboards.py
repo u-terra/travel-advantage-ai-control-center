@@ -26,9 +26,14 @@ BTN_V2_CLIENT_REPLY = "💬 Ответить клиенту"
 BTN_V2_CONTENT_PLAN = "📅 Контент-план"
 BTN_V2_CHECK_TEXT = "🛡 Проверить и улучшить текст"
 BTN_V2_MATERIALS = "📚 Мои материалы"
+BTN_V2_SOURCES = "📚 Источники"
 BTN_V2_PROFILE = "⚙️ Профиль"
 BTN_V2_HELP = "ℹ️ Помощь"
 BTN_V2_MAIN_MENU = "⬅️ Главное меню"
+
+SOURCE_TOGGLE_PREFIX = "source_toggle:"
+SOURCE_REGISTRY_ADD = "source_registry:add"
+SOURCE_REGISTRY_REFRESH = "source_registry:refresh"
 
 SOURCE_MATERIAL_PREFIX = "source_material:"
 SOURCE_MATERIAL_FORMAT_PREFIX = "source_material_format:"
@@ -89,6 +94,7 @@ def v2_main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_V2_CONTENT_PLAN)],
             [KeyboardButton(text=BTN_V2_CHECK_TEXT)],
             [KeyboardButton(text=BTN_V2_MATERIALS)],
+            [KeyboardButton(text=BTN_V2_SOURCES)],
             [KeyboardButton(text=BTN_V2_PROFILE)],
             [KeyboardButton(text=BTN_V2_HELP)],
         ],
@@ -194,6 +200,36 @@ def free_text_review_keyboard() -> InlineKeyboardMarkup:
             text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
         )],
     ])
+
+
+def sources_registry_keyboard(
+    sources: tuple[tuple[str, str, bool], ...],
+) -> InlineKeyboardMarkup:
+    """Список источников: кнопка на источник переключает enabled.
+
+    Принимает готовые тройки (id, подпись, включён) — клавиатура не знает ни
+    про реестр, ни про конкретные каналы.
+    """
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=f"{'🟢' if enabled else '⚪️'} {title}",
+                callback_data=f"{SOURCE_TOGGLE_PREFIX}{source_id}",
+            )
+        ]
+        for source_id, title, enabled in sources
+    ]
+    rows.append(
+        [InlineKeyboardButton(
+            text="➕ Добавить источник", callback_data=SOURCE_REGISTRY_ADD
+        )]
+    )
+    rows.append(
+        [InlineKeyboardButton(
+            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def web_resources_keyboard() -> InlineKeyboardMarkup:

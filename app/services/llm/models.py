@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.domain.content_intelligence import MaterialClassification
+
 
 @dataclass(frozen=True)
 class ContentDraft:
@@ -48,3 +50,8 @@ class SourceAnalysisPayload:
     content_angles: tuple[str, ...]
     recommended_formats: tuple[str, ...]
     warnings: tuple[str, ...]
+    # Необязательное дополнение (Content Intelligence v1): род материала и
+    # предлагаемое действие. Поле со значением по умолчанию — существующие
+    # адаптеры провайдеров и их тесты продолжают работать без изменений,
+    # а дубликата контракта разбора источника не появляется.
+    classification: MaterialClassification | None = None

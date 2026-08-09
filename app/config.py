@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from app.access import parse_allowed_user_ids
 from app.services.llm.factory import normalize_provider_name
+from app.services.source_registry import runtime_registry_path
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,9 @@ class Settings:
     content_factory_token: str
     content_factory_timeout_seconds: float
     lead_radar_db_path: Path
+    # Рабочий файл реестра источников. Отдельно от стартового набора в
+    # config/sources.json: деплой не должен затирать добавленные источники.
+    sources_registry_path: Path
     v2_menu_enabled: bool
 
 
@@ -89,5 +93,9 @@ def load_settings() -> Settings:
         content_factory_token=cf_token,
         content_factory_timeout_seconds=cf_timeout,
         lead_radar_db_path=Path(lr_db_path_raw),
+        # Значение по умолчанию (data/sources.json) и переменная
+        # SOURCE_REGISTRY_PATH определены в одном месте — в самом реестре,
+        # чтобы консольные скрипты видели тот же путь без сборки Settings.
+        sources_registry_path=runtime_registry_path(),
         v2_menu_enabled=v2_menu_enabled,
     )

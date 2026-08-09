@@ -16,6 +16,7 @@ from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
 from app.services.llm.base import LLMProvider
 from app.services.llm.factory import create_llm_provider
+from app.services.source_registry_store import SourceRegistryStore
 from app.storage import Journal
 
 
@@ -28,6 +29,7 @@ def _build_dispatcher(
     partner_repository: PartnerRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
     source_analysis_repository: SourceAnalysisRepository | None = None,
+    source_registry_store: SourceRegistryStore | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -47,6 +49,7 @@ def _build_dispatcher(
     dp["partner_repository"] = partner_repository
     dp["artifact_repository"] = artifact_repository
     dp["source_analysis_repository"] = source_analysis_repository
+    dp["source_registry_store"] = source_registry_store or SourceRegistryStore()
     return dp
 
 
@@ -69,6 +72,12 @@ async def _async_main() -> None:
 
     source_analysis_repository = SourceAnalysisRepository(settings.journal_db_path)
     await source_analysis_repository.initialize()
+
+    # Первый запуск разворачивает рабочий реестр из стартового набора.
+    # Существующий файл не трогается: источники, добавленные владельцем,
+    # переживают обновление кода.
+    source_registry_store = SourceRegistryStore(settings.sources_registry_path)
+    await asyncio.to_thread(source_registry_store.ensure_bootstrapped)
 
     content_factory_config = ContentFactoryConfig(
         url=settings.content_factory_url,
@@ -96,6 +105,7 @@ async def _async_main() -> None:
         partner_repository,
         artifact_repository,
         source_analysis_repository,
+        source_registry_store,
     )
 
     await dp.start_polling(bot)
