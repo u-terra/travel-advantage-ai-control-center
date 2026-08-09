@@ -456,3 +456,11 @@ def test_unit_tests_never_reach_a_real_llm() -> None:
         )
 
     provider.analyze_source.assert_called_once_with(source_text="Материал")
+
+
+def test_instruction_distinguishes_review_mention_from_real_review() -> None:
+    assert "сам отзыв" in CLASSIFICATION_INSTRUCTION
+    assert "конкретная история клиента" in CLASSIFICATION_INSTRUCTION
+    assert "упоминание" in CLASSIFICATION_INSTRUCTION
+    assert "без самого отзыва" in CLASSIFICATION_INSTRUCTION
+    assert "относится к noise" in CLASSIFICATION_INSTRUCTION
