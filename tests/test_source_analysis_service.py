@@ -29,7 +29,12 @@ def test_analysis_contract_url_headers_payload_timeout_and_normalization():
     request = call.call_args.args[0]
     assert request.full_url == "http://factory/internal/analyze-source"
     assert request.get_header("X-internal-token") == "secret-token"
-    assert json.loads(request.data) == {"source_text": "Новость", "source_type": "text"}
+    body = json.loads(request.data)
+    # Материал и инструкция классификации — разные поля запроса, склеивать их
+    # нельзя. Подробности контракта — в tests/test_source_analysis_classification.py.
+    assert body["source_text"] == "Новость"
+    assert body["source_type"] == "text"
+    assert set(body) == {"source_text", "source_type", "classification"}
     assert call.call_args.kwargs["timeout"] == 7.5
     assert call.call_count == 1
     assert result.summary == "Итог" and result.key_facts == ("факт",)

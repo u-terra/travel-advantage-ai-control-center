@@ -17,6 +17,11 @@ from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass
 from typing import Optional
 
+from app.domain.content_intelligence import classification_from_payload
+from app.services.classification_contract import (
+    CLASSIFICATION_KEY,
+    build_classification_request,
+)
 from app.services.llm.models import (
     ContentDraft,
     SourceAnalysisPayload,
@@ -88,7 +93,14 @@ def analyze_source_sync(
     req = urllib.request.Request(
         endpoint,
         data=json.dumps(
-            {"source_text": source_text, "source_type": "text"},
+            {
+                "source_text": source_text,
+                "source_type": "text",
+                # Инструкция едет ОТДЕЛЬНЫМ полем от материала. Склеивать их
+                # в один текст нельзя: тогда содержимое источника попало бы
+                # туда же, где лежат указания модели.
+                CLASSIFICATION_KEY: build_classification_request(),
+            },
             ensure_ascii=False,
         ).encode("utf-8"),
         method="POST",
@@ -107,7 +119,10 @@ def analyze_source_sync(
     if type(data) is not dict or data.get("ok") is not True:
         return None
     analysis = data.get("analysis")
-    if type(analysis) is not dict or frozenset(analysis) != _ANALYSIS_KEYS:
+    # Обязательные поля должны быть все; лишние — игнорируются. Раньше здесь
+    # стояло точное совпадение набора ключей, и любое расширение ответа
+    # роняло разбор источника целиком, хотя текстовая часть была исправна.
+    if type(analysis) is not dict or not _ANALYSIS_KEYS <= frozenset(analysis):
         return None
     summary = analysis["summary"]
     audience_value = analysis["audience_value"]
@@ -126,6 +141,9 @@ def analyze_source_sync(
         content_angles=parsed["content_angles"] or (),
         recommended_formats=parsed["recommended_formats"] or (),
         warnings=parsed["warnings"] or (),
+        # Сломанная или отсутствующая классификация — это None, а не отказ от
+        # разбора: текстовый анализ остаётся доступным владельцу.
+        classification=classification_from_payload(analysis.get(CLASSIFICATION_KEY)),
     )
 
 

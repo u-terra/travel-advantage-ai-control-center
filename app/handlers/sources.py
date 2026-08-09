@@ -53,7 +53,7 @@ _ADD_PROMPT = (
 )
 
 _UNAVAILABLE = (
-    "Реестр источников сейчас недоступен. Проверьте файл config/sources.json."
+    "Реестр источников сейчас недоступен. Попробуйте ещё раз позже."
 )
 
 
@@ -81,9 +81,7 @@ def _summary(sources: tuple[Source, ...]) -> str:
     ]
     if len(sources) > _LIST_LIMIT:
         lines.append("")
-        lines.append(
-            f"Показаны первые {_LIST_LIMIT}. Полный список — в config/sources.json."
-        )
+        lines.append(f"Показаны первые {_LIST_LIMIT} источников.")
     return "\n".join(lines)
 
 

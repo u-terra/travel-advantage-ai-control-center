@@ -17,7 +17,7 @@ provider layer. Классификация появляется рядом с у
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 
 # ── Род материала ────────────────────────────────────────────────────────────
 
@@ -149,3 +149,34 @@ class MaterialClassification:
             rationale=(rationale or "").strip(),
             source_id=(source_id or "").strip(),
         )
+
+
+def _text(value: Any) -> str:
+    """Строка или пустота. Числа, словари и None не должны ронять разбор."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def classification_from_payload(
+    value: Any, *, source_id: str = ""
+) -> Optional[MaterialClassification]:
+    """Разбирает блок ``classification`` из ответа провайдера. Fail-closed.
+
+    Здесь, а не в адаптере: формат блока — часть контракта Content
+    Intelligence, а не особенность OpenAI. Второй провайдер переиспользует эту
+    же функцию вместо копии разбора.
+
+    ``None`` возвращается на любом непонятном входе — не тот тип, отсутствует
+    род материала, неизвестное значение. Разбор источника от этого не
+    страдает: классификация необязательна и просто не появится.
+
+    Имя действия принимается и как ``recommended_action`` (так оно называется
+    в контракте запроса), и как ``action`` (так оно называется в модели).
+    """
+    if not isinstance(value, Mapping):
+        return None
+    return MaterialClassification.from_raw(
+        kind=_text(value.get("kind")),
+        action=_text(value.get("recommended_action")) or _text(value.get("action")),
+        rationale=_text(value.get("reason")) or _text(value.get("rationale")),
+        source_id=source_id,
+    )

@@ -102,7 +102,10 @@ async def receive_source_text(
         analysis = await source_analysis_repository.save_successful_analysis(
             workspace.id, source.id, payload
         )
-        card = source_analysis_card(analysis)
+        # Классификация приходит вместе с разбором и показывается сразу.
+        # В базе её нет: хранить род материала имеет смысл тогда, когда
+        # появятся кнопки действий, а не раньше.
+        card = source_analysis_card(analysis, classification=payload.classification)
         await message.answer(card, reply_markup=analyzed_source_keyboard(source.id))
     except Exception:
         log.warning("source_analysis: processing failed")

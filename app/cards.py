@@ -1,9 +1,56 @@
 from __future__ import annotations
 
 from app.domain.content import SourceAnalysis
+from app.domain.content_intelligence import (
+    ACTION_ADAPT,
+    ACTION_GENERATE_TOPICS,
+    ACTION_MAKE_POST,
+    ACTION_MAKE_SCRIPT,
+    ACTION_OBSERVE,
+    ACTION_SKIP,
+    KIND_CASE_OR_REVIEW,
+    KIND_COMPETITOR_SIGNAL,
+    KIND_NEWS,
+    KIND_NOISE,
+    KIND_POST_IDEA,
+    KIND_SCRIPT_IDEA,
+    MaterialClassification,
+)
+
+# Владелец читает человеческие формулировки, а не значения контракта.
+MATERIAL_KIND_LABELS: dict[str, str] = {
+    KIND_NEWS: "новость",
+    KIND_POST_IDEA: "идея для поста",
+    KIND_SCRIPT_IDEA: "идея для сценария",
+    KIND_CASE_OR_REVIEW: "кейс или отзыв",
+    KIND_COMPETITOR_SIGNAL: "сигнал рынка или конкурента",
+    KIND_NOISE: "малополезный материал",
+}
+
+MATERIAL_ACTION_LABELS: dict[str, str] = {
+    ACTION_MAKE_POST: "сделать пост",
+    ACTION_MAKE_SCRIPT: "сделать сценарий",
+    ACTION_GENERATE_TOPICS: "дать темы",
+    ACTION_ADAPT: "адаптировать под Travel Advantage",
+    ACTION_OBSERVE: "наблюдать",
+    ACTION_SKIP: "пропустить",
+}
 
 
-def source_analysis_card(analysis: SourceAnalysis, limit: int = 3900) -> str:
+def _classification_block(classification: MaterialClassification) -> str:
+    # Незнакомое значение показывается как есть: без подписи владелец увидит
+    # хотя бы контрактное имя, а не пустую строку.
+    kind = MATERIAL_KIND_LABELS.get(classification.kind, classification.kind)
+    action = MATERIAL_ACTION_LABELS.get(classification.action, classification.action)
+    return f"Тип: {kind}\nРекомендация: {action}"
+
+
+def source_analysis_card(
+    analysis: SourceAnalysis,
+    limit: int = 3900,
+    *,
+    classification: MaterialClassification | None = None,
+) -> str:
     sections: list[tuple[str, str | tuple[str, ...]]] = [
         ("Кратко:", analysis.summary),
         ("Что важно:", analysis.key_facts),
@@ -31,6 +78,10 @@ def source_analysis_card(analysis: SourceAnalysis, limit: int = 3900) -> str:
 
     warning = next((block for block, is_warning in blocks if is_warning), None)
     parts = ["🔎 Анализ источника"]
+    # Сразу после заголовка и до текстового разбора: это ответ на вопрос «что
+    # с этим делать», и он не должен пострадать от обрезки по лимиту.
+    if classification is not None:
+        parts.append(_classification_block(classification))
     for block, is_warning in blocks:
         if is_warning:
             continue

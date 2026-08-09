@@ -124,6 +124,23 @@ def test_empty_registry_does_not_break_the_screen(store: SourceRegistryStore) ->
     assert SOURCE_REGISTRY_ADD in _callback_data(message.answers[0][1]["reply_markup"])
 
 
+def test_long_list_does_not_send_the_owner_to_the_seed_file(
+    store: SourceRegistryStore,
+) -> None:
+    # Рабочий реестр давно живёт не в config/sources.json, и подсказка про
+    # «полный список» уводила владельца не туда.
+    for index in range(21):
+        store.add(f"https://example.com/{index}")
+
+    message = Message(BTN_V2_SOURCES)
+    run(show_sources(message, State(), store))
+
+    text = message.answers[0][0]
+    assert "Показаны первые 20 источников." in text
+    assert "config/sources.json" not in text
+    assert "Полный список" not in text
+
+
 def test_broken_registry_is_reported_without_crashing(tmp_path: Path) -> None:
     path = tmp_path / "sources.json"
     path.write_text("{ broken", encoding="utf-8")
