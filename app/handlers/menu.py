@@ -45,10 +45,11 @@ from app.routing.safety import SafetyLevel
 from app.services.lead_radar import (
     LeadRadarConfig,
     build_summary,
-    fetch_signals_sync,
+    build_workspace_signals,
     route_card,
     unavailable_summary,
 )
+from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.llm.base import LLMProvider
 from app.storage import Journal
 
@@ -121,7 +122,7 @@ def _radar_content_keyboard(
             [
                 InlineKeyboardButton(
                     text=f"📝 {index}. {_short_title(idea['title'])}",
-                    callback_data=f"{_RADAR_CONTENT_PREFIX}{index - 1}",
+                    callback_data=f"{_RADAR_CONTENT_PREFIX}{idea['interpretation_id']}",
                 )
             ]
             for index, idea in enumerate(ideas, start=1)
@@ -148,6 +149,7 @@ def _build_radar_content_task(idea: dict[str, str]) -> str:
 def _radar_content_ideas(signals) -> list[dict[str, str]]:
     return [
         {
+            "interpretation_id": str(signal.id),
             "title": signal.title,
             "reason": signal.action_reason,
             "url": signal.url,
@@ -250,10 +252,19 @@ async def on_find_signals(
     message: Message,
     state: FSMContext,
     lead_radar_config: LeadRadarConfig,
+    workspace_signal_repository: WorkspaceSignalRepository,
+    workspace_context: WorkspaceContext | None,
 ) -> None:
     await state.clear()
+    if workspace_context is None:
+        await message.answer("Рабочее пространство недоступно.", reply_markup=main_menu())
+        return
     await message.answer(route_card(), reply_markup=main_menu())
-    signals = await asyncio.to_thread(fetch_signals_sync, lead_radar_config, limit=5)
+    await workspace_signal_repository.sync_eligible()
+    records = await workspace_signal_repository.list_for_workspace(
+        workspace_context.workspace_id, limit=200
+    )
+    signals = build_workspace_signals(lead_radar_config, records, limit=5)
     if signals is None:
         await message.answer(unavailable_summary())
         return
@@ -264,7 +275,6 @@ async def on_find_signals(
     if not ideas:
         return
 
-    await state.update_data(radar_content_ideas=ideas)
     await message.answer(
         "💡 Выберите идею, чтобы подготовить черновик Telegram-поста. "
         "Ничего не публикуется автоматически.",
@@ -280,10 +290,12 @@ async def on_radar_content_selected(
     journal: Journal,
     llm_provider: LLMProvider,
     workspace_context: WorkspaceContext | None,
+    workspace_signal_repository: WorkspaceSignalRepository,
+    lead_radar_config: LeadRadarConfig,
 ) -> None:
     raw_data = callback.data or ""
     try:
-        index = int(raw_data.removeprefix(_RADAR_CONTENT_PREFIX))
+        interpretation_id = int(raw_data.removeprefix(_RADAR_CONTENT_PREFIX))
     except ValueError:
         await callback.answer(
             "Не удалось определить выбранную идею.",
@@ -291,28 +303,28 @@ async def on_radar_content_selected(
         )
         return
 
-    state_data = await state.get_data()
-    ideas = state_data.get("radar_content_ideas") or []
-    if not isinstance(ideas, list) or index < 0 or index >= len(ideas):
-        await callback.answer(
-            "Выбор уже устарел. Нажмите «📡 Найти сигналы интереса» ещё раз.",
-            show_alert=True,
-        )
-        return
-
-    idea = ideas[index]
-    if not isinstance(idea, dict):
-        await callback.answer(
-            "Не удалось прочитать выбранную идею.",
-            show_alert=True,
-        )
-        return
     if workspace_context is None:
         await callback.answer("Рабочее пространство недоступно.", show_alert=True)
         return
 
+    record = await workspace_signal_repository.get_for_workspace(
+        workspace_context.workspace_id, interpretation_id
+    )
+    if record is None:
+        await callback.answer("Сигнал недоступен.", show_alert=True)
+        return
+    authorized = build_workspace_signals(lead_radar_config, [record], limit=1)
+    if not authorized:
+        await callback.answer("Сигнал недоступен.", show_alert=True)
+        return
+    signal = authorized[0]
+    idea = {
+        "title": signal.title,
+        "reason": signal.action_reason,
+        "url": signal.url,
+    }
+
     task_text = _build_radar_content_task(idea)
-    await state.update_data(radar_content_ideas=[])
 
     await callback.answer("Готовлю черновик…")
     if callback.message is not None:

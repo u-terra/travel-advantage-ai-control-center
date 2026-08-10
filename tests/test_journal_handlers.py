@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.domain.partners import WorkspaceContext
-from app.handlers.menu import on_last_task, on_radar_content_selected
+from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected
 from app.handlers.tasks import on_free_text, on_task_after_button
 from app.services.llm.models import ContentDraft
 from app.storage import JournalEntry
@@ -44,8 +45,8 @@ class State:
 
 
 class Callback:
-    def __init__(self) -> None:
-        self.data = "radar_content:0"
+    def __init__(self, interpretation_id: int = 7) -> None:
+        self.data = f"radar_content:{interpretation_id}"
         self.message = Message()
         self.answers = []
         self.message.edit_reply_markup = AsyncMock()
@@ -56,6 +57,14 @@ class Callback:
 
 def journal():
     return SimpleNamespace(add=AsyncMock(return_value=1), last=AsyncMock())
+
+
+def signal_repository(record=None):
+    return SimpleNamespace(get_for_workspace=AsyncMock(return_value=record))
+
+
+def radar_config():
+    return SimpleNamespace()
 
 
 def test_task_handlers_do_not_write_without_workspace_context() -> None:
@@ -83,9 +92,32 @@ def test_task_handlers_pass_workspace_id_to_journal() -> None:
 def test_radar_handler_does_not_write_without_workspace_context() -> None:
     current_journal = journal()
     state = State({"radar_content_ideas": [{"title": "Тема"}]})
+    repository = signal_repository()
     run(on_radar_content_selected(
-        Callback(), state, current_journal, FakeLLMProvider(), None
+        Callback(), state, current_journal, FakeLLMProvider(), None,
+        repository, radar_config()
     ))
+    current_journal.add.assert_not_awaited()
+    repository.get_for_workspace.assert_not_awaited()
+
+
+def test_find_signals_does_not_read_radar_without_workspace_context() -> None:
+    repository = SimpleNamespace(
+        sync_eligible=AsyncMock(), list_for_workspace=AsyncMock()
+    )
+    run(on_find_signals(Message(), State(), radar_config(), repository, None))
+    repository.sync_eligible.assert_not_awaited()
+    repository.list_for_workspace.assert_not_awaited()
+
+
+def test_foreign_interpretation_callback_fails_closed() -> None:
+    current_journal = journal()
+    repository = signal_repository(None)
+    run(on_radar_content_selected(
+        Callback(88), State(), current_journal, FakeLLMProvider(), context(31),
+        repository, radar_config()
+    ))
+    repository.get_for_workspace.assert_awaited_once_with(31, 88)
     current_journal.add.assert_not_awaited()
 
 
@@ -94,11 +126,29 @@ def test_radar_handler_passes_workspace_id_without_changing_flow() -> None:
     state = State({"radar_content_ideas": [{"title": "Тема"}]})
     provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
     callback = Callback()
+    record = SimpleNamespace(
+        interpretation_id=7, raw_created_at=date.today().isoformat(), source_type="rss",
+        origin_type="publisher_post", ai_score=72.0,
+        ai_category="market_signal", ai_reason="релевантно",
+        item_title="Тема", item_summary="Описание", item_url="https://example.org/1",
+    )
+    repository = signal_repository(record)
 
-    run(on_radar_content_selected(
-        callback, state, current_journal, provider, context(31)
-    ))
+    from unittest.mock import patch
+    with patch("app.services.lead_radar._load_recommender") as load:
+        load.return_value = SimpleNamespace(
+            recommend_action=lambda row: {
+                "recommended_action": "content",
+                "action_reason": "Подходит",
+            },
+            action_label=lambda action: "Создать контент",
+        )
+        run(on_radar_content_selected(
+            callback, state, current_journal, provider, context(31),
+            repository, radar_config()
+        ))
 
+    repository.get_for_workspace.assert_awaited_once_with(31, 7)
     assert current_journal.add.await_args.args == (31,)
     provider.generate_draft.assert_called_once()
     assert "Черновик" in callback.message.answers[-1][0]

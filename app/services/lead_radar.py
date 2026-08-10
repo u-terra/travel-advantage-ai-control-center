@@ -303,6 +303,63 @@ def fetch_signals_sync(
     return actionable[:limit]
 
 
+def build_workspace_signals(
+    config: LeadRadarConfig, records, *, limit: int = _DEFAULT_LIMIT
+) -> Optional[list[LeadSignal]]:
+    """Build display signals only from already workspace-authorized records."""
+    try:
+        recommender = _load_recommender(config)
+    except Exception:
+        log.warning("lead_radar: failed to load action_recommender")
+        return None
+    recommend_action = getattr(recommender, "recommend_action", None)
+    action_label_fn = getattr(recommender, "action_label", None)
+    if not callable(recommend_action) or not callable(action_label_fn):
+        return None
+
+    signals: list[LeadSignal] = []
+    for record in records:
+        row = {
+            "created_at": record.raw_created_at,
+            "source_type": record.source_type,
+            "origin_type": record.origin_type,
+            "ai_score": record.ai_score,
+            "ai_category": record.ai_category,
+            "ai_reason": record.ai_reason,
+            "item_title": record.item_title,
+            "item_summary": record.item_summary,
+            "item_url": record.item_url,
+        }
+        if not _is_allowed_row(row):
+            continue
+        try:
+            info = recommend_action(row)
+        except Exception:
+            continue
+        action = (info or {}).get("recommended_action") or ""
+        if action not in _ACTION_PRIORITY:
+            continue
+        try:
+            label = action_label_fn(action) or action
+        except Exception:
+            label = action
+        signals.append(LeadSignal(
+            id=record.interpretation_id,
+            created_at=record.raw_created_at,
+            source_type=record.source_type,
+            score=_to_float(record.ai_score),
+            category=record.ai_category or "",
+            title=record.item_title,
+            url=record.item_url,
+            recommended_action=action,
+            action_label=str(label),
+            action_reason=str((info or {}).get("action_reason") or "").strip(),
+        ))
+    signals.sort(key=lambda signal: signal.created_at, reverse=True)
+    signals.sort(key=lambda signal: _ACTION_PRIORITY[signal.recommended_action])
+    return signals[: max(1, min(limit, _MAX_LIMIT))]
+
+
 def _to_float(value) -> Optional[float]:
     if value is None or value == "":
         return None

@@ -13,6 +13,7 @@ from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.source_catalog_repository import SourceCatalogRepository
+from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
 from app.services.llm.base import LLMProvider
@@ -32,6 +33,7 @@ def _build_dispatcher(
     artifact_repository: ArtifactRepository | None = None,
     source_analysis_repository: SourceAnalysisRepository | None = None,
     source_catalog_repository: SourceCatalogRepository | None = None,
+    workspace_signal_repository: WorkspaceSignalRepository | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -56,6 +58,7 @@ def _build_dispatcher(
     dp["artifact_repository"] = artifact_repository
     dp["source_analysis_repository"] = source_analysis_repository
     dp["source_catalog_repository"] = source_catalog_repository
+    dp["workspace_signal_repository"] = workspace_signal_repository
     return dp
 
 
@@ -96,6 +99,14 @@ async def _async_main() -> None:
         legacy_path=legacy_source_path,
     )
 
+    workspace_signal_repository = WorkspaceSignalRepository(
+        settings.journal_db_path, settings.lead_radar_db_path
+    )
+    await workspace_signal_repository.init(
+        owner_membership.workspace_id if owner_membership is not None else None
+    )
+    await workspace_signal_repository.sync_eligible()
+
     content_factory_config = ContentFactoryConfig(
         url=settings.content_factory_url,
         token=settings.content_factory_token,
@@ -123,6 +134,7 @@ async def _async_main() -> None:
         artifact_repository,
         source_analysis_repository,
         source_catalog_repository,
+        workspace_signal_repository,
     )
 
     await dp.start_polling(bot)
