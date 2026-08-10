@@ -57,9 +57,7 @@ def result(text="Улучшенный"):
 
 
 def deps(workspace=True, artifact=True, version=True):
-    partner = SimpleNamespace(find_workspace_by_telegram_id=AsyncMock(
-        return_value=SimpleNamespace(id=10) if workspace else None
-    ))
+    partner = SimpleNamespace(workspace_id=10) if workspace else None
     repo = SimpleNamespace(
         get_artifact=AsyncMock(return_value=SimpleNamespace(id=20, current_version_id=30) if artifact else None),
         get_current_artifact_version=AsyncMock(return_value=SimpleNamespace(id=30, content="Текущая") if version else None),
@@ -105,7 +103,7 @@ def test_malformed_artifact_callback_fails_closed(data):
     callback, state = Callback(data), State()
     partner, repo = deps()
     run(review_artifact(callback, state, partner, repo, FakeLLMProvider()))
-    partner.find_workspace_by_telegram_id.assert_not_awaited()
+    repo.get_artifact.assert_not_awaited()
     assert callback.answers[-1][1]["show_alert"] is True
 
 
@@ -195,6 +193,7 @@ def test_save_free_text_shows_check_for_created_artifact_and_main_menu():
 
     run(save_free_text(callback, state, partner, repo))
 
+    assert repo.create_artifact_with_initial_version.call_args.args == (10,)
     created_artifact = repo.create_artifact_with_initial_version.return_value[0]
     message_text, kwargs = callback.message.answers[-1]
     callbacks = [

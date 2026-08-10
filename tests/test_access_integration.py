@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery, Message
 from app.access import ACCESS_DENIED_MESSAGE, AllowlistMiddleware
 from app.config import load_settings
 from app.main import _build_dispatcher
+from app.workspace_context import WorkspaceContextMiddleware
 
 OWNER_ID = 586249067
 STRANGER_ID = 111222333
@@ -153,3 +154,26 @@ def test_build_dispatcher_registers_guard_on_both_observers(
     assert len(cb_guards) == 1
     assert msg_guards[0] is cb_guards[0]
     assert msg_guards[0].allowed_user_ids == frozenset({OWNER_ID})
+
+
+def test_workspace_middleware_is_registered_after_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.main.build_router", lambda: __import__(
+        "aiogram"
+    ).Router())
+    repository = MagicMock()
+    dp = _build_dispatcher(
+        frozenset({OWNER_ID}), None, None, None, partner_repository=repository
+    )
+    for observer in (dp.message, dp.callback_query):
+        middlewares = observer.outer_middleware._middlewares
+        guard_index = next(
+            i for i, item in enumerate(middlewares)
+            if isinstance(item, AllowlistMiddleware)
+        )
+        workspace_index = next(
+            i for i, item in enumerate(middlewares)
+            if isinstance(item, WorkspaceContextMiddleware)
+        )
+        assert guard_index < workspace_index

@@ -18,6 +18,7 @@ from app.services.llm.base import LLMProvider
 from app.services.llm.factory import create_llm_provider
 from app.services.source_registry_store import SourceRegistryStore
 from app.storage import Journal
+from app.workspace_context import WorkspaceContextMiddleware
 
 
 def _build_dispatcher(
@@ -39,6 +40,10 @@ def _build_dispatcher(
     guard = AllowlistMiddleware(allowed_user_ids)
     dp.message.outer_middleware(guard)
     dp.callback_query.outer_middleware(guard)
+    if partner_repository is not None:
+        workspace_context = WorkspaceContextMiddleware(partner_repository)
+        dp.message.outer_middleware(workspace_context)
+        dp.callback_query.outer_middleware(workspace_context)
 
     dp.include_router(build_router())
 
@@ -65,7 +70,7 @@ async def _async_main() -> None:
 
     partner_repository = PartnerRepository(settings.journal_db_path)
     await partner_repository.init()
-    await partner_repository.ensure_owner_workspace(settings.admin_telegram_id)
+    await partner_repository.bootstrap_owner_membership(settings.admin_telegram_id)
 
     artifact_repository = ArtifactRepository(settings.journal_db_path)
     await artifact_repository.init()

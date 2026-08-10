@@ -358,9 +358,7 @@ class _Message:
 
 
 def _dependencies():
-    partner = SimpleNamespace(
-        find_workspace_by_telegram_id=AsyncMock(return_value=SimpleNamespace(id=10))
-    )
+    partner = SimpleNamespace(workspace_id=10)
     artifacts = SimpleNamespace(create_source=AsyncMock(return_value=SimpleNamespace(id=20)))
     analyses = SimpleNamespace(
         save_successful_analysis=AsyncMock(return_value=_analysis())

@@ -17,9 +17,9 @@ from app.keyboards import (
     v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
-from app.repositories.partner_repository import PartnerRepository
 from app.services.llm.base import LLMProvider
 from app.services.llm.models import TextCheckResult
+from app.domain.partners import WorkspaceContext
 
 router = Router(name="text_review")
 log = logging.getLogger(__name__)
@@ -53,13 +53,6 @@ def _card(result: TextCheckResult) -> str:
         lines.extend(["", "Существенных замечаний нет. Текущую версию можно оставить."])
     lines.extend(["", _WARNING])
     return "\n".join(lines)
-
-
-async def _workspace(message_or_callback, repository: PartnerRepository):
-    user = message_or_callback.from_user
-    if user is None:
-        return None
-    return await repository.find_workspace_by_telegram_id(user.id)
 
 
 @router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_CHECK_TEXT)
@@ -98,14 +91,14 @@ async def review_free_text(
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(ARTIFACT_CHECK_PREFIX))
 async def review_artifact(
     callback: CallbackQuery, state: FSMContext,
-    partner_repository: PartnerRepository, artifact_repository: ArtifactRepository,
+    workspace_context: WorkspaceContext | None,
+    artifact_repository: ArtifactRepository,
     llm_provider: LLMProvider,
 ) -> None:
     artifact_id = _positive_id(callback.data or "", ARTIFACT_CHECK_PREFIX)
-    workspace = None if artifact_id is None else await _workspace(callback, partner_repository)
-    artifact = None if workspace is None else await artifact_repository.get_artifact(workspace.id, artifact_id)
-    version = None if artifact is None else await artifact_repository.get_current_artifact_version(workspace.id, artifact_id)
-    if artifact_id is None or workspace is None or artifact is None or version is None or artifact.current_version_id != version.id:
+    artifact = None if artifact_id is None or workspace_context is None else await artifact_repository.get_artifact(workspace_context.workspace_id, artifact_id)
+    version = None if artifact is None else await artifact_repository.get_current_artifact_version(workspace_context.workspace_id, artifact_id)
+    if artifact_id is None or workspace_context is None or artifact is None or version is None or artifact.current_version_id != version.id:
         await callback.answer("Материал недоступен.", show_alert=True)
         return
     if callback.message is None:
@@ -135,7 +128,8 @@ async def review_artifact(
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(ARTIFACT_REVIEW_SAVE_PREFIX))
 async def save_artifact_review(
     callback: CallbackQuery, state: FSMContext,
-    partner_repository: PartnerRepository, artifact_repository: ArtifactRepository,
+    workspace_context: WorkspaceContext | None,
+    artifact_repository: ArtifactRepository,
 ) -> None:
     artifact_id = _positive_id(callback.data or "", ARTIFACT_REVIEW_SAVE_PREFIX)
     data = await state.get_data()
@@ -150,13 +144,12 @@ async def save_artifact_review(
     ):
         await callback.answer("Проверка устарела. Запустите её снова.", show_alert=True)
         return
-    workspace = await _workspace(callback, partner_repository)
-    if workspace is None:
+    if workspace_context is None:
         await callback.answer("Материал недоступен.", show_alert=True)
         return
     try:
         version = await artifact_repository.add_artifact_version_if_current(
-            workspace.id, artifact_id, expected_version_id, reviewed_text,
+            workspace_context.workspace_id, artifact_id, expected_version_id, reviewed_text,
             generation_note="Safety Layer: улучшенная версия",
         )
     except Exception:
@@ -180,17 +173,17 @@ async def keep_artifact(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data == TEXT_REVIEW_SAVE)
 async def save_free_text(
     callback: CallbackQuery, state: FSMContext,
-    partner_repository: PartnerRepository, artifact_repository: ArtifactRepository,
+    workspace_context: WorkspaceContext | None,
+    artifact_repository: ArtifactRepository,
 ) -> None:
     data = await state.get_data()
     text = data.get("reviewed_text")
-    workspace = await _workspace(callback, partner_repository)
-    if not isinstance(text, str) or not text.strip() or workspace is None:
+    if not isinstance(text, str) or not text.strip() or workspace_context is None:
         await callback.answer("Результат недоступен. Запустите проверку снова.", show_alert=True)
         return
     try:
         artifact, _ = await artifact_repository.create_artifact_with_initial_version(
-            workspace.id, artifact_type="other", title="Проверенный текст",
+            workspace_context.workspace_id, artifact_type="other", title="Проверенный текст",
             content=text, generation_note="Safety Layer: проверка текста",
         )
     except Exception:

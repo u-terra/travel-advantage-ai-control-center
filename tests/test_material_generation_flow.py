@@ -51,9 +51,7 @@ def analysis(source_id=20, workspace_id=10):
 
 
 def dependencies(*, workspace=True, source=True, analyzed=True):
-    partner = SimpleNamespace(find_workspace_by_telegram_id=AsyncMock(
-        return_value=SimpleNamespace(id=10) if workspace else None
-    ))
+    partner = SimpleNamespace(workspace_id=10) if workspace else None
     source_value = SimpleNamespace(
         id=20, workspace_id=10, original_text="Исходный текст", title="Источник"
     ) if source else None
@@ -85,7 +83,7 @@ def test_malformed_source_callback_fails_closed(data):
     partner, artifacts, analyses = dependencies()
     run(choose_material_format(callback, partner, artifacts, analyses))
     assert callback.answers[-1][1]["show_alert"] is True
-    partner.find_workspace_by_telegram_id.assert_not_awaited()
+    artifacts.get_source.assert_not_awaited()
 
 
 @pytest.mark.parametrize("workspace,source,analyzed", [
@@ -127,7 +125,7 @@ def test_unsupported_or_malformed_format_never_calls_dependencies(data):
     run(generate_source_material(
         callback, partner, artifacts, analyses, FakeLLMProvider()
     ))
-    partner.find_workspace_by_telegram_id.assert_not_awaited()
+    artifacts.get_source.assert_not_awaited()
     artifacts.create_artifact_with_initial_version.assert_not_awaited()
 
 
@@ -162,6 +160,7 @@ def test_generation_calls_factory_once_then_saves_linked_artifact(output_format)
     assert generate.call_args.kwargs["mode"] == "ai"
     assert "Исходный текст" in generate.call_args.kwargs["source_text"]
     artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    assert artifacts.create_artifact_with_initial_version.call_args.args == (10,)
     kwargs = artifacts.create_artifact_with_initial_version.call_args.kwargs
     assert kwargs["source_id"] == 20 and kwargs["content"] == "Черновик"
     assert "✍️ Черновик материала" in callback.message.answers[-1][0]

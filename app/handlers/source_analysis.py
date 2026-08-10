@@ -19,9 +19,9 @@ from app.keyboards import (
     v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
-from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.services.llm.base import LLMProvider
+from app.domain.partners import WorkspaceContext
 
 router = Router(name="source_analysis")
 log = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ async def start_source_analysis(message: Message, state: FSMContext) -> None:
 async def receive_source_text(
     message: Message,
     state: FSMContext,
-    partner_repository: PartnerRepository,
+    workspace_context: WorkspaceContext | None,
     artifact_repository: ArtifactRepository,
     source_analysis_repository: SourceAnalysisRepository,
     llm_provider: LLMProvider,
@@ -72,22 +72,20 @@ async def receive_source_text(
     if len(text) > 12_000:
         await message.answer("Текст слишком длинный. Максимум — 12 000 символов.", reply_markup=v2_back_keyboard())
         return
-    if message.from_user is None:
+    if workspace_context is None:
         await state.clear()
-        await message.answer("Не удалось определить рабочее пространство.")
+        await message.answer(
+            "Рабочее пространство не найдено. Обратитесь к владельцу сервиса."
+        )
         return
     await state.set_state(AnalyzeSource.processing)
     source = None
     analysis = None
     try:
-        workspace = await partner_repository.find_workspace_by_telegram_id(message.from_user.id)
-        if workspace is None:
-            await message.answer("Рабочее пространство не найдено. Обратитесь к владельцу сервиса.")
-            return
         first_line = next((line.strip() for line in text.splitlines() if line.strip()), "Источник")
         title = first_line if len(first_line) <= 120 else first_line[:119].rstrip() + "…"
         source = await artifact_repository.create_source(
-            workspace.id, source_type="text", original_url=None,
+            workspace_context.workspace_id, source_type="text", original_url=None,
             original_text=text, title=title, status="new",
         )
         payload = await asyncio.to_thread(
@@ -100,7 +98,7 @@ async def receive_source_text(
             )
             return
         analysis = await source_analysis_repository.save_successful_analysis(
-            workspace.id, source.id, payload
+            workspace_context.workspace_id, source.id, payload
         )
         # Классификация приходит вместе с разбором и показывается сразу.
         # В базе её нет: хранить род материала имеет смысл тогда, когда

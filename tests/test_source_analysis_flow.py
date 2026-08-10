@@ -82,7 +82,7 @@ def test_processing_state_swallows_repeated_text_before_general_tasks():
 
 
 def dependencies(workspace=True):
-    partner = SimpleNamespace(find_workspace_by_telegram_id=AsyncMock(return_value=SimpleNamespace(id=10) if workspace else None))
+    partner = SimpleNamespace(workspace_id=10) if workspace else None
     source = SimpleNamespace(id=20)
     artifacts = SimpleNamespace(create_source=AsyncMock(return_value=source))
     analyses = SimpleNamespace(save_successful_analysis=AsyncMock(return_value=SimpleNamespace(
@@ -135,6 +135,7 @@ def test_success_creates_source_before_ai_and_saves_analysis_without_artifact_or
     run(receive_source_text(message, state, partner, artifacts, analyses, provider))
     analyze = provider.analyze_source
     artifacts.create_source.assert_awaited_once()
+    assert artifacts.create_source.call_args.args == (10,)
     assert artifacts.create_source.call_args.kwargs == {
         "source_type": "text", "original_url": None,
         "original_text": "Заголовок\nТекст", "title": "Заголовок", "status": "new",
@@ -149,13 +150,11 @@ def test_success_creates_source_before_ai_and_saves_analysis_without_artifact_or
 
 
 def test_repository_and_pre_source_exceptions_clear_processing_state():
-    cases = ("partner", "source", "analysis")
+    cases = ("source", "analysis")
     for failure in cases:
         message, state = Message("Текст"), State()
         partner, artifacts, analyses = dependencies()
-        if failure == "partner":
-            partner.find_workspace_by_telegram_id.side_effect = RuntimeError("internal")
-        elif failure == "source":
+        if failure == "source":
             artifacts.create_source.side_effect = RuntimeError("internal")
         else:
             analyses.save_successful_analysis.side_effect = RuntimeError("internal")

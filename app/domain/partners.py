@@ -25,3 +25,21 @@ class PartnerProfile:
     created_at: str
     updated_at: str
 
+
+@dataclass(frozen=True)
+class WorkspaceMembership:
+    id: int
+    workspace_id: int
+    telegram_user_id: int
+    role: str
+    status: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class WorkspaceContext:
+    telegram_user_id: int
+    workspace_id: int
+    role: str
+    workspace_status: str

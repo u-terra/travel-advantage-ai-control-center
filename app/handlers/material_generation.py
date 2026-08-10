@@ -19,9 +19,9 @@ from app.keyboards import (
     v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
-from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.services.llm.base import LLMProvider
+from app.domain.partners import WorkspaceContext
 
 router = Router(name="material_generation")
 log = logging.getLogger(__name__)
@@ -62,26 +62,22 @@ def build_source_context(source, analysis, limit: int = 11_000) -> str:
 
 
 async def _owned_source(
-    callback: CallbackQuery,
     source_id: int,
-    partner_repository: PartnerRepository,
+    workspace_context: WorkspaceContext | None,
     artifact_repository: ArtifactRepository,
     source_analysis_repository: SourceAnalysisRepository,
 ):
-    if callback.from_user is None:
-        return None
-    workspace = await partner_repository.find_workspace_by_telegram_id(
-        callback.from_user.id
-    )
-    if workspace is None:
+    if workspace_context is None:
         return None
     analysis = await source_analysis_repository.get_by_source_id(
-        workspace.id, source_id
+        workspace_context.workspace_id, source_id
     )
-    source = await artifact_repository.get_source(workspace.id, source_id)
+    source = await artifact_repository.get_source(
+        workspace_context.workspace_id, source_id
+    )
     if analysis is None or source is None or analysis.source_id != source.id:
         return None
-    return workspace, source, analysis
+    return source, analysis
 
 
 def _parse_source_id(data: str, prefix: str) -> int | None:
@@ -111,14 +107,14 @@ def _draft_messages(output_format: str, text: str, warnings: tuple[str, ...]) ->
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(SOURCE_MATERIAL_PREFIX))
 async def choose_material_format(
     callback: CallbackQuery,
-    partner_repository: PartnerRepository,
+    workspace_context: WorkspaceContext | None,
     artifact_repository: ArtifactRepository,
     source_analysis_repository: SourceAnalysisRepository,
 ) -> None:
     data = callback.data or ""
     source_id = _parse_source_id(data, SOURCE_MATERIAL_PREFIX)
     owned = None if source_id is None else await _owned_source(
-        callback, source_id, partner_repository, artifact_repository,
+        source_id, workspace_context, artifact_repository,
         source_analysis_repository,
     )
     if owned is None:
@@ -135,7 +131,7 @@ async def choose_material_format(
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(SOURCE_MATERIAL_FORMAT_PREFIX))
 async def generate_source_material(
     callback: CallbackQuery,
-    partner_repository: PartnerRepository,
+    workspace_context: WorkspaceContext | None,
     artifact_repository: ArtifactRepository,
     source_analysis_repository: SourceAnalysisRepository,
     llm_provider: LLMProvider,
@@ -147,13 +143,13 @@ async def generate_source_material(
         return
     source_id, output_format = int(parts[0]), parts[1]
     owned = await _owned_source(
-        callback, source_id, partner_repository, artifact_repository,
+        source_id, workspace_context, artifact_repository,
         source_analysis_repository,
     )
     if owned is None:
         await callback.answer("Источник недоступен.", show_alert=True)
         return
-    workspace, source, analysis = owned
+    source, analysis = owned
     if callback.message is None:
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
@@ -170,7 +166,7 @@ async def generate_source_material(
         return
     try:
         artifact, _ = await artifact_repository.create_artifact_with_initial_version(
-            workspace.id,
+            workspace_context.workspace_id,
             artifact_type=_ARTIFACT_TYPE,
             title=f"{SUPPORTED_FORMATS[output_format]}: {source.title}",
             content=draft.text,
