@@ -47,6 +47,7 @@ def analysis(source_id=20, workspace_id=10):
         key_facts=("Факт",), disputed_claims=("Спорное",),
         audience_value="Польза", target_audiences=("Туристы",),
         content_angles=("Обзор",), warnings=("Проверить цену",),
+        recommended_formats=("post",),
     )
 
 
@@ -64,7 +65,8 @@ def dependencies(*, workspace=True, source=True, analyzed=True):
     analyses = SimpleNamespace(get_by_source_id=AsyncMock(
         return_value=analysis() if analyzed else None
     ))
-    return partner, artifacts, analyses
+    profiles = SimpleNamespace(get_business_profile=AsyncMock(return_value=None))
+    return partner, artifacts, analyses, profiles
 
 
 def test_format_buttons_are_scoped_to_source_and_supported_formats_only():
@@ -80,7 +82,7 @@ def test_format_buttons_are_scoped_to_source_and_supported_formats_only():
 @pytest.mark.parametrize("data", ["source_material:x", "source_material:0", "source_material:"])
 def test_malformed_source_callback_fails_closed(data):
     callback = Callback(data)
-    partner, artifacts, analyses = dependencies()
+    partner, artifacts, analyses, _ = dependencies()
     run(choose_material_format(callback, partner, artifacts, analyses))
     assert callback.answers[-1][1]["show_alert"] is True
     artifacts.get_source.assert_not_awaited()
@@ -92,14 +94,14 @@ def test_malformed_source_callback_fails_closed(data):
 def test_missing_workspace_source_or_analysis_fails_closed(workspace, source, analyzed):
     callback = Callback("source_material:20")
     deps = dependencies(workspace=workspace, source=source, analyzed=analyzed)
-    run(choose_material_format(callback, *deps))
+    run(choose_material_format(callback, *deps[:3]))
     assert callback.answers[-1][1]["show_alert"] is True
     assert callback.message.answers == []
 
 
 def test_foreign_workspace_source_is_not_recovered_by_unscoped_id():
     callback = Callback("source_material:20", user_id=2)
-    partner, artifacts, analyses = dependencies()
+    partner, artifacts, analyses, _ = dependencies()
     artifacts.get_source.return_value = None
     analyses.get_by_source_id.return_value = None
     run(choose_material_format(callback, partner, artifacts, analyses))
@@ -111,7 +113,7 @@ def test_foreign_workspace_source_is_not_recovered_by_unscoped_id():
 def test_choose_format_rechecks_owned_source_and_shows_selector():
     callback = Callback("source_material:20")
     deps = dependencies()
-    run(choose_material_format(callback, *deps))
+    run(choose_material_format(callback, *deps[:3]))
     assert callback.message.answers[-1][0] == "Выбери формат материала."
 
 
@@ -121,9 +123,9 @@ def test_choose_format_rechecks_owned_source_and_shows_selector():
 ])
 def test_unsupported_or_malformed_format_never_calls_dependencies(data):
     callback = Callback(data)
-    partner, artifacts, analyses = dependencies()
+    partner, artifacts, analyses, profiles = dependencies()
     run(generate_source_material(
-        callback, partner, artifacts, analyses, FakeLLMProvider()
+        callback, partner, artifacts, analyses, FakeLLMProvider(), profiles
     ))
     artifacts.get_source.assert_not_awaited()
     artifacts.create_artifact_with_initial_version.assert_not_awaited()
@@ -150,15 +152,19 @@ def test_long_draft_is_split_into_telegram_safe_messages_without_data_loss():
 @pytest.mark.parametrize("output_format", ["telegram", "vk"])
 def test_generation_calls_factory_once_then_saves_linked_artifact(output_format):
     callback = Callback(f"source_material_format:20:{output_format}")
-    partner, artifacts, analyses = dependencies()
+    partner, artifacts, analyses, profiles = dependencies()
     provider = FakeLLMProvider(draft=ContentDraft("Черновик", ("Ручная проверка",)))
-    run(generate_source_material(callback, partner, artifacts, analyses, provider))
+    run(generate_source_material(
+        callback, partner, artifacts, analyses, provider, profiles
+    ))
     generate = provider.generate_draft
     assert generate.call_count == 1
     assert generate.call_args.kwargs["material_type"] == "market_offer"
     assert generate.call_args.kwargs["output_format"] == output_format
     assert generate.call_args.kwargs["mode"] == "ai"
-    assert "Исходный текст" in generate.call_args.kwargs["source_text"]
+    request = generate.call_args.kwargs["source_text"]
+    assert "Исходный текст" in request
+    assert "UNTRUSTED SOURCE DATA" in request
     artifacts.create_artifact_with_initial_version.assert_awaited_once()
     assert artifacts.create_artifact_with_initial_version.call_args.args == (10,)
     kwargs = artifacts.create_artifact_with_initial_version.call_args.kwargs
@@ -173,22 +179,33 @@ def test_generation_calls_factory_once_then_saves_linked_artifact(output_format)
 
 def test_ai_failure_creates_no_artifact_and_hides_details():
     callback = Callback("source_material_format:20:telegram")
-    partner, artifacts, analyses = dependencies()
+    partner, artifacts, analyses, profiles = dependencies()
     run(generate_source_material(
-        callback, partner, artifacts, analyses, FakeLLMProvider(draft=None)
+        callback, partner, artifacts, analyses, FakeLLMProvider(draft=None), profiles
     ))
     artifacts.create_artifact_with_initial_version.assert_not_awaited()
     assert "Исходный разбор сохранён" in callback.message.answers[-1][0]
     assert "secret-token" not in callback.message.answers[-1][0]
 
 
+def test_profile_is_not_read_before_successful_tenant_source_authorization():
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies(source=False)
+    run(generate_source_material(
+        callback, partner, artifacts, analyses,
+        FakeLLMProvider(draft=ContentDraft("Черновик", ())), profiles,
+    ))
+    profiles.get_business_profile.assert_not_awaited()
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+
+
 def test_persistence_failure_does_not_show_false_success():
     callback = Callback("source_material_format:20:telegram")
-    partner, artifacts, analyses = dependencies()
+    partner, artifacts, analyses, profiles = dependencies()
     artifacts.create_artifact_with_initial_version.side_effect = RuntimeError("private")
     run(generate_source_material(
         callback, partner, artifacts, analyses,
-        FakeLLMProvider(draft=ContentDraft("Черновик", ())),
+        FakeLLMProvider(draft=ContentDraft("Черновик", ())), profiles,
     ))
     assert len(callback.message.answers) == 1
     assert "Не удалось" in callback.message.answers[0][0]

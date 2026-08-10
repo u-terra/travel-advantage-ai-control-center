@@ -19,7 +19,13 @@ from app.keyboards import (
     v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
+from app.services.material_orchestration import (
+    MaterialOrchestrationService,
+    provider_material_type,
+    render_generation_request,
+)
 from app.services.llm.base import LLMProvider
 from app.domain.partners import WorkspaceContext
 
@@ -135,6 +141,7 @@ async def generate_source_material(
     artifact_repository: ArtifactRepository,
     source_analysis_repository: SourceAnalysisRepository,
     llm_provider: LLMProvider,
+    partner_repository: PartnerRepository,
 ) -> None:
     data = (callback.data or "").removeprefix(SOURCE_MATERIAL_FORMAT_PREFIX)
     parts = data.split(":")
@@ -154,10 +161,19 @@ async def generate_source_material(
         await callback.answer("Сообщение недоступно.", show_alert=True)
         return
     await callback.answer("Готовлю черновик…")
+    spec = await MaterialOrchestrationService(
+        partner_repository
+    ).build_generation_spec(
+        workspace_context.workspace_id,
+        source,
+        analysis,
+        artifact_type=_ARTIFACT_TYPE,
+        output_format=output_format,
+    )
     draft = await asyncio.to_thread(
         llm_provider.generate_draft,
-        source_text=build_source_context(source, analysis),
-        material_type=_MATERIAL_TYPE,
+        source_text=render_generation_request(spec),
+        material_type=provider_material_type(spec),
         output_format=output_format,
         mode=_MODE,
     )

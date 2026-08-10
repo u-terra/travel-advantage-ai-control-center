@@ -51,6 +51,26 @@ def build_content_context(profile: BusinessProfile) -> dict[str, Any]:
     }
 
 
+def build_limited_content_context(profile: BusinessProfile) -> dict[str, Any]:
+    """Project only populated, content-safe fields from an incomplete profile."""
+    context = profile.context
+    values: dict[str, Any] = {
+        "business_name": profile.business_name,
+        "business_type": profile.business_type,
+        "short_description": profile.short_description,
+        "specializations": list(context.specializations),
+        "destinations": list(context.destinations),
+        "audiences": list(context.audiences),
+        "markets": list(context.markets),
+        "communication": _projection_mapping(context.communication),
+    }
+    return {
+        key: filtered
+        for key, value in values.items()
+        if (filtered := _without_empty(value)) not in ("", [], {})
+    }
+
+
 def build_competitor_context(profile: BusinessProfile) -> dict[str, Any]:
     context = profile.context
     return {
@@ -97,6 +117,18 @@ def _projection_mapping(value) -> dict[str, Any]:
         key: list(item) if isinstance(item, tuple) else item
         for key, item in value.items()
     }
+
+
+def _without_empty(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: filtered
+            for key, item in value.items()
+            if (filtered := _without_empty(item)) not in ("", [], {})
+        }
+    if isinstance(value, list):
+        return [item for item in value if item != ""]
+    return value
 
 
 def _require_read(context: WorkspaceContext | None) -> None:
