@@ -60,12 +60,14 @@ def test_schema_creates_tables_in_empty_database(tmp_path: Path) -> None:
 
 def test_schema_is_idempotent_and_preserves_existing_data(tmp_path: Path) -> None:
     db_path = tmp_path / "existing.sqlite3"
-    journal = Journal(db_path)
-    _run(journal.init())
-    entry_id = _run(journal.add("Существующая задача", "content", (), "low"))
     partners = PartnerRepository(db_path)
     _run(partners.init())
     workspace, profile = _run(partners.ensure_owner_workspace(OWNER_ID))
+    journal = Journal(db_path)
+    _run(journal.init(workspace.id))
+    entry_id = _run(
+        journal.add(workspace.id, "Существующая задача", "content", (), "low")
+    )
     repository = ArtifactRepository(db_path)
 
     _run(repository.init())
@@ -79,7 +81,7 @@ def test_schema_is_idempotent_and_preserves_existing_data(tmp_path: Path) -> Non
             )
         }
     assert {"sources", "artifacts", "artifact_versions"} <= tables
-    assert _run(journal.last()).id == entry_id
+    assert _run(journal.last(workspace.id)).id == entry_id
     assert _run(partners.find_workspace_by_telegram_id(OWNER_ID)) == workspace
     assert _run(partners.get_profile(workspace.id)) == profile
 

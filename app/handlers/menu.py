@@ -15,6 +15,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+from app.domain.partners import WorkspaceContext
 from app.keyboards import (
     BTN_CHECK_TEXT,
     BTN_CLIENT_QUESTION,
@@ -278,6 +279,7 @@ async def on_radar_content_selected(
     state: FSMContext,
     journal: Journal,
     llm_provider: LLMProvider,
+    workspace_context: WorkspaceContext | None,
 ) -> None:
     raw_data = callback.data or ""
     try:
@@ -305,6 +307,9 @@ async def on_radar_content_selected(
             show_alert=True,
         )
         return
+    if workspace_context is None:
+        await callback.answer("Рабочее пространство недоступно.", show_alert=True)
+        return
 
     task_text = _build_radar_content_task(idea)
     await state.update_data(radar_content_ideas=[])
@@ -318,6 +323,7 @@ async def on_radar_content_selected(
         )
 
     await journal.add(
+        workspace_context.workspace_id,
         task_text=task_text,
         primary_module=Module.CONTENT_FACTORY.value,
         secondary_modules=(),
@@ -359,8 +365,17 @@ async def on_radar_content_selected(
 
 
 @router.message(F.text == BTN_LAST_TASK)
-async def on_last_task(message: Message, journal: Journal) -> None:
-    entry = await journal.last()
+async def on_last_task(
+    message: Message,
+    journal: Journal,
+    workspace_context: WorkspaceContext | None,
+) -> None:
+    if workspace_context is None:
+        await message.answer(
+            "Рабочее пространство недоступно.", reply_markup=main_menu()
+        )
+        return
+    entry = await journal.last(workspace_context.workspace_id)
     if entry is None:
         await message.answer(
             "Журнал пуст. Поставьте задачу через меню или текстом.",

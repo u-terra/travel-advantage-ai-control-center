@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app.cards import build_card
+from app.domain.partners import WorkspaceContext
 from app.handlers.menu import AwaitTask
 from app.keyboards import active_main_menu
 from app.routing.modules import Module
@@ -47,6 +48,7 @@ async def on_task_after_button(
     state: FSMContext,
     journal: Journal,
     llm_provider: LLMProvider,
+    workspace_context: WorkspaceContext | None,
     v2_menu_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
@@ -60,6 +62,12 @@ async def on_task_after_button(
             reply_markup=active_main_menu(v2_menu_enabled),
         )
         return
+    if workspace_context is None:
+        await message.answer(
+            "Рабочее пространство недоступно.",
+            reply_markup=active_main_menu(v2_menu_enabled),
+        )
+        return
 
     if forced_raw:
         forced = Module(forced_raw)
@@ -68,6 +76,7 @@ async def on_task_after_button(
         decision = route_text(task_text)
 
     await journal.add(
+        workspace_context.workspace_id,
         task_text=task_text,
         primary_module=decision.primary_module.value,
         secondary_modules=tuple(m.value for m in decision.secondary_modules),
@@ -84,6 +93,7 @@ async def on_free_text(
     message: Message,
     journal: Journal,
     llm_provider: LLMProvider,
+    workspace_context: WorkspaceContext | None,
     v2_menu_enabled: bool = False,
 ) -> None:
     task_text = (message.text or "").strip()
@@ -93,8 +103,15 @@ async def on_free_text(
             reply_markup=active_main_menu(v2_menu_enabled),
         )
         return
+    if workspace_context is None:
+        await message.answer(
+            "Рабочее пространство недоступно.",
+            reply_markup=active_main_menu(v2_menu_enabled),
+        )
+        return
     decision = route_text(task_text)
     await journal.add(
+        workspace_context.workspace_id,
         task_text=task_text,
         primary_module=decision.primary_module.value,
         secondary_modules=tuple(m.value for m in decision.secondary_modules),

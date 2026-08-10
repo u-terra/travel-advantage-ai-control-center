@@ -44,13 +44,15 @@ def test_init_creates_tables_in_empty_database(tmp_path: Path) -> None:
 
 def test_existing_journal_data_is_preserved(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
+    _run(repository.init())
+    workspace, _ = _run(repository.ensure_owner_workspace(OWNER_ID))
     journal = Journal(repository.db_path)
-    _run(journal.init())
-    entry_id = _run(journal.add("Задача", "content", (), "low"))
+    _run(journal.init(workspace.id))
+    entry_id = _run(journal.add(workspace.id, "Задача", "content", (), "low"))
 
     _run(repository.init())
 
-    entry = _run(journal.last())
+    entry = _run(journal.last(workspace.id))
     assert entry is not None
     assert entry.id == entry_id
     assert entry.task_text == "Задача"

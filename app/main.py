@@ -65,12 +65,16 @@ async def _async_main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    journal = Journal(settings.journal_db_path)
-    await journal.init()
-
     partner_repository = PartnerRepository(settings.journal_db_path)
     await partner_repository.init()
-    await partner_repository.bootstrap_owner_membership(settings.admin_telegram_id)
+    owner_membership = await partner_repository.bootstrap_owner_membership(
+        settings.admin_telegram_id
+    )
+
+    journal = Journal(settings.journal_db_path)
+    await journal.init(
+        owner_membership.workspace_id if owner_membership is not None else None
+    )
 
     artifact_repository = ArtifactRepository(settings.journal_db_path)
     await artifact_repository.init()
