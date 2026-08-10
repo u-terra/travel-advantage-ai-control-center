@@ -1,17 +1,15 @@
-"""Раздел «Источники»: просмотр реестра, включение/выключение, добавление.
+"""Раздел «Источники»: workspace-список, включение/выключение, добавление.
 
 Экран административный и полностью ручной: ничего не собирается, ни один
 адрес не открывается и не скачивается. Добавление источника — это запись
-строки в data-файл реестра, то есть РАЗРЕШЕНИЕ наблюдать за источником,
+subscription в SQLite, то есть РАЗРЕШЕНИЕ наблюдать за источником,
 а не запуск мониторинга.
 
-Конкретных каналов здесь нет и быть не может: список целиком приходит из
-``config/sources.json``.
+JSON для Lead Radar создаётся отдельно как проекция и handler-ами не меняется.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from aiogram import F, Router
@@ -29,12 +27,12 @@ from app.keyboards import (
     sources_registry_keyboard,
     v2_back_keyboard,
 )
-from app.domain.sources import Source
+from app.domain.partners import WorkspaceContext
+from app.domain.sources import WorkspaceSource
+from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.services.source_registry import SourceRegistryError
 from app.services.source_registry_store import (
-    DuplicateSourceError,
     SourceAddressError,
-    SourceRegistryStore,
     UnknownSourceError,
 )
 
@@ -42,7 +40,7 @@ router = Router(name="sources")
 log = logging.getLogger(__name__)
 
 # Телеграм не покажет клавиатуру произвольной длины, поэтому список
-# ограничен. Полный реестр всегда доступен в data-файле.
+# ограничен.
 _LIST_LIMIT = 20
 
 _ADD_PROMPT = (
@@ -61,12 +59,12 @@ class AddSource(StatesGroup):
     waiting_for_url = State()
 
 
-def _title(source: Source) -> str:
+def _title(source: WorkspaceSource) -> str:
     state = "" if source.enabled else " · выключен"
     return f"{source.name}{state}"
 
 
-def _summary(sources: tuple[Source, ...]) -> str:
+def _summary(sources: tuple[WorkspaceSource, ...]) -> str:
     enabled = sum(1 for source in sources if source.enabled)
     lines = [
         "📚 Источники",
@@ -85,7 +83,7 @@ def _summary(sources: tuple[Source, ...]) -> str:
     return "\n".join(lines)
 
 
-def _keyboard(sources: tuple[Source, ...]):
+def _keyboard(sources: tuple[WorkspaceSource, ...]):
     return sources_registry_keyboard(
         tuple(
             (source.id, _title(source), source.enabled)
@@ -94,23 +92,31 @@ def _keyboard(sources: tuple[Source, ...]):
     )
 
 
-def _ordered(sources: tuple[Source, ...]) -> tuple[Source, ...]:
+def _ordered(sources: tuple[WorkspaceSource, ...]) -> tuple[WorkspaceSource, ...]:
     return tuple(
         sorted(sources, key=lambda item: (not item.enabled, item.priority, item.id))
     )
 
 
-async def _load(store: SourceRegistryStore) -> tuple[Source, ...]:
-    return _ordered(await asyncio.to_thread(store.list))
+async def _load(
+    repository: SourceCatalogRepository, workspace_id: int
+) -> tuple[WorkspaceSource, ...]:
+    return _ordered(await repository.list_for_workspace(workspace_id))
 
 
 @router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_SOURCES)
 async def show_sources(
-    message: Message, state: FSMContext, source_registry_store: SourceRegistryStore
+    message: Message,
+    state: FSMContext,
+    source_catalog_repository: SourceCatalogRepository,
+    workspace_context: WorkspaceContext | None,
 ) -> None:
     await state.clear()
+    if workspace_context is None:
+        await message.answer(_UNAVAILABLE, reply_markup=v2_back_keyboard())
+        return
     try:
-        sources = await _load(source_registry_store)
+        sources = await _load(source_catalog_repository, workspace_context.workspace_id)
     except SourceRegistryError as exc:
         log.warning("Реестр источников не прочитан: %s", exc)
         await message.answer(_UNAVAILABLE, reply_markup=v2_back_keyboard())
@@ -127,15 +133,25 @@ async def show_sources(
     MagicData(F.v2_menu_enabled), F.data.startswith(SOURCE_TOGGLE_PREFIX)
 )
 async def toggle_source(
-    callback: CallbackQuery, source_registry_store: SourceRegistryStore
+    callback: CallbackQuery,
+    source_catalog_repository: SourceCatalogRepository,
+    workspace_context: WorkspaceContext | None,
 ) -> None:
     source_id = (callback.data or "").removeprefix(SOURCE_TOGGLE_PREFIX)
+
+    if workspace_context is None:
+        await callback.answer(_UNAVAILABLE, show_alert=True)
+        return
 
     try:
         # Переключение целиком на стороне реестра: прочитать здесь и записать
         # обратное значило бы, что два быстрых нажатия отменят друг друга.
-        updated = await asyncio.to_thread(source_registry_store.toggle, source_id)
-        sources = await _load(source_registry_store)
+        updated = await source_catalog_repository.toggle(
+            workspace_context.workspace_id, source_id
+        )
+        sources = await _load(
+            source_catalog_repository, workspace_context.workspace_id
+        )
     except UnknownSourceError:
         await callback.answer("Источник не найден в реестре.", show_alert=True)
         return
@@ -175,21 +191,21 @@ async def cancel_add_source(message: Message, state: FSMContext) -> None:
 
 @router.message(MagicData(F.v2_menu_enabled), AddSource.waiting_for_url)
 async def receive_source_url(
-    message: Message, state: FSMContext, source_registry_store: SourceRegistryStore
+    message: Message,
+    state: FSMContext,
+    source_catalog_repository: SourceCatalogRepository,
+    workspace_context: WorkspaceContext | None,
 ) -> None:
     address = (message.text or "").strip()
 
-    try:
-        source = await asyncio.to_thread(source_registry_store.add, address)
-    except DuplicateSourceError as exc:
-        state_text = "уже включён" if exc.existing.enabled else "есть, но выключен"
-        await message.answer(
-            f"Такой источник {state_text}: {exc.existing.name}.\n"
-            "Второй раз добавлять не нужно — состояние переключается "
-            "в списке источников.",
-            reply_markup=v2_back_keyboard(),
-        )
+    if workspace_context is None:
+        await message.answer(_UNAVAILABLE, reply_markup=v2_back_keyboard())
         return
+
+    try:
+        result = await source_catalog_repository.add_source(
+            workspace_context.workspace_id, address, usage_role="monitoring"
+        )
     except SourceAddressError as exc:
         await message.answer(f"Не получилось: {exc}", reply_markup=v2_back_keyboard())
         return
@@ -199,6 +215,20 @@ async def receive_source_url(
         return
 
     await state.clear()
+    source = result.source
+    if result.outcome == "already_enabled":
+        await message.answer(
+            f"Такой источник уже добавлен и включён: {source.name}.",
+            reply_markup=active_main_menu(True),
+        )
+        return
+    if result.outcome == "already_disabled":
+        await message.answer(
+            f"Такой источник уже есть, но сейчас отключён: {source.name}.\n"
+            "Включить его можно в списке источников.",
+            reply_markup=active_main_menu(True),
+        )
+        return
     await message.answer(
         f"✅ Источник добавлен: {source.name}\n"
         f"{source.target}\n\n"

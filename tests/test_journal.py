@@ -258,10 +258,9 @@ def test_startup_does_not_require_owner_for_tenant_aware_journal(
     monkeypatch.setattr(main, "Journal", lambda _path: journal)
     monkeypatch.setattr(main, "ArtifactRepository", lambda _path: repository)
     monkeypatch.setattr(main, "SourceAnalysisRepository", lambda _path: repository)
+    source_catalog = SimpleNamespace(init=AsyncMock())
     monkeypatch.setattr(
-        main,
-        "SourceRegistryStore",
-        lambda _path: SimpleNamespace(ensure_bootstrapped=lambda: None),
+        main, "SourceCatalogRepository", lambda *_args: source_catalog
     )
     monkeypatch.setattr(main, "create_llm_provider", lambda *args, **kwargs: object())
     monkeypatch.setattr(main, "Bot", lambda _token: object())
@@ -270,4 +269,7 @@ def test_startup_does_not_require_owner_for_tenant_aware_journal(
     run(main._async_main())
 
     journal.init.assert_awaited_once_with(None)
+    source_catalog.init.assert_awaited_once_with(
+        None, legacy_path=main.SEED_REGISTRY_PATH
+    )
     dispatcher.start_polling.assert_awaited_once()

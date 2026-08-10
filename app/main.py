@@ -12,11 +12,12 @@ from app.handlers import build_router
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
+from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
 from app.services.llm.base import LLMProvider
 from app.services.llm.factory import create_llm_provider
-from app.services.source_registry_store import SourceRegistryStore
+from app.services.source_registry import SEED_REGISTRY_PATH
 from app.storage import Journal
 from app.workspace_context import WorkspaceContextMiddleware
 
@@ -30,7 +31,7 @@ def _build_dispatcher(
     partner_repository: PartnerRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
     source_analysis_repository: SourceAnalysisRepository | None = None,
-    source_registry_store: SourceRegistryStore | None = None,
+    source_catalog_repository: SourceCatalogRepository | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -54,7 +55,7 @@ def _build_dispatcher(
     dp["partner_repository"] = partner_repository
     dp["artifact_repository"] = artifact_repository
     dp["source_analysis_repository"] = source_analysis_repository
-    dp["source_registry_store"] = source_registry_store or SourceRegistryStore()
+    dp["source_catalog_repository"] = source_catalog_repository
     return dp
 
 
@@ -82,11 +83,18 @@ async def _async_main() -> None:
     source_analysis_repository = SourceAnalysisRepository(settings.journal_db_path)
     await source_analysis_repository.initialize()
 
-    # Первый запуск разворачивает рабочий реестр из стартового набора.
-    # Существующий файл не трогается: источники, добавленные владельцем,
-    # переживают обновление кода.
-    source_registry_store = SourceRegistryStore(settings.sources_registry_path)
-    await asyncio.to_thread(source_registry_store.ensure_bootstrapped)
+    source_catalog_repository = SourceCatalogRepository(
+        settings.journal_db_path, settings.sources_registry_path
+    )
+    legacy_source_path = (
+        settings.sources_registry_path
+        if settings.sources_registry_path.exists()
+        else SEED_REGISTRY_PATH
+    )
+    await source_catalog_repository.init(
+        owner_membership.workspace_id if owner_membership is not None else None,
+        legacy_path=legacy_source_path,
+    )
 
     content_factory_config = ContentFactoryConfig(
         url=settings.content_factory_url,
@@ -114,7 +122,7 @@ async def _async_main() -> None:
         partner_repository,
         artifact_repository,
         source_analysis_repository,
-        source_registry_store,
+        source_catalog_repository,
     )
 
     await dp.start_polling(bot)

@@ -124,6 +124,42 @@ class Source:
         )
 
 
+@dataclass(frozen=True)
+class WorkspaceSource:
+    """Catalog source as visible through one workspace subscription."""
+
+    id: str
+    name: str
+    platform: str
+    source_type: str
+    purpose: str
+    enabled: bool
+    usage_role: str
+    url: Optional[str] = None
+    username: Optional[str] = None
+    priority: int = 50
+    notes: str = ""
+    collector: Mapping[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+    updated_at: str = ""
+
+    @property
+    def is_telegram(self) -> bool:
+        return self.platform == PLATFORM_TELEGRAM
+
+    @property
+    def handle(self) -> Optional[str]:
+        if not self.is_telegram or not self.username:
+            return None
+        return f"@{self.username}"
+
+    @property
+    def target(self) -> str:
+        if self.is_telegram and self.username:
+            return telegram_url(self.username)
+        return self.url or ""
+
+
 def source_identity_key(
     *, platform: str, url: Optional[str], username: Optional[str]
 ) -> str:
