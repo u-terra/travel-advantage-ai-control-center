@@ -14,6 +14,8 @@ from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_catalog_repository import (
     SourceCatalogMigrationError,
     SourceCatalogRepository,
+    SourceRequestAuthorizationError,
+    SourceRequestConflictError,
 )
 from app.services.source_registry_store import UnknownSourceError
 
@@ -70,6 +72,20 @@ def new_workspace(db_path: Path, slug: str) -> int:
             "VALUES (?, ?, 'active', 'now', 'now')", (slug, slug),
         )
         return int(cursor.lastrowid)
+
+
+def add_member(db_path: Path, workspace_id: int, telegram_user_id: int) -> None:
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            "INSERT INTO workspace_memberships "
+            "(workspace_id, telegram_user_id, role, status, created_at, updated_at) "
+            "VALUES (?, ?, 'owner', 'active', 'now', 'now')",
+            (workspace_id, telegram_user_id),
+        )
+
+
+def submit(repo: SourceCatalogRepository, workspace_id: int, address: str, user=100):
+    return run(repo.submit_source_request(workspace_id, user, address))
 
 
 def test_schema_constraints_foreign_keys_and_legacy_metadata(tmp_path: Path) -> None:
@@ -139,6 +155,145 @@ def test_catalog_checks_visibility_private_owner_and_identity(tmp_path: Path) ->
         conn.execute(sql, values[:11] + ("private", owner) + values[11:])
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(sql, ("id2",) + values[1:11] + ("private", owner) + values[11:])
+
+
+def test_source_request_schema_constraints_and_init_upgrade_are_idempotent(
+    tmp_path: Path,
+) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    request = submit(repo, owner, "https://example.com/request").request
+    assert request is not None
+    run(repo.init(None, legacy_path=tmp_path / "unused.json"))
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO source_requests "
+                "(workspace_id, source_id, submitted_by_telegram_user_id, status, "
+                "created_at, updated_at) VALUES (?, ?, 100, 'pending', 'x', 'x')",
+                (owner, request.source_id),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO source_requests "
+                "(workspace_id, source_id, submitted_by_telegram_user_id, status, "
+                "created_at, updated_at) VALUES (9999, ?, 100, 'pending', 'x', 'x')",
+                (request.source_id,),
+            )
+
+
+def test_submit_is_pending_without_subscription_or_projection_change(tmp_path: Path) -> None:
+    db, projection, _, owner, repo = setup(tmp_path)
+    before = projection.read_text(encoding="utf-8")
+    result = submit(repo, owner, "https://example.com/pending")
+    assert result.outcome == "pending"
+    assert result.request is not None and result.request.status == "pending"
+    assert projection.read_text(encoding="utf-8") == before
+    assert run(repo.physical_collection_targets()) == ()
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM workspace_source_subscriptions"
+        ).fetchone()[0] == 0
+
+
+def test_submit_duplicate_cross_workspace_and_reopen_semantics(tmp_path: Path) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    other = new_workspace(db, "request-other")
+    add_member(db, other, 200)
+    first = submit(repo, owner, "https://example.com/shared-request")
+    duplicate = submit(repo, owner, "https://example.com/shared-request")
+    foreign = submit(repo, other, "https://example.com/shared-request", 200)
+    assert duplicate.outcome == "already_pending"
+    assert duplicate.request.id == first.request.id
+    assert foreign.request.source_id == first.request.source_id
+    assert foreign.request.id != first.request.id
+    run(repo.reject_source_request(first.request.id, owner, "not yet"))
+    reopened = submit(repo, owner, "https://example.com/shared-request")
+    assert reopened.outcome == "reopened"
+    assert reopened.request.id == first.request.id
+    assert reopened.request.status == "pending"
+    assert reopened.request.reason is None and reopened.request.reviewed_at is None
+
+
+def test_submit_requires_active_membership_and_legacy_subscription_wins(tmp_path: Path) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    with pytest.raises(SourceRequestAuthorizationError):
+        run(repo.submit_source_request(owner, 999, "https://example.com/foreign"))
+    connected = run(repo.add_source(owner, "https://example.com/legacy-connected"))
+    result = submit(repo, owner, connected.source.target)
+    assert result.outcome == "already_connected" and result.request is None
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM source_requests").fetchone()[0] == 0
+
+
+def test_toggle_without_subscription_and_pending_request_fail_closed(tmp_path: Path) -> None:
+    db, _, _, owner, repo = setup(tmp_path, [legacy_source("platform-source")])
+    other = new_workspace(db, "toggle-other")
+    add_member(db, other, 200)
+    with pytest.raises(UnknownSourceError):
+        run(repo.toggle(other, "platform-source"))
+    pending = submit(repo, other, "https://example.com/pending-toggle", 200).request
+    with pytest.raises(UnknownSourceError):
+        run(repo.toggle(other, pending.source_id))
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM workspace_source_subscriptions WHERE workspace_id=?",
+            (other,),
+        ).fetchone()[0] == 0
+
+
+def test_approve_is_tenant_scoped_idempotent_and_persistent(tmp_path: Path) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    other = new_workspace(db, "approve-other")
+    add_member(db, other, 200)
+    request = submit(repo, owner, "https://example.com/approve").request
+    with pytest.raises(SourceRequestAuthorizationError):
+        run(repo.approve_source_request(request.id, other))
+    approved = run(repo.approve_source_request(request.id, owner))
+    repeated = run(repo.approve_source_request(request.id, owner))
+    assert approved.status == repeated.status == "approved"
+    assert run(repo.get_for_workspace(owner, request.source_id)).enabled is True
+    assert run(repo.get_for_workspace(other, request.source_id)) is None
+    reopened_repo = SourceCatalogRepository(db, tmp_path / "reopened.json")
+    assert run(reopened_repo.get_source_request(request.id)).status == "approved"
+
+
+def test_approve_projection_failure_rolls_back_request_and_subscription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    request = submit(repo, owner, "https://example.com/rollback").request
+    monkeypatch.setattr(
+        "app.repositories.source_catalog_repository.export_radar_projection",
+        lambda *_args: (_ for _ in ()).throw(OSError("projection failed")),
+    )
+    with pytest.raises(OSError, match="projection failed"):
+        run(repo.approve_source_request(request.id, owner))
+    assert run(repo.get_source_request(request.id)).status == "pending"
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM workspace_source_subscriptions WHERE workspace_id=?",
+            (owner,),
+        ).fetchone()[0] == 0
+
+
+def test_reject_is_idempotent_and_approved_is_fail_closed(tmp_path: Path) -> None:
+    _, _, _, owner, repo = setup(tmp_path)
+    rejected_request = submit(repo, owner, "https://example.com/reject").request
+    rejected = run(repo.reject_source_request(rejected_request.id, owner, "unsupported"))
+    repeated = run(repo.reject_source_request(rejected_request.id, owner, "changed"))
+    assert rejected.status == repeated.status == "rejected"
+    assert repeated.reason == "unsupported"
+    assert run(repo.get_for_workspace(owner, rejected.source_id)) is None
+    with pytest.raises(SourceRequestConflictError):
+        run(repo.approve_source_request(rejected.id, owner))
+
+    approved_request = submit(repo, owner, "https://example.com/approved").request
+    run(repo.approve_source_request(approved_request.id, owner))
+    with pytest.raises(SourceRequestConflictError):
+        run(repo.reject_source_request(approved_request.id, owner))
+    assert run(repo.get_for_workspace(owner, approved_request.source_id)).enabled is True
 
 
 def test_shared_physical_source_has_isolated_subscription_state_and_role(tmp_path: Path) -> None:

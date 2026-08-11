@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 from app.domain.partners import WorkspaceContext
 from app.domain.sources import WorkspaceSource
-from app.repositories.source_catalog_repository import AddSourceResult
+from app.repositories.source_catalog_repository import SubmitSourceRequestResult
 from app.handlers.sources import (
     AddSource,
     receive_source_url,
@@ -85,7 +85,7 @@ def repository(items=()):
     return SimpleNamespace(
         list_for_workspace=AsyncMock(return_value=tuple(items)),
         toggle=AsyncMock(),
-        add_source=AsyncMock(),
+        submit_source_request=AsyncMock(),
     )
 
 
@@ -153,44 +153,56 @@ def test_toggle_without_context_does_not_call_repository() -> None:
 
 def test_add_passes_workspace_and_monitoring_role() -> None:
     repo = repository()
-    repo.add_source.return_value = AddSourceResult(source(), "created")
+    repo.submit_source_request.return_value = SubmitSourceRequestResult(None, "pending")
     message, state = Message("https://example.com/source"), State()
     run(receive_source_url(message, state, repo, context(91)))
-    repo.add_source.assert_awaited_once_with(
-        91, "https://example.com/source", usage_role="monitoring"
+    repo.submit_source_request.assert_awaited_once_with(
+        91, 100, "https://example.com/source"
     )
-    assert "добавлен" in message.answers[0][0]
+    assert "отправлен на проверку" in message.answers[0][0]
     assert state.clear_calls == 1
 
 
 def test_duplicate_enabled_reports_actual_state() -> None:
     repo = repository()
-    repo.add_source.return_value = AddSourceResult(source(enabled=True), "already_enabled")
+    repo.submit_source_request.return_value = SubmitSourceRequestResult(
+        None, "already_connected"
+    )
     message = Message("https://example.com/source")
     run(receive_source_url(message, State(), repo, context()))
-    assert "уже добавлен и включён" in message.answers[0][0]
-    assert "✅ Источник добавлен" not in message.answers[0][0]
+    assert "уже подключён" in message.answers[0][0]
 
 
 def test_duplicate_disabled_reports_actual_state() -> None:
     repo = repository()
-    repo.add_source.return_value = AddSourceResult(source(enabled=False), "already_disabled")
+    repo.submit_source_request.return_value = SubmitSourceRequestResult(
+        None, "already_pending"
+    )
     message = Message("https://example.com/source")
     run(receive_source_url(message, State(), repo, context()))
-    assert "уже есть, но сейчас отключён" in message.answers[0][0]
-    assert "✅ Источник добавлен" not in message.answers[0][0]
+    assert "ожидает проверки" in message.answers[0][0]
+
+
+def test_rejected_request_is_reported_as_resubmitted() -> None:
+    repo = repository()
+    repo.submit_source_request.return_value = SubmitSourceRequestResult(
+        None, "reopened"
+    )
+    message = Message("https://example.com/source")
+    run(receive_source_url(message, State(), repo, context()))
+    assert "повторно отправлен" in message.answers[0][0]
 
 
 def test_add_without_context_does_not_call_repository() -> None:
     repo = repository()
     message = Message("https://example.com/source")
     run(receive_source_url(message, State(), repo, None))
-    repo.add_source.assert_not_awaited()
+    repo.submit_source_request.assert_not_awaited()
 
 
 def test_invalid_address_preserves_input_state() -> None:
     repo = repository()
-    repo.add_source.side_effect = SourceAddressError("invalid")
+    repo.submit_source_request.side_effect = SourceAddressError("invalid")
     message, state = Message("ftp://example.com/file"), State()
     run(receive_source_url(message, state, repo, context()))
     assert "Не получилось" in message.answers[0][0]
@@ -217,7 +229,7 @@ def test_sources_button_and_keyboard_remain_available() -> None:
         button.text for row in v2_main_menu().keyboard for button in row
     ]
     markup = sources_registry_keyboard((("id", "Название", True),))
-    assert _button_texts(markup)[-2:] == ["➕ Добавить источник", BTN_V2_MAIN_MENU]
+    assert _button_texts(markup)[-2:] == ["➕ Предложить источник", BTN_V2_MAIN_MENU]
 
 
 def test_sources_router_is_registered() -> None:

@@ -46,8 +46,7 @@ _LIST_LIMIT = 20
 _ADD_PROMPT = (
     "Пришлите ссылку на источник.\n\n"
     "Подойдёт https://... или @имя_канала для Telegram.\n"
-    "Ссылка только записывается в реестр — ничего не открывается и "
-    "не скачивается."
+    "Ссылка будет отправлена администратору на проверку."
 )
 
 _UNAVAILABLE = (
@@ -203,8 +202,10 @@ async def receive_source_url(
         return
 
     try:
-        result = await source_catalog_repository.add_source(
-            workspace_context.workspace_id, address, usage_role="monitoring"
+        result = await source_catalog_repository.submit_source_request(
+            workspace_context.workspace_id,
+            workspace_context.telegram_user_id,
+            address,
         )
     except SourceAddressError as exc:
         await message.answer(f"Не получилось: {exc}", reply_markup=v2_back_keyboard())
@@ -215,28 +216,27 @@ async def receive_source_url(
         return
 
     await state.clear()
-    source = result.source
-    if result.outcome == "already_enabled":
+    if result.outcome == "already_connected":
         await message.answer(
-            f"Такой источник уже добавлен и включён: {source.name}.",
+            "Этот источник уже подключён.",
             reply_markup=active_main_menu(True),
         )
         return
-    if result.outcome == "already_disabled":
+    if result.outcome == "already_pending":
         await message.answer(
-            f"Такой источник уже есть, но сейчас отключён: {source.name}.\n"
-            "Включить его можно в списке источников.",
+            "Этот источник уже ожидает проверки.",
+            reply_markup=active_main_menu(True),
+        )
+        return
+    if result.outcome == "reopened":
+        await message.answer(
+            "Источник повторно отправлен на проверку.\n"
+            "После подключения он будет использоваться для вашего пространства.",
             reply_markup=active_main_menu(True),
         )
         return
     await message.answer(
-        f"✅ Источник добавлен: {source.name}\n"
-        f"{source.target}\n\n"
-        f"id: {source.id}\n"
-        "Назначение пока нейтральное — его стоит уточнить после того, как "
-        "содержимое источника будет разобрано.\n\n"
-        "Запись означает разрешение наблюдать за источником. "
-        "Автоматический сбор при этом не запускается.",
+        "Источник отправлен на проверку.\n"
+        "После подключения он будет использоваться для вашего пространства.",
         reply_markup=active_main_menu(True),
-        disable_web_page_preview=True,
     )

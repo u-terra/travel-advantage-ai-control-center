@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app import admin
 from app.repositories.partner_repository import PartnerRepository, empty_business_context
+from app.repositories.source_catalog_repository import SourceCatalogRepository
 
 
 USER_ID = 123456789
@@ -143,3 +144,88 @@ def test_cli_uses_journal_db_env_without_runtime_secrets(
     monkeypatch.delenv("BOT_TOKEN", raising=False)
     assert admin.main(["show-partner", "--telegram-user-id", str(USER_ID)]) == 2
     assert "membership не найдена" in capsys.readouterr().err
+
+
+def test_cli_source_request_list_show_approve_reject(tmp_path: Path, capsys) -> None:
+    db_path = database(tmp_path)
+    partner = PartnerRepository(db_path)
+    workspace = run(partner.provision_partner(
+        USER_ID, "Source Pilot", "source-pilot",
+        business_name="Source Pilot", business_type="club_partner",
+        short_description="Pilot.", context={"specializations": ["travel"]},
+    )).workspace
+    projection = tmp_path / "sources.json"
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text('{"schema_version": 2, "sources": []}', encoding="utf-8")
+    repository = SourceCatalogRepository(db_path, projection)
+    run(repository.init(workspace.id, legacy_path=legacy))
+    first = run(repository.submit_source_request(
+        workspace.id, USER_ID, "https://example.com/admin-first"
+    )).request
+    second = run(repository.submit_source_request(
+        workspace.id, USER_ID, "https://example.com/admin-second"
+    )).request
+    base = [
+        "--db-path", str(db_path),
+        "--source-registry-path", str(projection),
+    ]
+
+    assert admin.main(base + ["list-source-requests"]) == 0
+    listed = capsys.readouterr().out
+    assert "source_requests: 2" in listed
+    assert f"request_id: {first.id}" in listed
+    assert "workspace_name: Source Pilot" in listed
+    assert "platform: web" in listed
+
+    assert admin.main(base + [
+        "show-source-request", "--request-id", str(first.id),
+    ]) == 0
+    shown = capsys.readouterr().out
+    assert "reviewed_at:" in shown and "reason:" in shown
+
+    assert admin.main(base + [
+        "approve-source-request", "--request-id", str(first.id),
+        "--workspace-id", str(workspace.id),
+    ]) == 0
+    approved = capsys.readouterr().out
+    assert "Source request approved" in approved
+    assert "status: approved" in approved
+    assert "collector infrastructure" in approved
+
+    assert admin.main(base + [
+        "reject-source-request", "--request-id", str(second.id),
+        "--workspace-id", str(workspace.id), "--reason", "unsupported",
+    ]) == 0
+    rejected = capsys.readouterr().out
+    assert "Source request rejected" in rejected
+    assert "status: rejected" in rejected and "reason: unsupported" in rejected
+    combined = listed + shown + approved + rejected
+    for forbidden in ("BOT_TOKEN", "api_key", "credentials", "provider"):
+        assert forbidden not in combined
+
+
+def test_cli_source_review_requires_expected_workspace(tmp_path: Path, capsys) -> None:
+    db_path = database(tmp_path)
+    partner = PartnerRepository(db_path)
+    workspace = run(partner.provision_partner(
+        USER_ID, "Source Pilot", "source-pilot",
+        business_name="Source Pilot", business_type="club_partner",
+        short_description="Pilot.", context={"specializations": ["travel"]},
+    )).workspace
+    projection = tmp_path / "sources.json"
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text('{"schema_version": 2, "sources": []}', encoding="utf-8")
+    repository = SourceCatalogRepository(db_path, projection)
+    run(repository.init(workspace.id, legacy_path=legacy))
+    request = run(repository.submit_source_request(
+        workspace.id, USER_ID, "https://example.com/forged"
+    )).request
+    args = [
+        "--db-path", str(db_path), "--source-registry-path", str(projection),
+        "approve-source-request", "--request-id", str(request.id),
+        "--workspace-id", str(workspace.id + 999),
+    ]
+    assert admin.main(args) == 2
+    error = capsys.readouterr().err
+    assert "ожидаемому workspace" in error and "Traceback" not in error
+    assert run(repository.get_source_request(request.id)).status == "pending"

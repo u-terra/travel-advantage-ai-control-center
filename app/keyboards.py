@@ -221,7 +221,7 @@ def sources_registry_keyboard(
     ]
     rows.append(
         [InlineKeyboardButton(
-            text="➕ Добавить источник", callback_data=SOURCE_REGISTRY_ADD
+            text="➕ Предложить источник", callback_data=SOURCE_REGISTRY_ADD
         )]
     )
     rows.append(
