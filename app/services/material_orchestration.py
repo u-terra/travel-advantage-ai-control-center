@@ -12,6 +12,7 @@ from app.services.business_profile_context import (
 
 
 _OBJECTIVE = "Создать черновик материала по выбранному и разобранному источнику."
+_FREE_TEXT_OBJECTIVE = "Создать черновик обычного поста по запросу пользователя."
 _CONSTRAINTS = ("Черновик требует ручной проверки перед использованием.",)
 
 
@@ -32,35 +33,9 @@ class MaterialOrchestrationService:
             raise PermissionError("Source и SourceAnalysis не принадлежат workspace")
         if analysis.source_id != source.id:
             raise ValueError("SourceAnalysis не соответствует Source")
-        if profile is not None and profile.workspace_id != workspace_id:
-            raise PermissionError("Business Profile не принадлежит workspace")
-        if profile is not None and profile.profile_status not in {"usable", "incomplete"}:
-            raise ValueError("Неизвестный status Business Profile")
-
-        trusted_context: dict[str, Any] = {}
-        tone_preferences: dict[str, Any] = {}
-        verified: list[Mapping[str, Any]] = []
-        unverified: list[Mapping[str, Any]] = []
-        revision = None
-        if profile is not None:
-            projection = (
-                build_content_context(profile)
-                if profile.profile_status == "usable"
-                else build_limited_content_context(profile)
-            )
-            trusted_context = dict(projection)
-            trusted_context.pop("claims", None)
-            tone_preferences = dict(trusted_context.pop("communication", {}))
-            if profile.profile_status == "usable":
-                tone_preferences.update(trusted_context.pop("content_preferences", {}))
-            for claim in profile.context.claims:
-                value = {
-                    "text": claim.text,
-                    "verification_status": claim.verification_status,
-                    "evidence_reference": claim.evidence_reference,
-                }
-                (verified if claim.verification_status == "verified" else unverified).append(value)
-            revision = profile.revision
+        trusted_context, tone_preferences, verified, unverified, revision = (
+            _profile_generation_values(workspace_id, profile)
+        )
 
         return GenerationSpec(
             action_type=GenerationAction.CREATE_ARTIFACT,
@@ -87,3 +62,70 @@ class MaterialOrchestrationService:
             constraints=_CONSTRAINTS,
             profile_revision_used=revision,
         )
+
+    def build_free_text_generation_spec(
+        self,
+        workspace_id: int,
+        task_text: str,
+        profile: BusinessProfile | None,
+    ) -> GenerationSpec:
+        if not isinstance(task_text, str) or not task_text.strip():
+            raise ValueError("task_text не должен быть пустым")
+        trusted_context, tone_preferences, verified, unverified, revision = (
+            _profile_generation_values(workspace_id, profile)
+        )
+        return GenerationSpec(
+            action_type=GenerationAction.CREATE_ARTIFACT,
+            artifact_type="post",
+            objective=_FREE_TEXT_OBJECTIVE,
+            audience=tuple(trusted_context.get("audiences", ())),
+            output_format="telegram",
+            source_facts={},
+            trusted_business_context=trusted_context,
+            untrusted_source_content=task_text,
+            tone_preferences=tone_preferences,
+            verified_claims_allowed=verified,
+            unverified_claims_requiring_caution=unverified,
+            constraints=_CONSTRAINTS,
+            profile_revision_used=revision,
+        )
+
+
+def _profile_generation_values(
+    workspace_id: int, profile: BusinessProfile | None,
+) -> tuple[
+    dict[str, Any], dict[str, Any], tuple[Mapping[str, Any], ...],
+    tuple[Mapping[str, Any], ...], int | None,
+]:
+    if profile is not None and profile.workspace_id != workspace_id:
+        raise PermissionError("Business Profile не принадлежит workspace")
+    if profile is not None and profile.profile_status not in {"usable", "incomplete"}:
+        raise ValueError("Неизвестный status Business Profile")
+
+    trusted_context: dict[str, Any] = {}
+    tone_preferences: dict[str, Any] = {}
+    verified: list[Mapping[str, Any]] = []
+    unverified: list[Mapping[str, Any]] = []
+    revision = None
+    if profile is not None:
+        projection = (
+            build_content_context(profile)
+            if profile.profile_status == "usable"
+            else build_limited_content_context(profile)
+        )
+        trusted_context = dict(projection)
+        trusted_context.pop("claims", None)
+        tone_preferences = dict(trusted_context.pop("communication", {}))
+        if profile.profile_status == "usable":
+            tone_preferences.update(trusted_context.pop("content_preferences", {}))
+        for claim in profile.context.claims:
+            value = {
+                "text": claim.text,
+                "verification_status": claim.verification_status,
+                "evidence_reference": claim.evidence_reference,
+            }
+            (verified if claim.verification_status == "verified" else unverified).append(value)
+        revision = profile.revision
+    return (
+        trusted_context, tone_preferences, tuple(verified), tuple(unverified), revision,
+    )

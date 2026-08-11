@@ -10,15 +10,17 @@ from app.cards import build_card
 from app.domain.partners import WorkspaceContext
 from app.handlers.menu import AwaitTask
 from app.keyboards import active_main_menu
+from app.repositories.partner_repository import PartnerRepository
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
+from app.services.generation_request_builder import build_provider_generation_request
 from app.services.llm.base import LLMProvider
+from app.services.material_orchestration import MaterialOrchestrationService
 from app.storage import Journal
 
 router = Router(name="tasks")
 
-_POST_MATERIAL_TYPE = "market_offer"
 _CLIENT_QUESTION_MATERIAL_TYPE = "client_question"
 _DRAFT_OUTPUT_FORMAT = "telegram"
 _DRAFT_MODE = "ai"
@@ -49,6 +51,7 @@ async def on_task_after_button(
     journal: Journal,
     llm_provider: LLMProvider,
     workspace_context: WorkspaceContext | None,
+    partner_repository: PartnerRepository,
     v2_menu_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
@@ -85,7 +88,10 @@ async def on_task_after_button(
     await message.answer(
         build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
     )
-    await _maybe_send_module_result(message, decision, llm_provider)
+    await _maybe_send_module_result(
+        message, decision, llm_provider,
+        workspace_context.workspace_id, partner_repository,
+    )
 
 
 @router.message(F.text & ~F.text.startswith("/"))
@@ -94,6 +100,7 @@ async def on_free_text(
     journal: Journal,
     llm_provider: LLMProvider,
     workspace_context: WorkspaceContext | None,
+    partner_repository: PartnerRepository,
     v2_menu_enabled: bool = False,
 ) -> None:
     task_text = (message.text or "").strip()
@@ -120,13 +127,18 @@ async def on_free_text(
     await message.answer(
         build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
     )
-    await _maybe_send_module_result(message, decision, llm_provider)
+    await _maybe_send_module_result(
+        message, decision, llm_provider,
+        workspace_context.workspace_id, partner_repository,
+    )
 
 
 async def _maybe_send_module_result(
     message: Message,
     decision: RouteDecision,
     provider: LLMProvider,
+    workspace_id: int,
+    partner_repository: PartnerRepository,
 ) -> None:
     if decision.primary_module is Module.SAFETY_LAYER:
         await _send_text_check(message, decision, provider)
@@ -136,7 +148,9 @@ async def _maybe_send_module_result(
         await _send_partner_package(message, decision)
         return
 
-    await _maybe_send_draft(message, decision, provider)
+    await _maybe_send_draft(
+        message, decision, provider, workspace_id, partner_repository,
+    )
 
 
 
@@ -284,17 +298,6 @@ def _draft_request_for(
     decision: RouteDecision,
 ) -> tuple[str, str, str] | None:
     """Определяет, нужен ли безопасный черновик и в каком формате."""
-    if decision.primary_module is Module.CONTENT_FACTORY:
-        if decision.safety_level is not SafetyLevel.NOT_REQUIRED:
-            return None
-        if not _is_regular_post(decision.task_text.lower()):
-            return None
-        return (
-            decision.task_text,
-            _POST_MATERIAL_TYPE,
-            "📝 Черновик для ручной проверки",
-        )
-
     if decision.primary_module is Module.TRAVEL_ASSISTANT:
         safety_instruction = ""
         if decision.safety_level is not SafetyLevel.NOT_REQUIRED:
@@ -329,18 +332,35 @@ async def _maybe_send_draft(
     message: Message,
     decision: RouteDecision,
     provider: LLMProvider,
+    workspace_id: int,
+    partner_repository: PartnerRepository,
 ) -> None:
-    request = _draft_request_for(decision)
-    if request is None:
-        return
-
-    source_text, material_type, heading = request
+    if (
+        decision.primary_module is Module.CONTENT_FACTORY
+        and decision.safety_level is SafetyLevel.NOT_REQUIRED
+        and _is_regular_post(decision.task_text.lower())
+    ):
+        profile = await partner_repository.get_business_profile(workspace_id)
+        spec = MaterialOrchestrationService().build_free_text_generation_spec(
+            workspace_id, decision.task_text, profile,
+        )
+        provider_request = build_provider_generation_request(spec)
+        source_text = provider_request.source_text
+        material_type = provider_request.material_type
+        output_format = provider_request.output_format
+        heading = "📝 Черновик для ручной проверки"
+    else:
+        request = _draft_request_for(decision)
+        if request is None:
+            return
+        source_text, material_type, heading = request
+        output_format = _DRAFT_OUTPUT_FORMAT
 
     draft = await asyncio.to_thread(
         provider.generate_draft,
         source_text=source_text,
         material_type=material_type,
-        output_format=_DRAFT_OUTPUT_FORMAT,
+        output_format=output_format,
         mode=_DRAFT_MODE,
     )
     if draft is None:
