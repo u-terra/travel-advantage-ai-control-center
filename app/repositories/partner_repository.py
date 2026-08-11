@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -36,6 +37,22 @@ class AmbiguousWorkspaceError(RuntimeError):
 
 class OwnerMembershipConflictError(RuntimeError):
     """The owner's existing membership is not an active owner membership."""
+
+
+class PartnerProvisioningConflictError(RuntimeError):
+    """Existing tenant state is incompatible with an admin operation."""
+
+
+class PartnerMembershipNotFoundError(RuntimeError):
+    """No unambiguous membership exists for an admin status operation."""
+
+
+@dataclass(frozen=True)
+class ProvisionedPartner:
+    workspace: PartnerWorkspace
+    membership: WorkspaceMembership
+    profile: BusinessProfile
+    created: bool
 
 
 class BusinessProfileSchemaError(RuntimeError):
@@ -273,6 +290,214 @@ class PartnerRepository:
             db.row_factory = aiosqlite.Row
             row = await self._workspace_row_by_id(db, workspace_id)
         return _workspace_from_row(row) if row is not None else None
+
+    async def provision_partner(
+        self,
+        telegram_user_id: int,
+        workspace_name: str,
+        workspace_slug: str,
+        *,
+        business_name: str,
+        business_type: str,
+        short_description: str,
+        context: Mapping[str, Any],
+        schema_version: int = BUSINESS_PROFILE_SCHEMA_VERSION,
+    ) -> ProvisionedPartner:
+        if type(telegram_user_id) is not int or telegram_user_id < 1:
+            raise ValueError("telegram_user_id должен быть положительным целым числом")
+        if not isinstance(workspace_name, str) or not workspace_name.strip():
+            raise ValueError("workspace_name обязателен")
+        if not isinstance(workspace_slug, str) or not workspace_slug.strip():
+            raise ValueError("workspace_slug обязателен")
+        normalized = validate_business_profile_input(
+            business_name, business_type, short_description, context, schema_version
+        )
+        name = workspace_name.strip()
+        slug = workspace_slug.strip()
+        business_name = business_name.strip()
+        short_description = short_description.strip()
+        profile_status = _profile_status(
+            business_name, short_description, normalized
+        )
+        tone = normalized["communication"]["tone"]
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                workspace_row = await (await db.execute(
+                    "SELECT * FROM partner_workspaces WHERE slug = ?", (slug,)
+                )).fetchone()
+                memberships = await (await db.execute(
+                    "SELECT * FROM workspace_memberships "
+                    "WHERE telegram_user_id = ? ORDER BY workspace_id",
+                    (telegram_user_id,),
+                )).fetchall()
+
+                if workspace_row is not None:
+                    result = await self._existing_provisioned_partner(
+                        db, workspace_row, memberships,
+                        telegram_user_id=telegram_user_id,
+                        workspace_name=name,
+                        business_name=business_name,
+                        business_type=business_type,
+                        short_description=short_description,
+                        normalized_context=normalized,
+                        input_context=context,
+                    )
+                    await db.commit()
+                    return result
+
+                if memberships:
+                    raise PartnerProvisioningConflictError(
+                        "Telegram user уже связан с другим workspace"
+                    )
+
+                now = _now()
+                cursor = await db.execute(
+                    "INSERT INTO partner_workspaces "
+                    "(name, slug, status, created_at, updated_at) "
+                    "VALUES (?, ?, 'active', ?, ?)",
+                    (name, slug, now, now),
+                )
+                workspace_id = cursor.lastrowid or 0
+                membership_cursor = await db.execute(
+                    "INSERT INTO workspace_memberships "
+                    "(workspace_id, telegram_user_id, role, status, created_at, updated_at) "
+                    "VALUES (?, ?, 'owner', 'active', ?, ?)",
+                    (workspace_id, telegram_user_id, now, now),
+                )
+                profile_cursor = await db.execute(
+                    "INSERT INTO partner_profiles "
+                    "(workspace_id, telegram_user_id, partner_name, project_name, "
+                    "business_description, communication_style, business_name, business_type, "
+                    "short_description, profile_status, schema_version, revision, context_json, "
+                    "created_at, updated_at) "
+                    "VALUES (?, NULL, '', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+                    (
+                        workspace_id, business_name, short_description, tone,
+                        business_name, business_type, short_description, profile_status,
+                        schema_version, _encode_context(normalized), now, now,
+                    ),
+                )
+                workspace_row = await self._workspace_row_by_id(db, workspace_id)
+                membership_row = await self._membership_row_by_id(
+                    db, membership_cursor.lastrowid or 0
+                )
+                profile_row = await (await db.execute(
+                    "SELECT * FROM partner_profiles WHERE id = ?",
+                    (profile_cursor.lastrowid or 0,),
+                )).fetchone()
+                if workspace_row is None or membership_row is None or profile_row is None:
+                    raise RuntimeError("Не удалось создать полный tenant")
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return ProvisionedPartner(
+            _workspace_from_row(workspace_row),
+            _membership_from_row(membership_row),
+            _business_profile_from_row(profile_row),
+            True,
+        )
+
+    async def set_partner_membership_status(
+        self, telegram_user_id: int, status: str
+    ) -> WorkspaceMembership:
+        if type(telegram_user_id) is not int or telegram_user_id < 1:
+            raise ValueError("telegram_user_id должен быть положительным целым числом")
+        if status not in MEMBERSHIP_STATUSES:
+            raise ValueError("Недопустимый membership status")
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                rows = await (await db.execute(
+                    "SELECT * FROM workspace_memberships "
+                    "WHERE telegram_user_id = ? ORDER BY workspace_id",
+                    (telegram_user_id,),
+                )).fetchall()
+                if len(rows) != 1:
+                    raise PartnerMembershipNotFoundError(
+                        "Ожидалась ровно одна membership для Telegram user"
+                    )
+                row = rows[0]
+                if status == "active":
+                    workspace = await self._workspace_row_by_id(db, row["workspace_id"])
+                    profile = await (await db.execute(
+                        "SELECT 1 FROM partner_profiles WHERE workspace_id = ?",
+                        (row["workspace_id"],),
+                    )).fetchone()
+                    if workspace is None or workspace["status"] != "active" or profile is None:
+                        raise PartnerProvisioningConflictError(
+                            "Tenant не готов к reactivation"
+                        )
+                if row["status"] != status:
+                    await db.execute(
+                        "UPDATE workspace_memberships SET status = ?, updated_at = ? "
+                        "WHERE id = ?", (status, _now(), row["id"]),
+                    )
+                    row = await self._membership_row_by_id(db, row["id"])
+                if row is None:
+                    raise RuntimeError("Membership исчезла при обновлении")
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _membership_from_row(row)
+
+    async def _existing_provisioned_partner(
+        self,
+        db: aiosqlite.Connection,
+        workspace_row: aiosqlite.Row,
+        memberships: list[aiosqlite.Row],
+        *,
+        telegram_user_id: int,
+        workspace_name: str,
+        business_name: str,
+        business_type: str,
+        short_description: str,
+        normalized_context: Mapping[str, Any],
+        input_context: Mapping[str, Any],
+    ) -> ProvisionedPartner:
+        expected = [
+            row for row in memberships if row["workspace_id"] == workspace_row["id"]
+        ]
+        profile_row = await (await db.execute(
+            "SELECT * FROM partner_profiles WHERE workspace_id = ?",
+            (workspace_row["id"],),
+        )).fetchone()
+        if (
+            workspace_row["name"] != workspace_name
+            or workspace_row["status"] != "active"
+            or len(memberships) != 1
+            or len(expected) != 1
+            or expected[0]["telegram_user_id"] != telegram_user_id
+            or expected[0]["role"] != "owner"
+            or expected[0]["status"] != "active"
+            or profile_row is None
+        ):
+            raise PartnerProvisioningConflictError(
+                "Существующий tenant несовместим с provisioning request"
+            )
+        profile = _business_profile_from_row(profile_row)
+        if (
+            profile.business_name != business_name
+            or profile.business_type != business_type
+            or profile.short_description != short_description
+            or not _profile_context_matches_input(
+                profile.context, normalized_context, input_context
+            )
+        ):
+            raise PartnerProvisioningConflictError(
+                "Существующий Business Profile несовместим с provisioning request"
+            )
+        return ProvisionedPartner(
+            _workspace_from_row(workspace_row),
+            _membership_from_row(expected[0]), profile, False,
+        )
 
     async def create_membership(
         self,
@@ -794,6 +1019,22 @@ def business_context_to_dict(context: BusinessContext) -> dict[str, Any]:
             for claim in context.claims
         ],
     }
+
+
+def _profile_context_matches_input(
+    stored: BusinessContext,
+    normalized: Mapping[str, Any],
+    original: Mapping[str, Any],
+) -> bool:
+    stored_values = business_context_to_dict(stored)
+    expected = json.loads(json.dumps(normalized, ensure_ascii=False))
+    original_claims = original.get("claims", [])
+    for index, claim in enumerate(original_claims):
+        if not claim.get("updated_at"):
+            expected["claims"][index]["updated_at"] = stored_values["claims"][index][
+                "updated_at"
+            ]
+    return stored_values == expected
 
 
 def _validate_object(
