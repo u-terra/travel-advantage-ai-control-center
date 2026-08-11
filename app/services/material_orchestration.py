@@ -158,6 +158,9 @@ def _profile_generation_values(
         )
         trusted_context = dict(projection)
         trusted_context.pop("claims", None)
+        # Standard generation does not need direct contact details. Explicit
+        # contact/CTA flows may opt in separately when product semantics exist.
+        trusted_context.pop("public_contacts", None)
         tone_preferences = dict(trusted_context.pop("communication", {}))
         if profile.profile_status == "usable":
             tone_preferences.update(trusted_context.pop("content_preferences", {}))

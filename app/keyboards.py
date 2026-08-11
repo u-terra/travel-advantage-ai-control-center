@@ -32,6 +32,7 @@ BTN_V2_HELP = "ℹ️ Помощь"
 BTN_V2_MAIN_MENU = "⬅️ Главное меню"
 
 SOURCE_TOGGLE_PREFIX = "source_toggle:"
+PILOT_CONSENT_ACCEPT_PREFIX = "pilot_consent:accept:"
 SOURCE_REGISTRY_ADD = "source_registry:add"
 SOURCE_REGISTRY_REFRESH = "source_registry:refresh"
 
@@ -121,6 +122,15 @@ def source_analysis_result_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def pilot_consent_keyboard(consent_version: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Я согласен на обработку персональных данных",
+            callback_data=f"{PILOT_CONSENT_ACCEPT_PREFIX}{consent_version}",
+        )]
+    ])
 
 
 def analyzed_source_keyboard(source_id: int) -> InlineKeyboardMarkup:

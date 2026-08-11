@@ -14,6 +14,7 @@ from app.domain.partners import (
     PartnerWorkspace,
     WorkspaceContext,
     WorkspaceMembership,
+    UserConsent,
 )
 from app.domain.business_profiles import (
     BUSINESS_PROFILE_SCHEMA_VERSION,
@@ -84,6 +85,21 @@ CREATE TABLE IF NOT EXISTS workspace_memberships (
 
 CREATE INDEX IF NOT EXISTS idx_workspace_memberships_user_status
     ON workspace_memberships(telegram_user_id, status);
+
+CREATE TABLE IF NOT EXISTS user_consents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER NOT NULL,
+    telegram_user_id INTEGER NOT NULL,
+    consent_version TEXT NOT NULL,
+    accepted_at TEXT NOT NULL,
+    FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id),
+    FOREIGN KEY (workspace_id, telegram_user_id)
+        REFERENCES workspace_memberships(workspace_id, telegram_user_id),
+    UNIQUE (workspace_id, telegram_user_id, consent_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_consents_lookup
+    ON user_consents(workspace_id, telegram_user_id, consent_version);
 """
 
 _PROFILE_SCHEMA = """CREATE TABLE {table_name} (
@@ -290,6 +306,61 @@ class PartnerRepository:
             db.row_factory = aiosqlite.Row
             row = await self._workspace_row_by_id(db, workspace_id)
         return _workspace_from_row(row) if row is not None else None
+
+    async def accept_user_consent(
+        self, workspace_id: int, telegram_user_id: int, consent_version: str
+    ) -> UserConsent:
+        version = _validate_consent_values(
+            workspace_id, telegram_user_id, consent_version
+        )
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                membership = await (await db.execute(
+                    "SELECT 1 FROM workspace_memberships WHERE workspace_id = ? "
+                    "AND telegram_user_id = ? AND status = 'active'",
+                    (workspace_id, telegram_user_id),
+                )).fetchone()
+                if membership is None:
+                    raise PermissionError(
+                        "Активная membership для consent не найдена"
+                    )
+                await db.execute(
+                    "INSERT INTO user_consents "
+                    "(workspace_id, telegram_user_id, consent_version, accepted_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(workspace_id, telegram_user_id, consent_version) "
+                    "DO NOTHING",
+                    (workspace_id, telegram_user_id, version, _now()),
+                )
+                row = await (await db.execute(
+                    "SELECT * FROM user_consents WHERE workspace_id = ? "
+                    "AND telegram_user_id = ? AND consent_version = ?",
+                    (workspace_id, telegram_user_id, version),
+                )).fetchone()
+                if row is None:
+                    raise RuntimeError("Не удалось сохранить consent")
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _consent_from_row(row)
+
+    async def has_user_consent(
+        self, workspace_id: int, telegram_user_id: int, consent_version: str
+    ) -> bool:
+        version = _validate_consent_values(
+            workspace_id, telegram_user_id, consent_version
+        )
+        async with aiosqlite.connect(self.db_path) as db:
+            row = await (await db.execute(
+                "SELECT 1 FROM user_consents WHERE workspace_id = ? "
+                "AND telegram_user_id = ? AND consent_version = ?",
+                (workspace_id, telegram_user_id, version),
+            )).fetchone()
+        return row is not None
 
     async def provision_partner(
         self,
@@ -1221,6 +1292,26 @@ def _membership_from_row(row: aiosqlite.Row) -> WorkspaceMembership:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _consent_from_row(row: aiosqlite.Row) -> UserConsent:
+    return UserConsent(
+        id=row["id"], workspace_id=row["workspace_id"],
+        telegram_user_id=row["telegram_user_id"],
+        consent_version=row["consent_version"], accepted_at=row["accepted_at"],
+    )
+
+
+def _validate_consent_values(
+    workspace_id: int, telegram_user_id: int, consent_version: str
+) -> str:
+    if type(workspace_id) is not int or workspace_id < 1:
+        raise ValueError("workspace_id должен быть положительным целым числом")
+    if type(telegram_user_id) is not int or telegram_user_id < 1:
+        raise ValueError("telegram_user_id должен быть положительным целым числом")
+    if not isinstance(consent_version, str) or not consent_version.strip():
+        raise ValueError("consent_version обязателен")
+    return consent_version.strip()
 
 
 def _validate_membership(role: str, status: str) -> None:

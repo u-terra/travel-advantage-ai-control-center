@@ -62,6 +62,19 @@ def test_usable_profile_produces_personalized_spec_and_preserves_claim_status():
     assert [c["text"] for c in spec.verified_claims_allowed] == ["Verified"]
     assert [c["text"] for c in spec.unverified_claims_requiring_caution] == ["Unverified"]
     assert spec.profile_revision_used == 3
+    assert "public_contacts" not in spec.trusted_business_context
+
+
+def test_standard_provider_request_excludes_public_contacts():
+    from app.services.generation_request_builder import build_provider_generation_request
+
+    profile_value = profile()
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        profile_value.workspace_id, "Нужен обычный пост", profile_value
+    )
+    request = build_provider_generation_request(spec)
+    assert "public_contacts" not in request.source_text
+    assert "https://example.com" not in request.source_text
 
 
 def test_incomplete_profile_uses_only_populated_limited_safe_context():

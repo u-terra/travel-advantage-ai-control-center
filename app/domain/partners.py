@@ -43,3 +43,12 @@ class WorkspaceContext:
     workspace_id: int
     role: str
     workspace_status: str
+
+
+@dataclass(frozen=True)
+class UserConsent:
+    id: int
+    workspace_id: int
+    telegram_user_id: int
+    consent_version: str
+    accepted_at: str

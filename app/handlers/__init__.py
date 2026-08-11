@@ -2,6 +2,7 @@ from aiogram import Router
 
 from app.handlers import (
     material_generation,
+    consent,
     menu,
     source_analysis,
     sources,
@@ -14,6 +15,7 @@ from app.handlers import (
 def build_router() -> Router:
     r = Router(name="owner")
     r.include_router(start.router)
+    r.include_router(consent.router)
     r.include_router(menu.router)
     r.include_router(sources.router)
     r.include_router(source_analysis.router)
