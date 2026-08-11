@@ -49,16 +49,17 @@ from app.services.lead_radar import (
     route_card,
     unavailable_summary,
 )
+from app.repositories.partner_repository import PartnerRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
+from app.services.generation_request_builder import build_provider_generation_request
 from app.services.llm.base import LLMProvider
+from app.services.material_orchestration import MaterialOrchestrationService
 from app.storage import Journal
 
 router = Router(name="menu")
 
 _RADAR_CONTENT_PREFIX = "radar_content:"
 _RADAR_CONTENT_LIMIT = 3
-_DRAFT_MATERIAL_TYPE = "market_offer"
-_DRAFT_OUTPUT_FORMAT = "telegram"
 _DRAFT_MODE = "ai"
 
 
@@ -127,22 +128,6 @@ def _radar_content_keyboard(
             ]
             for index, idea in enumerate(ideas, start=1)
         ]
-    )
-
-
-def _build_radar_content_task(idea: dict[str, str]) -> str:
-    title = idea.get("title") or "Тема из Travel Lead Radar"
-    reason = idea.get("reason") or "Подходит как информационная тема."
-    url = idea.get("url") or "—"
-    return (
-        "Нужен спокойный Telegram-пост для Travel Advantage по теме из "
-        "Travel Lead Radar.\n"
-        f"Тема: {title}\n"
-        f"Почему тема выбрана: {reason}\n"
-        f"Источник идеи: {url}\n\n"
-        "Сделай полезный информационный пост без обещаний дохода, "
-        "окупаемости или гарантированных скидок. Не утверждай, что "
-        "формат подходит всем. Избегай фразы «без давления»."
     )
 
 
@@ -292,6 +277,7 @@ async def on_radar_content_selected(
     workspace_context: WorkspaceContext | None,
     workspace_signal_repository: WorkspaceSignalRepository,
     lead_radar_config: LeadRadarConfig,
+    partner_repository: PartnerRepository,
 ) -> None:
     raw_data = callback.data or ""
     try:
@@ -318,13 +304,23 @@ async def on_radar_content_selected(
         await callback.answer("Сигнал недоступен.", show_alert=True)
         return
     signal = authorized[0]
-    idea = {
-        "title": signal.title,
-        "reason": signal.action_reason,
-        "url": signal.url,
-    }
 
-    task_text = _build_radar_content_task(idea)
+    profile = await partner_repository.get_business_profile(
+        workspace_context.workspace_id
+    )
+    spec = MaterialOrchestrationService().build_radar_generation_spec(
+        workspace_context.workspace_id,
+        profile,
+        title=record.item_title,
+        summary=record.item_summary,
+        source_type=record.source_type,
+        origin_type=record.origin_type,
+        url=record.item_url,
+        category=record.ai_category or "",
+        reason=record.ai_reason or signal.action_reason,
+    )
+    request = build_provider_generation_request(spec)
+    task_text = f"Radar draft: {signal.title}"
 
     await callback.answer("Готовлю черновик…")
     if callback.message is not None:
@@ -344,9 +340,9 @@ async def on_radar_content_selected(
 
     draft = await asyncio.to_thread(
         llm_provider.generate_draft,
-        source_text=task_text,
-        material_type=_DRAFT_MATERIAL_TYPE,
-        output_format=_DRAFT_OUTPUT_FORMAT,
+        source_text=request.source_text,
+        material_type=request.material_type,
+        output_format=request.output_format,
         mode=_DRAFT_MODE,
     )
 

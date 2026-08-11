@@ -13,6 +13,7 @@ from app.services.business_profile_context import (
 
 _OBJECTIVE = "Создать черновик материала по выбранному и разобранному источнику."
 _FREE_TEXT_OBJECTIVE = "Создать черновик обычного поста по запросу пользователя."
+_RADAR_OBJECTIVE = "Создать черновик информационного материала по выбранному Radar-сигналу."
 _CONSTRAINTS = ("Черновик требует ручной проверки перед использованием.",)
 
 
@@ -83,6 +84,48 @@ class MaterialOrchestrationService:
             source_facts={},
             trusted_business_context=trusted_context,
             untrusted_source_content=task_text,
+            tone_preferences=tone_preferences,
+            verified_claims_allowed=verified,
+            unverified_claims_requiring_caution=unverified,
+            constraints=_CONSTRAINTS,
+            profile_revision_used=revision,
+        )
+
+    def build_radar_generation_spec(
+        self,
+        workspace_id: int,
+        profile: BusinessProfile | None,
+        *,
+        title: str,
+        summary: str,
+        source_type: str,
+        origin_type: str,
+        url: str,
+        category: str,
+        reason: str,
+    ) -> GenerationSpec:
+        trusted_context, tone_preferences, verified, unverified, revision = (
+            _profile_generation_values(workspace_id, profile)
+        )
+        return GenerationSpec(
+            action_type=GenerationAction.CREATE_ARTIFACT,
+            artifact_type="post",
+            objective=_RADAR_OBJECTIVE,
+            audience=tuple(trusted_context.get("audiences", ())),
+            output_format="telegram",
+            source_facts={
+                "title": title,
+                "summary": summary,
+                "source_type": source_type,
+                "origin_type": origin_type,
+                "url": url,
+                "category": category,
+                "reason": reason,
+            },
+            trusted_business_context=trusted_context,
+            untrusted_source_content="\n".join(
+                value for value in (title, summary) if value
+            ),
             tone_preferences=tone_preferences,
             verified_claims_allowed=verified,
             unverified_claims_requiring_caution=unverified,
