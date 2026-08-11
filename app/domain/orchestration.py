@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import math
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -8,15 +9,13 @@ from typing import Any, Mapping
 from app.domain.content import ARTIFACT_TYPES
 
 
-ACTION_CREATE_ARTIFACT = "create_artifact"
-SUPPORTED_GENERATION_ACTIONS = frozenset({ACTION_CREATE_ARTIFACT})
-SUPPORTED_OUTPUT_FORMATS = frozenset({"telegram", "vk"})
-_SECRET_FIELD_NAMES = frozenset(
-    {
-        "apikey", "token", "accesstoken", "refreshtoken", "password",
-        "secret", "credential", "credentials",
-    }
-)
+class GenerationAction(StrEnum):
+    CREATE_ARTIFACT = "create_artifact"
+
+
+class OutputFormat(StrEnum):
+    TELEGRAM = "telegram"
+    VK = "vk"
 
 
 class GenerationSpecValidationError(ValueError):
@@ -25,33 +24,36 @@ class GenerationSpecValidationError(ValueError):
 
 @dataclass(frozen=True)
 class GenerationSpec:
-    action_type: str
+    action_type: GenerationAction
     artifact_type: str
     objective: str
-    output_format: str
-    business_context: Mapping[str, Any]
-    trusted_source_facts: Mapping[str, Any]
+    audience: tuple[str, ...]
+    output_format: OutputFormat
+    source_facts: Mapping[str, Any]
+    trusted_business_context: Mapping[str, Any]
     untrusted_source_content: str
-    verified_claims: tuple[Mapping[str, Any], ...]
-    unverified_claims: tuple[Mapping[str, Any], ...]
+    tone_preferences: Mapping[str, Any]
+    verified_claims_allowed: tuple[Mapping[str, Any], ...]
+    unverified_claims_requiring_caution: tuple[Mapping[str, Any], ...]
     constraints: tuple[str, ...]
-    profile_revision: int | None
+    profile_revision_used: int | None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "business_context", freeze_json_value(self.business_context))
-        object.__setattr__(
-            self, "trusted_source_facts", freeze_json_value(self.trusted_source_facts)
-        )
-        object.__setattr__(self, "verified_claims", freeze_json_value(self.verified_claims))
-        object.__setattr__(
-            self, "unverified_claims", freeze_json_value(self.unverified_claims)
-        )
-        object.__setattr__(self, "constraints", freeze_json_value(self.constraints))
+        try:
+            object.__setattr__(self, "action_type", GenerationAction(self.action_type))
+            object.__setattr__(self, "output_format", OutputFormat(self.output_format))
+        except (TypeError, ValueError) as exc:
+            raise GenerationSpecValidationError("Неизвестный action_type/output_format") from exc
+        for field in (
+            "audience", "source_facts", "trusted_business_context",
+            "tone_preferences", "verified_claims_allowed",
+            "unverified_claims_requiring_caution", "constraints",
+        ):
+            object.__setattr__(self, field, freeze_json_value(getattr(self, field)))
         validate_generation_spec(self)
 
 
 def freeze_json_value(value: Any) -> Any:
-    """Return a defensive, recursively immutable snapshot of a JSON-safe value."""
     if value is None or type(value) in {bool, int, str}:
         return value
     if type(value) is float:
@@ -72,73 +74,61 @@ def freeze_json_value(value: Any) -> Any:
     )
 
 
-def thaw_json_value(value: Any) -> Any:
-    """Convert an already validated frozen value to a JSON-serializable copy."""
-    if isinstance(value, Mapping):
-        return {key: thaw_json_value(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [thaw_json_value(item) for item in value]
-    return value
-
-
 def validate_generation_spec(spec: GenerationSpec) -> None:
-    if spec.action_type not in SUPPORTED_GENERATION_ACTIONS:
+    if type(spec.action_type) is not GenerationAction:
         raise GenerationSpecValidationError("Неизвестный action_type")
     if spec.artifact_type not in ARTIFACT_TYPES:
         raise GenerationSpecValidationError("Неизвестный artifact_type")
-    if spec.output_format not in SUPPORTED_OUTPUT_FORMATS:
+    if type(spec.output_format) is not OutputFormat:
         raise GenerationSpecValidationError("Неизвестный output_format")
     if not isinstance(spec.objective, str) or not spec.objective.strip():
         raise GenerationSpecValidationError("objective не должен быть пустым")
-    if not isinstance(spec.business_context, Mapping):
-        raise GenerationSpecValidationError("business_context должен быть mapping")
-    if not isinstance(spec.trusted_source_facts, Mapping):
-        raise GenerationSpecValidationError("trusted_source_facts должен быть mapping")
     if not isinstance(spec.untrusted_source_content, str):
         raise GenerationSpecValidationError("untrusted_source_content должен быть строкой")
-    if spec.profile_revision is not None and (
-        type(spec.profile_revision) is not int or spec.profile_revision < 1
+    if spec.profile_revision_used is not None and (
+        type(spec.profile_revision_used) is not int or spec.profile_revision_used < 1
     ):
-        raise GenerationSpecValidationError("profile_revision должен быть >= 1 либо None")
+        raise GenerationSpecValidationError("profile_revision_used должен быть >= 1 либо None")
+    _validate_string_tuple(spec.audience, "audience")
     _validate_string_tuple(spec.constraints, "constraints")
-    verified = _validate_claims(spec.verified_claims, "verified_claims", "verified")
+    for field in ("source_facts", "trusted_business_context", "tone_preferences"):
+        value = getattr(spec, field)
+        if not isinstance(value, Mapping):
+            raise GenerationSpecValidationError(f"{field} должен быть mapping")
+        _reject_secret_fields(value)
+    verified = _validate_claims(
+        spec.verified_claims_allowed, "verified_claims_allowed", "verified"
+    )
     unverified = _validate_claims(
-        spec.unverified_claims, "unverified_claims", "unverified"
+        spec.unverified_claims_requiring_caution,
+        "unverified_claims_requiring_caution", "unverified",
     )
     if verified & unverified:
         raise GenerationSpecValidationError(
             "Один claim не может быть одновременно verified и unverified"
         )
-    for value in (
-        spec.business_context,
-        spec.trusted_source_facts,
-        spec.verified_claims,
-        spec.unverified_claims,
-    ):
-        _reject_secret_fields(value)
 
 
-def _validate_claims(
-    claims: tuple[Mapping[str, Any], ...], field: str, expected_status: str
-) -> set[str]:
+def _validate_claims(claims: tuple[Any, ...], field: str, status: str) -> set[str]:
     if type(claims) is not tuple:
         raise GenerationSpecValidationError(f"{field} должен быть tuple")
     texts: set[str] = set()
     for claim in claims:
-        if not isinstance(claim, Mapping):
-            raise GenerationSpecValidationError(f"{field} содержит не-mapping claim")
-        if set(claim) != {"text", "verification_status", "evidence_reference"}:
-            raise GenerationSpecValidationError(f"{field} содержит неверную структуру claim")
+        if not isinstance(claim, Mapping) or set(claim) != {
+            "text", "verification_status", "evidence_reference"
+        }:
+            raise GenerationSpecValidationError(f"{field} содержит неверный claim")
         text = claim["text"]
         evidence = claim["evidence_reference"]
         if not isinstance(text, str) or not text.strip():
             raise GenerationSpecValidationError(f"{field}.text не должен быть пустым")
-        if claim["verification_status"] != expected_status:
+        if claim["verification_status"] != status:
             raise GenerationSpecValidationError(f"{field} содержит неверный статус")
         if evidence is not None and not isinstance(evidence, str):
             raise GenerationSpecValidationError(
                 f"{field}.evidence_reference должен быть строкой либо None"
             )
+        _reject_secret_fields(claim)
         texts.add(text.strip())
     return texts
 
@@ -150,17 +140,19 @@ def _validate_string_tuple(value: tuple[str, ...], field: str) -> None:
         raise GenerationSpecValidationError(f"{field} должен быть tuple непустых строк")
 
 
+_SECRET_FIELDS = frozenset({
+    "apikey", "token", "accesstoken", "refreshtoken", "password",
+    "secret", "credential", "credentials", "telegramuserid", "memberid",
+})
+
+
 def _reject_secret_fields(value: Any) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if not isinstance(key, str):
-                raise GenerationSpecValidationError("Ключи mappings должны быть строками")
             normalized = key.strip().lower().replace("_", "").replace("-", "")
-            if normalized in _SECRET_FIELD_NAMES:
-                raise GenerationSpecValidationError("GenerationSpec содержит secret field")
+            if normalized in _SECRET_FIELDS:
+                raise GenerationSpecValidationError("GenerationSpec содержит запрещённое поле")
             _reject_secret_fields(item)
     elif isinstance(value, tuple):
         for item in value:
             _reject_secret_fields(item)
-    elif value is not None and type(value) not in {bool, int, float, str}:
-        raise GenerationSpecValidationError("GenerationSpec содержит не-JSON тип")
