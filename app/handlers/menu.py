@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from aiogram import F, Router
 from aiogram.filters import MagicData
@@ -38,6 +39,7 @@ from app.keyboards import (
     WEB_RESOURCES_BACK,
     active_main_menu,
     main_menu,
+    material_result_keyboard,
     v2_back_keyboard,
     web_resources_keyboard,
 )
@@ -50,6 +52,7 @@ from app.services.lead_radar import (
     route_card,
     unavailable_summary,
 )
+from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.generation_request_builder import build_provider_generation_request
@@ -58,10 +61,12 @@ from app.services.material_orchestration import MaterialOrchestrationService
 from app.storage import Journal
 
 router = Router(name="menu")
+log = logging.getLogger(__name__)
 
 _RADAR_CONTENT_PREFIX = "radar_content:"
 _RADAR_CONTENT_LIMIT = 3
 _DRAFT_MODE = "ai"
+_RADAR_ARTIFACT_FAILURE = "Не удалось сохранить материал. Попробуйте ещё раз позже."
 
 
 class AwaitTask(StatesGroup):
@@ -284,6 +289,7 @@ async def on_radar_content_selected(
     workspace_signal_repository: WorkspaceSignalRepository,
     lead_radar_config: LeadRadarConfig,
     partner_repository: PartnerRepository,
+    artifact_repository: ArtifactRepository,
 ) -> None:
     raw_data = callback.data or ""
     try:
@@ -362,6 +368,19 @@ async def on_radar_content_selected(
         )
         return
 
+    try:
+        artifact, _ = await artifact_repository.create_artifact_with_initial_version(
+            workspace_context.workspace_id,
+            artifact_type=spec.artifact_type,
+            title=f"Telegram: {signal.title}",
+            content=draft.text,
+            generation_note=f"Lead Radar: {request.material_type}/{request.output_format}",
+        )
+    except Exception:
+        log.warning("menu: radar artifact persistence failed")
+        await callback.message.answer(_RADAR_ARTIFACT_FAILURE)
+        return
+
     lines: list[str] = [
         "📝 Черновик по идее из Radar — для ручной проверки",
         "",
@@ -375,7 +394,9 @@ async def on_radar_content_selected(
         lines.append("")
         lines.append("Текст требует ручной проверки перед публикацией.")
 
-    await callback.message.answer("\n".join(lines))
+    await callback.message.answer(
+        "\n".join(lines), reply_markup=material_result_keyboard(artifact.id)
+    )
 
 
 @router.message(F.text == BTN_LAST_TASK)

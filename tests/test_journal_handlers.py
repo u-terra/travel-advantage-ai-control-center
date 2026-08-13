@@ -11,7 +11,10 @@ from app.domain.business_profiles import BusinessClaim, BusinessContext, Busines
 from app.domain.partners import WorkspaceContext
 from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected
 from app.handlers.tasks import on_free_text, on_task_after_button
-from app.keyboards import active_main_menu
+from app.handlers.text_review import review_artifact
+from app.keyboards import ARTIFACT_CHECK_PREFIX, active_main_menu
+from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.partner_repository import PartnerRepository
 from app.routing.modules import Module
 from app.services.llm.models import ContentDraft
 from app.storage import JournalEntry
@@ -66,6 +69,14 @@ def journal():
 
 def signal_repository(record=None):
     return SimpleNamespace(get_for_workspace=AsyncMock(return_value=record))
+
+
+def artifact_repository(artifact_id=501):
+    return SimpleNamespace(
+        create_artifact_with_initial_version=AsyncMock(
+            return_value=(SimpleNamespace(id=artifact_id), object())
+        )
+    )
 
 
 def radar_config():
@@ -148,12 +159,14 @@ def test_radar_handler_does_not_write_without_workspace_context() -> None:
     current_journal = journal()
     state = State({"radar_content_ideas": [{"title": "Тема"}]})
     repository = signal_repository()
+    artifacts = artifact_repository()
     run(on_radar_content_selected(
         Callback(), state, current_journal, FakeLLMProvider(), None,
-        repository, radar_config(), profile_repository()
+        repository, radar_config(), profile_repository(), artifacts,
     ))
     current_journal.add.assert_not_awaited()
     repository.get_for_workspace.assert_not_awaited()
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
 
 
 def test_find_signals_does_not_read_radar_without_workspace_context() -> None:
@@ -190,16 +203,18 @@ def test_foreign_interpretation_callback_fails_closed() -> None:
     repository = signal_repository(None)
     profiles = profile_repository(business_profile(31))
     provider = FakeLLMProvider()
+    artifacts = artifact_repository()
     with patch("app.handlers.menu.MaterialOrchestrationService") as orchestration:
         run(on_radar_content_selected(
             Callback(88), State(), current_journal, provider, context(31),
-            repository, radar_config(), profiles
+            repository, radar_config(), profiles, artifacts,
         ))
     orchestration.assert_not_called()
     repository.get_for_workspace.assert_awaited_once_with(31, 88)
     profiles.get_business_profile.assert_not_awaited()
     provider.generate_draft.assert_not_called()
     current_journal.add.assert_not_awaited()
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
 
 
 def test_radar_handler_passes_workspace_id_without_changing_flow() -> None:
@@ -214,6 +229,7 @@ def test_radar_handler_passes_workspace_id_without_changing_flow() -> None:
         item_title="Тема", item_summary="Описание", item_url="https://example.org/1",
     )
     repository = signal_repository(record)
+    artifacts = artifact_repository(artifact_id=501)
 
     with patch("app.services.lead_radar._load_recommender") as load:
         load.return_value = SimpleNamespace(
@@ -225,13 +241,24 @@ def test_radar_handler_passes_workspace_id_without_changing_flow() -> None:
         )
         run(on_radar_content_selected(
             callback, state, current_journal, provider, context(31),
-            repository, radar_config(), profile_repository()
+            repository, radar_config(), profile_repository(), artifacts,
         ))
 
     repository.get_for_workspace.assert_awaited_once_with(31, 7)
     assert current_journal.add.await_args.args == (31,)
     provider.generate_draft.assert_called_once()
     assert "Черновик" in callback.message.answers[-1][0]
+
+    # Черновик сохраняется как Artifact в том же workspace, тем же способом,
+    # что и в material_generation.py/text_review.py — и пользователь получает
+    # ту же клавиатуру продолжения работы с материалом.
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    assert artifacts.create_artifact_with_initial_version.call_args.args == (31,)
+    kwargs = artifacts.create_artifact_with_initial_version.call_args.kwargs
+    assert kwargs["content"] == "Черновик"
+    assert kwargs["artifact_type"] == "post"
+    reply_markup = callback.message.answers[-1][1]["reply_markup"]
+    assert reply_markup.inline_keyboard[0][0].callback_data == f"{ARTIFACT_CHECK_PREFIX}501"
 
 
 def radar_record(*, summary="Описание", title="Тема"):
@@ -243,7 +270,10 @@ def radar_record(*, summary="Описание", title="Тема"):
     )
 
 
-def run_radar(profile=None, *, workspace_id=42, record=None, draft="Radar draft"):
+def run_radar(
+    profile=None, *, workspace_id=42, record=None, draft="Radar draft",
+    artifact_repo=None,
+):
     callback = Callback()
     provider = FakeLLMProvider(
         draft=None if draft is None else ContentDraft(draft, ())
@@ -251,6 +281,7 @@ def run_radar(profile=None, *, workspace_id=42, record=None, draft="Radar draft"
     profiles = profile_repository(profile)
     repository = signal_repository(record or radar_record())
     current_journal = journal()
+    artifacts = artifact_repo if artifact_repo is not None else artifact_repository()
     with patch("app.services.lead_radar._load_recommender") as load:
         load.return_value = SimpleNamespace(
             recommend_action=lambda row: {
@@ -260,7 +291,7 @@ def run_radar(profile=None, *, workspace_id=42, record=None, draft="Radar draft"
         )
         run(on_radar_content_selected(
             callback, State(), current_journal, provider, context(workspace_id),
-            repository, radar_config(), profiles,
+            repository, radar_config(), profiles, artifacts,
         ))
     return callback, provider, profiles, repository, current_journal
 
@@ -282,7 +313,7 @@ def test_radar_usable_profile_personalizes_provider_request_after_authorization(
         )
         run(on_radar_content_selected(
             Callback(), State(), journal(), provider, context(), repository,
-            radar_config(), profiles,
+            radar_config(), profiles, artifact_repository(),
         ))
     assert events == ["authorized", "profile"]
     request = provider.generate_draft.call_args.kwargs["source_text"]
@@ -351,11 +382,64 @@ def test_radar_injection_is_untrusted_and_provider_request_is_private():
 
 
 def test_radar_provider_failure_keeps_error_journal_and_no_artifact():
-    callback, provider, profiles, _, current_journal = run_radar(None, draft=None)
+    artifacts = artifact_repository()
+    callback, provider, profiles, _, current_journal = run_radar(
+        None, draft=None, artifact_repo=artifacts,
+    )
     provider.generate_draft.assert_called_once()
     assert "Не удалось получить черновик автоматически" in callback.message.answers[-1][0]
     current_journal.add.assert_awaited_once()
     profiles.create_artifact_with_initial_version.assert_not_awaited()
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+
+
+def test_radar_artifact_persistence_failure_shows_no_false_success():
+    """Ошибка сохранения не должна показывать пользователю черновик как
+    успешно сохранённый материал (тот же паттерн, что и в material_generation.py)."""
+    artifacts = artifact_repository()
+    artifacts.create_artifact_with_initial_version.side_effect = RuntimeError("private")
+    callback, provider, _, _, current_journal = run_radar(artifact_repo=artifacts)
+    provider.generate_draft.assert_called_once()
+    assert "Не удалось сохранить материал" in callback.message.answers[-1][0]
+    assert "private" not in callback.message.answers[-1][0]
+    # Journal-запись о задаче пишется до генерации черновика и не зависит от
+    # успеха последующего сохранения Artifact — существующий flow не сломан.
+    current_journal.add.assert_awaited_once()
+
+
+def test_radar_artifact_is_reviewable_via_existing_check_text_flow(tmp_path) -> None:
+    """Сквозная проверка на реальном ArtifactRepository (не на моках):
+    Artifact, сохранённый on_radar_content_selected, читается существующим
+    review_artifact («🛡 Проверить текст») в том же workspace без какой-либо
+    отдельной бизнес-логики для radar-происхождения материала."""
+    db = tmp_path / "radar_review.db"
+    partners = PartnerRepository(db)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    artifacts = ArtifactRepository(db)
+    run(artifacts.init())
+
+    callback, provider, _, _, _ = run_radar(
+        None, workspace_id=workspace.id, draft="Радар-черновик", artifact_repo=artifacts,
+    )
+    provider.generate_draft.assert_called_once()
+
+    reply_markup = callback.message.answers[-1][1]["reply_markup"]
+    check_callback_data = reply_markup.inline_keyboard[0][0].callback_data
+    assert check_callback_data.startswith(ARTIFACT_CHECK_PREFIX)
+
+    review_callback = Callback()
+    review_callback.data = check_callback_data
+    review_provider = FakeLLMProvider()
+
+    run(review_artifact(
+        review_callback, State(), context(workspace.id), artifacts, review_provider,
+    ))
+
+    # Не «недоступен» — значит, artifact и его текущая версия реально
+    # прочитаны из того же workspace, и существующий review flow запущен.
+    assert review_callback.answers[0] == ("Проверяю текст…", {})
+    review_provider.check_text.assert_called_once_with(source_text="Радар-черновик")
 
 
 def test_last_task_is_workspace_scoped_and_keeps_user_format() -> None:
