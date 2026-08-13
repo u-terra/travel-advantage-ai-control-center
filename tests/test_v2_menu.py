@@ -17,7 +17,9 @@ from app.handlers.menu import (
     on_v2_create_material,
     on_v2_placeholder,
 )
+from app.handlers import materials as materials_handlers
 from app.handlers import menu as menu_handlers
+from app.handlers import profile as profile_handlers
 from app.handlers import tasks as task_handlers
 from app.handlers import text_review as text_review_handlers
 from app.handlers.start import cmd_start
@@ -205,7 +207,7 @@ def test_start_selects_menu_from_flag() -> None:
 
 def test_v2_help_placeholder_and_return_use_v2_navigation() -> None:
     help_message = _Message(BTN_V2_HELP)
-    placeholder_message = _Message(BTN_V2_PROFILE)
+    placeholder_message = _Message(BTN_V2_CONTENT_PLAN)
     return_message = _Message(BTN_V2_MAIN_MENU)
     state = _State()
 
@@ -252,7 +254,9 @@ async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None
     message = _Message(text)
     data = {"raw_state": None, **workflow_data}
     for router in (
-        menu_handlers.router, text_review_handlers.router, task_handlers.router
+        menu_handlers.router, text_review_handlers.router,
+        profile_handlers.router, materials_handlers.router,
+        task_handlers.router,
     ):
         for handler in router.message.handlers:
             matched, _ = await handler.check(message, **data)
@@ -264,7 +268,9 @@ async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None
 @pytest.mark.parametrize(
     ("button", "handler_name"),
     [
-        (BTN_V2_PROFILE, "on_v2_placeholder"),
+        (BTN_V2_PROFILE, "show_profile"),
+        (BTN_V2_MATERIALS, "show_materials"),
+        (BTN_V2_CONTENT_PLAN, "on_v2_placeholder"),
         (BTN_V2_HELP, "on_v2_help"),
         (BTN_V2_MAIN_MENU, "on_v2_main_menu"),
         (BTN_V2_CHECK_TEXT, "start_free_text_review"),

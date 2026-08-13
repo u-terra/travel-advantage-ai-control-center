@@ -44,6 +44,7 @@ ARTIFACT_CHECK_PREFIX = "artifact_check:"
 ARTIFACT_REVIEW_SAVE_PREFIX = "artifact_review_save:"
 ARTIFACT_REVIEW_KEEP = "artifact_review_keep"
 TEXT_REVIEW_SAVE = "text_review_save"
+ARTIFACT_OPEN_PREFIX = "artifact_open:"
 
 
 WEB_RESOURCES_BACK = "web_resources_back"
@@ -68,8 +69,6 @@ V2_CATEGORY_BUTTONS = frozenset({BTN_V2_CLIENT_REPLY})
 
 V2_PLACEHOLDER_BUTTONS = frozenset({
     BTN_V2_CONTENT_PLAN,
-    BTN_V2_MATERIALS,
-    BTN_V2_PROFILE,
 })
 
 
@@ -234,6 +233,31 @@ def sources_registry_keyboard(
             text="➕ Предложить источник", callback_data=SOURCE_REGISTRY_ADD
         )]
     )
+    rows.append(
+        [InlineKeyboardButton(
+            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def materials_list_keyboard(
+    items: tuple[tuple[int, str], ...],
+) -> InlineKeyboardMarkup:
+    """Список материалов: кнопка на материал открывает его текущую версию.
+
+    Принимает готовые пары (id, подпись) — клавиатура не знает про Artifact
+    и не решает, как формировать подпись.
+    """
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"{ARTIFACT_OPEN_PREFIX}{artifact_id}",
+            )
+        ]
+        for artifact_id, label in items
+    ]
     rows.append(
         [InlineKeyboardButton(
             text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
