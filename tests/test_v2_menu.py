@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from aiogram import Router
 
 from app.config import load_settings
+from app.domain.partners import PartnerWorkspace, WorkspaceContext
 from app.handlers.menu import (
     AwaitTask,
     on_v2_category,
@@ -169,14 +171,31 @@ class _State:
         self.state = None
 
 
+def _resolved_workspace_context(workspace_id: int = 42) -> WorkspaceContext:
+    return WorkspaceContext(100, workspace_id, "member", "active")
+
+
+def _resolved_partner_repository(workspace_id: int = 42) -> Any:
+    workspace = PartnerWorkspace(workspace_id, "Acme Travel Club", "acme", "active", "now", "now")
+    return AsyncMock(get_workspace=AsyncMock(return_value=workspace))
+
+
 def test_start_selects_menu_from_flag() -> None:
     v1_message = _Message()
     v2_message = _Message()
     v1_state = _State()
     v2_state = _State()
 
-    _run(cmd_start(v1_message, v1_state, v2_menu_enabled=False))
-    _run(cmd_start(v2_message, v2_state, v2_menu_enabled=True))
+    _run(cmd_start(
+        v1_message, v1_state, v2_menu_enabled=False,
+        workspace_context=_resolved_workspace_context(),
+        partner_repository=_resolved_partner_repository(),
+    ))
+    _run(cmd_start(
+        v2_message, v2_state, v2_menu_enabled=True,
+        workspace_context=_resolved_workspace_context(),
+        partner_repository=_resolved_partner_repository(),
+    ))
 
     assert _texts(v1_message.answers[0][1]) == V1_BUTTONS
     assert _texts(v2_message.answers[0][1]) == V2_BUTTONS

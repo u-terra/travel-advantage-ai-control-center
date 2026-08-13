@@ -155,7 +155,7 @@ def build_card(decision: RouteDecision) -> str:
     lines.append("Ожидаемый результат:")
     lines.append(_EXPECTED_RESULT[decision.primary_module])
     lines.append("")
-    lines.append("Ручное решение Владимира:")
+    lines.append("Ваше решение:")
     lines.append(_MANUAL_DECISION[decision.primary_module])
     if decision.safety_level is SafetyLevel.MANDATORY:
         lines.append("Перед отправкой обязательно сверить факты, цены, условия и риски вручную.")

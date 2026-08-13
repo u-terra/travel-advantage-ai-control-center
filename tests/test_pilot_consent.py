@@ -144,4 +144,7 @@ def test_telegram_consent_is_separate_action_and_stale_version_fails(
 def test_legacy_start_flow_does_not_require_consent() -> None:
     message = Message()
     run(cmd_start(message, State(), v2_menu_enabled=True))
-    assert "Главное меню" in message.answers[0][0]
+    text = message.answers[0][0]
+    assert text
+    assert "согласи" not in text.lower()
+    assert "consent" not in text.lower()
