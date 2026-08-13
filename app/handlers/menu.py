@@ -206,9 +206,12 @@ async def on_v2_placeholder(message: Message, state: FSMContext) -> None:
 async def on_v2_create_material(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        "Сначала разберите источник. После анализа можно создать материал на его основе.",
+        "Как хотите создать материал?\n\n"
+        "Можно разобрать публикацию или ссылку и подготовить материал на её "
+        "основе — либо найти свежие сигналы и идеи для контента.",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text=BTN_V2_ANALYZE_LINK)],
+                      [KeyboardButton(text=BTN_V2_FIND_SIGNALS)],
                       [KeyboardButton(text=BTN_V2_MAIN_MENU)]],
             resize_keyboard=True,
         ),

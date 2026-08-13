@@ -228,13 +228,19 @@ def test_v2_help_placeholder_and_return_use_v2_navigation() -> None:
     assert state.clear_calls == 3
 
 
-def test_v2_create_material_explains_source_first_and_offers_analysis() -> None:
+def test_v2_create_material_shows_entry_point_choice_screen() -> None:
+    """«✍️ Создать материал» — экран выбора между уже существующими рабочими
+    путями, а не отдельный генератор и не обещание материала «по любой теме»."""
     message = _Message(BTN_V2_CREATE_MATERIAL)
     state = _State()
     _run(on_v2_create_material(message, state))
     text, markup = message.answers[0]
-    assert "Сначала разберите источник" in text
-    assert _texts(markup) == [BTN_V2_ANALYZE_LINK, BTN_V2_MAIN_MENU]
+    assert "Как хотите создать материал?" in text
+    assert "по любой теме" not in text.lower()
+    # Ровно два рабочих пути (оба уже ведут в существующие production flow) + возврат.
+    assert _texts(markup) == [
+        BTN_V2_ANALYZE_LINK, BTN_V2_FIND_SIGNALS, BTN_V2_MAIN_MENU,
+    ]
 
 
 @pytest.mark.parametrize(
