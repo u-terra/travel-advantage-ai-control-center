@@ -215,5 +215,56 @@ def test_save_free_text_failure_does_not_show_artifact_check_button():
 
     run(save_free_text(callback, state, partner, repo))
 
-    assert callback.message.answers == []
     assert callback.answers[-1][0] == "Не удалось сохранить материал."
+    message_text, kwargs = callback.message.answers[-1]
+    reply_markup = kwargs["reply_markup"]
+    assert not hasattr(reply_markup, "inline_keyboard")
+    assert ARTIFACT_CHECK_PREFIX not in str(kwargs)
+
+
+def test_save_free_text_failure_preserves_reviewed_text_with_safe_menu():
+    """Stage 2D: LLM уже вернула проверенный текст (reviewed_text) — при ошибке
+    сохранения он всё равно должен дойти до пользователя, без ложного
+    «сохранено» и без кнопок, завязанных на несуществующий artifact_id."""
+    callback = Callback(TEXT_REVIEW_SAVE)
+    state = State({"reviewed_text": "Уникальный проверенный текст"})
+    partner, repo = deps()
+    repo.create_artifact_with_initial_version.side_effect = RuntimeError("private")
+
+    run(save_free_text(callback, state, partner, repo))
+
+    assert len(callback.message.answers) == 2
+    warning_text, _ = callback.message.answers[0]
+    text_message, _ = callback.message.answers[1]
+
+    assert "сохранить его в «Мои материалы» не удалось" in warning_text
+    assert "Уникальный проверенный текст" in text_message
+    assert "private" not in warning_text and "private" not in text_message
+    assert "RuntimeError" not in warning_text and "RuntimeError" not in text_message
+    assert "Материал №" not in warning_text and "Материал №" not in text_message
+
+    # Здесь (в отличие от radar/source-flow) retry именно сохранения реально
+    # существует: state не очищается, и кнопка «💾 Сохранить как материал» на
+    # более раннем сообщении остаётся рабочей — поэтому честно сослаться на неё можно.
+    assert "💾 Сохранить как материал" in warning_text
+    assert state.data.get("reviewed_text") == "Уникальный проверенный текст"
+
+
+def test_save_free_text_failure_does_not_grow_text_message_beyond_original():
+    """Регрессия на границе лимита Telegram (4096 символов): предупреждение —
+    отдельное короткое сообщение, сам текст отправляется без добавленного
+    префикса, тем же объёмом, что и раньше."""
+    near_limit_text = "x" * 4000
+    callback = Callback(TEXT_REVIEW_SAVE)
+    state = State({"reviewed_text": near_limit_text})
+    partner, repo = deps()
+    repo.create_artifact_with_initial_version.side_effect = RuntimeError("private")
+
+    run(save_free_text(callback, state, partner, repo))
+
+    warning_text, _ = callback.message.answers[0]
+    text_message, _ = callback.message.answers[1]
+
+    assert text_message == near_limit_text
+    assert not text_message.startswith("⚠️")
+    assert len(warning_text) < 300

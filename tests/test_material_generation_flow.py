@@ -234,9 +234,55 @@ def test_persistence_failure_does_not_show_false_success():
         callback, partner, artifacts, analyses,
         FakeLLMProvider(draft=ContentDraft("Черновик", ())), profiles,
     ))
-    assert len(callback.message.answers) == 1
-    assert "Не удалось" in callback.message.answers[0][0]
-    assert "private" not in callback.message.answers[0][0]
+    warning_text = callback.message.answers[0][0]
+    assert "сохранить его в «Мои материалы» не удалось" in warning_text
+    assert "private" not in warning_text
+    # Для этого flow нет отдельного retry именно сохранения — не обещаем его.
+    assert "повторить" not in warning_text.lower()
+
+
+def test_persistence_failure_preserves_already_generated_draft_with_safe_menu():
+    """Stage 2D: LLM уже отдала текст — он не должен теряться, даже если
+    сохранение Artifact падает. Клавиатура при этом не должна ссылаться на
+    несуществующий artifact_id."""
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies()
+    artifacts.create_artifact_with_initial_version.side_effect = RuntimeError("private")
+    run(generate_source_material(
+        callback, partner, artifacts, analyses,
+        FakeLLMProvider(draft=ContentDraft("Уникальный черновик материала", ())), profiles,
+    ))
+
+    # Тот же chunking-механизм (_draft_messages), что и при успехе — новый не введён.
+    draft_text, draft_kwargs = callback.message.answers[-1]
+    assert "Уникальный черновик материала" in draft_text
+    assert "private" not in draft_text and "RuntimeError" not in draft_text
+    assert not draft_text.startswith("⚠️")
+
+    reply_markup = draft_kwargs["reply_markup"]
+    assert not hasattr(reply_markup, "inline_keyboard")
+    assert ARTIFACT_CHECK_PREFIX not in str(draft_kwargs)
+
+
+def test_persistence_failure_does_not_grow_draft_messages_beyond_success_path():
+    """Регрессия на границе лимита Telegram (4096 символов): предупреждение —
+    отдельное сообщение, черновик уходит тем же _draft_messages-chunking'ом и
+    того же объёма, что и при успешном сохранении."""
+    near_limit_draft = "x" * 4000
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies()
+    artifacts.create_artifact_with_initial_version.side_effect = RuntimeError("private")
+    run(generate_source_material(
+        callback, partner, artifacts, analyses,
+        FakeLLMProvider(draft=ContentDraft(near_limit_draft, ())), profiles,
+    ))
+
+    warning_text = callback.message.answers[0][0]
+    draft_messages = [text for text, _ in callback.message.answers[1:]]
+    expected_messages = _draft_messages("telegram", near_limit_draft, ())
+
+    assert draft_messages == expected_messages
+    assert len(warning_text) < 300
 
 
 def test_usable_profile_is_loaded_after_owned_source_and_personalizes_request():

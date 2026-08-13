@@ -12,7 +12,7 @@ from app.domain.partners import WorkspaceContext
 from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected
 from app.handlers.tasks import on_free_text, on_task_after_button
 from app.handlers.text_review import review_artifact
-from app.keyboards import ARTIFACT_CHECK_PREFIX, active_main_menu
+from app.keyboards import ARTIFACT_CHECK_PREFIX, BTN_V2_MAIN_MENU, active_main_menu
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.routing.modules import Module
@@ -398,13 +398,57 @@ def test_radar_artifact_persistence_failure_shows_no_false_success():
     успешно сохранённый материал (тот же паттерн, что и в material_generation.py)."""
     artifacts = artifact_repository()
     artifacts.create_artifact_with_initial_version.side_effect = RuntimeError("private")
-    callback, provider, _, _, current_journal = run_radar(artifact_repo=artifacts)
+    callback, provider, _, _, current_journal = run_radar(
+        artifact_repo=artifacts, draft="Уникальный черновик радара",
+    )
     provider.generate_draft.assert_called_once()
-    assert "Не удалось сохранить материал" in callback.message.answers[-1][0]
-    assert "private" not in callback.message.answers[-1][0]
+    # answers[0] — уже существующая карточка маршрута ("🧩 Маршрут: ..."),
+    # отправляемая до генерации черновика и не относящаяся к Stage 2D.
+    assert len(callback.message.answers) == 3
+    warning_text, _ = callback.message.answers[1]
+    draft_text, draft_kwargs = callback.message.answers[2]
+
+    # Stage 2D: сгенерированный текст не теряется — пользователь получает его
+    # вместе с честным предупреждением, что сохранить материал не удалось.
+    # Никакого обещания автоматического или гарантированного повтора нет —
+    # для radar-черновика отдельного retry сохранения не существует.
+    assert "сохранить его в «Мои материалы» не удалось" in warning_text
+    assert "повторить" not in warning_text.lower()
+    assert "Уникальный черновик радара" in draft_text
+    assert "private" not in warning_text and "private" not in draft_text
+    assert "RuntimeError" not in warning_text and "RuntimeError" not in draft_text
+
+    # Клавиатура — безопасный fallback без artifact_id (не material_result_keyboard).
+    reply_markup = draft_kwargs["reply_markup"]
+    assert not hasattr(reply_markup, "inline_keyboard")
+    assert [b.text for row in reply_markup.keyboard for b in row] == [BTN_V2_MAIN_MENU]
+
     # Journal-запись о задаче пишется до генерации черновика и не зависит от
     # успеха последующего сохранения Artifact — существующий flow не сломан.
     current_journal.add.assert_awaited_once()
+
+
+def test_radar_persistence_failure_does_not_grow_draft_message_beyond_success_path():
+    """Регрессия на границе лимита Telegram (4096 символов): предупреждение
+    не должно приклеиваться к тексту черновика в одном сообщении — иначе
+    объём сообщения с черновиком становится больше, чем при успехе."""
+    near_limit_draft = "x" * 4000
+    artifacts = artifact_repository()
+    artifacts.create_artifact_with_initial_version.side_effect = RuntimeError("private")
+    callback, _, _, _, _ = run_radar(artifact_repo=artifacts, draft=near_limit_draft)
+
+    assert len(callback.message.answers) == 3
+    warning_text, _ = callback.message.answers[1]
+    draft_text, _ = callback.message.answers[2]
+
+    expected_draft_text = "\n".join([
+        "📝 Черновик по идее из Radar — для ручной проверки", "", near_limit_draft,
+    ])
+    # Тот же текст, что уходил бы в сообщении при успешном сохранении —
+    # без предупреждения впереди и без увеличения объёма.
+    assert draft_text == expected_draft_text
+    assert not draft_text.startswith("⚠️")
+    assert len(warning_text) < 300
 
 
 def test_radar_artifact_is_reviewable_via_existing_check_text_flow(tmp_path) -> None:

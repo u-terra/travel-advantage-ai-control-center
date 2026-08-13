@@ -27,6 +27,11 @@ log = logging.getLogger(__name__)
 _WARNING = "Перед публикацией проверьте факты, даты, цены и ссылки."
 _FAILURE = "Не удалось проверить текст. Попробуйте ещё раз позже."
 _ARTIFACT_FAILURE = _FAILURE + "\n\nИсходный черновик сохранён и не изменён."
+_PERSIST_FAILURE_WARNING = (
+    "⚠️ Материал создан, но сохранить его в «Мои материалы» не удалось. "
+    "Скопируйте текст ниже, чтобы не потерять его. Сохранение можно повторить "
+    "кнопкой «💾 Сохранить как материал» на карточке проверки текста."
+)
 
 
 class TextReview(StatesGroup):
@@ -189,6 +194,9 @@ async def save_free_text(
     except Exception:
         log.warning("text_review: free text persistence failed")
         await callback.answer("Не удалось сохранить материал.", show_alert=True)
+        if callback.message is not None:
+            await callback.message.answer(_PERSIST_FAILURE_WARNING)
+            await callback.message.answer(text, reply_markup=v2_back_keyboard())
         return
     await state.clear()
     await callback.answer("Материал сохранён.")

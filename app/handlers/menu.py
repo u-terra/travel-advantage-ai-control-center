@@ -66,7 +66,10 @@ log = logging.getLogger(__name__)
 _RADAR_CONTENT_PREFIX = "radar_content:"
 _RADAR_CONTENT_LIMIT = 3
 _DRAFT_MODE = "ai"
-_RADAR_ARTIFACT_FAILURE = "Не удалось сохранить материал. Попробуйте ещё раз позже."
+_RADAR_ARTIFACT_FAILURE = (
+    "⚠️ Материал создан, но сохранить его в «Мои материалы» не удалось. "
+    "Скопируйте текст ниже, чтобы не потерять его."
+)
 
 
 class AwaitTask(StatesGroup):
@@ -368,19 +371,6 @@ async def on_radar_content_selected(
         )
         return
 
-    try:
-        artifact, _ = await artifact_repository.create_artifact_with_initial_version(
-            workspace_context.workspace_id,
-            artifact_type=spec.artifact_type,
-            title=f"Telegram: {signal.title}",
-            content=draft.text,
-            generation_note=f"Lead Radar: {request.material_type}/{request.output_format}",
-        )
-    except Exception:
-        log.warning("menu: radar artifact persistence failed")
-        await callback.message.answer(_RADAR_ARTIFACT_FAILURE)
-        return
-
     lines: list[str] = [
         "📝 Черновик по идее из Radar — для ручной проверки",
         "",
@@ -393,9 +383,24 @@ async def on_radar_content_selected(
             lines.append(f"— {warning}")
         lines.append("")
         lines.append("Текст требует ручной проверки перед публикацией.")
+    draft_text = "\n".join(lines)
+
+    try:
+        artifact, _ = await artifact_repository.create_artifact_with_initial_version(
+            workspace_context.workspace_id,
+            artifact_type=spec.artifact_type,
+            title=f"Telegram: {signal.title}",
+            content=draft.text,
+            generation_note=f"Lead Radar: {request.material_type}/{request.output_format}",
+        )
+    except Exception:
+        log.warning("menu: radar artifact persistence failed")
+        await callback.message.answer(_RADAR_ARTIFACT_FAILURE)
+        await callback.message.answer(draft_text, reply_markup=v2_back_keyboard())
+        return
 
     await callback.message.answer(
-        "\n".join(lines), reply_markup=material_result_keyboard(artifact.id)
+        draft_text, reply_markup=material_result_keyboard(artifact.id)
     )
 
 

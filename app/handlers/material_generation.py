@@ -36,6 +36,10 @@ _FAILURE = (
     "Не удалось создать материал. Исходный разбор сохранён — "
     "можно попробовать ещё раз позже."
 )
+_PERSIST_FAILURE_WARNING = (
+    "⚠️ Материал создан, но сохранить его в «Мои материалы» не удалось. "
+    "Скопируйте текст ниже, чтобы не потерять его."
+)
 
 
 def build_source_context(source, analysis, limit: int = 11_000) -> str:
@@ -179,6 +183,7 @@ async def generate_source_material(
     if draft is None:
         await callback.message.answer(_FAILURE)
         return
+    messages = _draft_messages(output_format, draft.text, draft.warnings)
     try:
         artifact, _ = await artifact_repository.create_artifact_with_initial_version(
             workspace_context.workspace_id,
@@ -192,9 +197,11 @@ async def generate_source_material(
         )
     except Exception:
         log.warning("material_generation: artifact persistence failed")
-        await callback.message.answer(_FAILURE)
+        await callback.message.answer(_PERSIST_FAILURE_WARNING)
+        for index, text in enumerate(messages):
+            reply_markup = v2_back_keyboard() if index == len(messages) - 1 else None
+            await callback.message.answer(text, reply_markup=reply_markup)
         return
-    messages = _draft_messages(output_format, draft.text, draft.warnings)
     for index, text in enumerate(messages):
         reply_markup = material_result_keyboard(artifact.id) if index == len(messages) - 1 else None
         await callback.message.answer(text, reply_markup=reply_markup)
