@@ -11,6 +11,7 @@ from app.domain.business_profiles import BusinessClaim, BusinessContext, Busines
 from app.domain.partners import WorkspaceContext
 from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected
 from app.handlers.tasks import on_free_text, on_task_after_button
+from app.keyboards import active_main_menu
 from app.routing.modules import Module
 from app.services.llm.models import ContentDraft
 from app.storage import JournalEntry
@@ -162,6 +163,26 @@ def test_find_signals_does_not_read_radar_without_workspace_context() -> None:
     run(on_find_signals(Message(), State(), radar_config(), repository, None))
     repository.sync_eligible.assert_not_awaited()
     repository.list_for_workspace.assert_not_awaited()
+
+
+def test_find_signals_reply_menu_respects_v2_flag() -> None:
+    """Кнопка сигналов доступна и из v1, и из v2 меню — возврат должен вести
+    в то же меню, откуда пришёл запрос, а не всегда в легаси-меню."""
+    def keyboard_texts(markup):
+        return [button.text for row in markup.keyboard for button in row]
+
+    for v2_menu_enabled in (False, True):
+        repository = SimpleNamespace(
+            sync_eligible=AsyncMock(), list_for_workspace=AsyncMock()
+        )
+        message = Message()
+        run(on_find_signals(
+            message, State(), radar_config(), repository, None, v2_menu_enabled
+        ))
+        text, kwargs = message.answers[0]
+        assert keyboard_texts(kwargs["reply_markup"]) == keyboard_texts(
+            active_main_menu(v2_menu_enabled)
+        )
 
 
 def test_foreign_interpretation_callback_fails_closed() -> None:

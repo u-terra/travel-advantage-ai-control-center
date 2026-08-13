@@ -30,6 +30,7 @@ from app.keyboards import (
     BTN_V2_HELP,
     BTN_V2_CREATE_MATERIAL,
     BTN_V2_ANALYZE_LINK,
+    BTN_V2_FIND_SIGNALS,
     BTN_V2_MAIN_MENU,
     CATEGORY_BUTTONS,
     V2_CATEGORY_BUTTONS,
@@ -233,18 +234,23 @@ async def on_web_resources_back(callback: CallbackQuery) -> None:
 
 
 @router.message(F.text == BTN_FIND_SIGNALS)
+@router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_FIND_SIGNALS)
 async def on_find_signals(
     message: Message,
     state: FSMContext,
     lead_radar_config: LeadRadarConfig,
     workspace_signal_repository: WorkspaceSignalRepository,
     workspace_context: WorkspaceContext | None,
+    v2_menu_enabled: bool = False,
 ) -> None:
     await state.clear()
     if workspace_context is None:
-        await message.answer("Рабочее пространство недоступно.", reply_markup=main_menu())
+        await message.answer(
+            "Рабочее пространство недоступно.",
+            reply_markup=active_main_menu(v2_menu_enabled),
+        )
         return
-    await message.answer(route_card(), reply_markup=main_menu())
+    await message.answer(route_card(), reply_markup=active_main_menu(v2_menu_enabled))
     await workspace_signal_repository.sync_eligible()
     records = await workspace_signal_repository.list_for_workspace(
         workspace_context.workspace_id, limit=200

@@ -22,6 +22,7 @@ BTN_BACK = "◀️ Назад"
 BTN_V2_ANALYZE_LINK = "🔗 Разобрать ссылку"
 BTN_V2_ANALYZE_MORE = "🔗 Разобрать ещё текст"
 BTN_V2_CREATE_MATERIAL = "✍️ Создать материал"
+BTN_V2_FIND_SIGNALS = "📡 Найти сигналы и идеи"
 BTN_V2_CLIENT_REPLY = "💬 Ответить клиенту"
 BTN_V2_CONTENT_PLAN = "📅 Контент-план"
 BTN_V2_CHECK_TEXT = "🛡 Проверить и улучшить текст"
@@ -91,7 +92,7 @@ def v2_main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_V2_ANALYZE_LINK)],
             [KeyboardButton(text=BTN_V2_CREATE_MATERIAL)],
             [KeyboardButton(text=BTN_V2_CLIENT_REPLY)],
-            [KeyboardButton(text=BTN_V2_CONTENT_PLAN)],
+            [KeyboardButton(text=BTN_V2_FIND_SIGNALS)],
             [KeyboardButton(text=BTN_V2_CHECK_TEXT)],
             [KeyboardButton(text=BTN_V2_MATERIALS)],
             [KeyboardButton(text=BTN_V2_SOURCES)],

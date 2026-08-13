@@ -11,6 +11,7 @@ from app.config import load_settings
 from app.domain.partners import PartnerWorkspace, WorkspaceContext
 from app.handlers.menu import (
     AwaitTask,
+    on_find_signals,
     on_v2_category,
     on_v2_help,
     on_v2_main_menu,
@@ -38,6 +39,7 @@ from app.keyboards import (
     BTN_V2_CLIENT_REPLY,
     BTN_V2_CONTENT_PLAN,
     BTN_V2_CREATE_MATERIAL,
+    BTN_V2_FIND_SIGNALS,
     BTN_V2_HELP,
     BTN_V2_MAIN_MENU,
     BTN_V2_MATERIALS,
@@ -66,7 +68,7 @@ V2_BUTTONS = [
     BTN_V2_ANALYZE_LINK,
     BTN_V2_CREATE_MATERIAL,
     BTN_V2_CLIENT_REPLY,
-    BTN_V2_CONTENT_PLAN,
+    BTN_V2_FIND_SIGNALS,
     BTN_V2_CHECK_TEXT,
     BTN_V2_MATERIALS,
     BTN_V2_SOURCES,
@@ -126,6 +128,8 @@ def test_v1_menu_is_unchanged_and_remains_default() -> None:
 def test_v2_menu_has_exact_task_buttons_without_legacy_links() -> None:
     texts = _texts(v2_main_menu())
     assert texts == V2_BUTTONS
+    assert BTN_V2_CONTENT_PLAN not in texts
+    assert BTN_V2_FIND_SIGNALS in texts
     assert BTN_FIND_SIGNALS not in texts
     assert BTN_WEB_RESOURCES not in texts
 
@@ -270,6 +274,8 @@ async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None
     [
         (BTN_V2_PROFILE, "show_profile"),
         (BTN_V2_MATERIALS, "show_materials"),
+        (BTN_V2_FIND_SIGNALS, "on_find_signals"),
+        (BTN_V2_CREATE_MATERIAL, "on_v2_create_material"),
         (BTN_V2_CONTENT_PLAN, "on_v2_placeholder"),
         (BTN_V2_HELP, "on_v2_help"),
         (BTN_V2_MAIN_MENU, "on_v2_main_menu"),
@@ -284,10 +290,23 @@ def test_v2_buttons_reach_menu_router_before_general_task(
     ) == handler_name
 
 
+@pytest.mark.parametrize(
+    "button",
+    [BTN_V2_PROFILE, BTN_V2_FIND_SIGNALS],
+)
 @pytest.mark.parametrize("workflow_data", [{"v2_menu_enabled": False}, {}])
 def test_v2_text_is_ordinary_text_when_feature_is_disabled(
-    workflow_data: dict[str, Any],
+    button: str, workflow_data: dict[str, Any],
 ) -> None:
     assert _run(
-        _first_matching_handler(BTN_V2_PROFILE, **workflow_data)
+        _first_matching_handler(button, **workflow_data)
     ) == "on_free_text"
+
+
+def test_legacy_find_signals_button_is_unaffected_by_v2_flag() -> None:
+    """Легаси-кнопка «Найти сигналы интереса» продолжает работать как раньше,
+    независимо от v2_menu_enabled — маршрут не завязан на флаг."""
+    for workflow_data in ({"v2_menu_enabled": True}, {"v2_menu_enabled": False}, {}):
+        assert _run(
+            _first_matching_handler(BTN_FIND_SIGNALS, **workflow_data)
+        ) == "on_find_signals"
