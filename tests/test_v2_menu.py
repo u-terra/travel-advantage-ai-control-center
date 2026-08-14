@@ -12,12 +12,15 @@ from app.domain.partners import PartnerWorkspace, WorkspaceContext
 from app.handlers.menu import (
     AwaitTask,
     on_find_signals,
+    on_material_entry_analyze,
+    on_material_entry_find_signals,
     on_v2_category,
     on_v2_help,
     on_v2_main_menu,
     on_v2_create_material,
     on_v2_placeholder,
 )
+from app.handlers.source_analysis import AnalyzeSource
 from app.handlers import competitors as competitors_handlers
 from app.handlers import materials as materials_handlers
 from app.handlers import menu as menu_handlers
@@ -48,6 +51,8 @@ from app.keyboards import (
     BTN_V2_PROFILE,
     BTN_V2_SOURCES,
     BTN_WEB_RESOURCES,
+    MATERIAL_ENTRY_ANALYZE,
+    MATERIAL_ENTRY_FIND_SIGNALS,
     active_main_menu,
     main_menu,
     v2_main_menu,
@@ -157,9 +162,22 @@ class _Message:
     def __init__(self, text: str = "") -> None:
         self.text = text
         self.answers: list[tuple[str, Any]] = []
+        self.reply_markup_edits: list[Any] = []
 
     async def answer(self, text: str, reply_markup: Any = None, **kwargs: Any) -> None:
         self.answers.append((text, reply_markup))
+
+    async def edit_reply_markup(self, reply_markup: Any = None) -> None:
+        self.reply_markup_edits.append(reply_markup)
+
+
+class _Callback:
+    def __init__(self, message: "_Message") -> None:
+        self.message = message
+        self.answered = False
+
+    async def answer(self, *args: Any, **kwargs: Any) -> None:
+        self.answered = True
 
 
 class _State:
@@ -233,17 +251,71 @@ def test_v2_help_placeholder_and_return_use_v2_navigation() -> None:
 
 def test_v2_create_material_shows_entry_point_choice_screen() -> None:
     """«✍️ Создать материал» — экран выбора между уже существующими рабочими
-    путями, а не отдельный генератор и не обещание материала «по любой теме»."""
+    путями через inline-кнопки, а не отдельный генератор и не обещание
+    материала «по любой теме». Inline-кнопки (в отличие от reply-текста)
+    нельзя случайно «напечатать» и провалиться в общий текстовый роутинг."""
     message = _Message(BTN_V2_CREATE_MATERIAL)
     state = _State()
     _run(on_v2_create_material(message, state))
+
     text, markup = message.answers[0]
     assert "Как хотите создать материал?" in text
     assert "по любой теме" not in text.lower()
-    # Ровно два рабочих пути (оба уже ведут в существующие production flow) + возврат.
-    assert _texts(markup) == [
-        BTN_V2_ANALYZE_LINK, BTN_V2_FIND_SIGNALS, BTN_V2_MAIN_MENU,
+    assert "ссылку" not in text.lower()
+    # Первое сообщение — обычная reply-клавиатура только с возвратом в меню.
+    assert _texts(markup) == [BTN_V2_MAIN_MENU]
+
+    _, choice_markup = message.answers[1]
+    buttons = [button for row in choice_markup.inline_keyboard for button in row]
+    assert [button.text for button in buttons] == [
+        BTN_V2_ANALYZE_LINK, BTN_V2_FIND_SIGNALS,
     ]
+    assert [button.callback_data for button in buttons] == [
+        MATERIAL_ENTRY_ANALYZE, MATERIAL_ENTRY_FIND_SIGNALS,
+    ]
+
+
+def test_v2_create_material_find_signals_reuses_direct_handler_without_route_card() -> None:
+    """«Создать материал» → «Найти сигналы» переиспользует on_find_signals
+    напрямую: никакой «📌 Карточка маршрута» / «Основной модуль» / «AI Lead
+    Radar» / «Safety Layer» пользователю не показывается — тот же результат,
+    что и у прямой кнопки «📡 Найти сигналы и идеи» из главного меню."""
+    message = _Message()
+    callback = _Callback(message)
+    state = _State()
+
+    _run(on_material_entry_find_signals(
+        callback, state, lead_radar_config=None,
+        workspace_signal_repository=None, workspace_context=None,
+    ))
+
+    assert callback.answered is True
+    assert message.reply_markup_edits == [None]
+    assert len(message.answers) == 1
+    text, _ = message.answers[0]
+    for forbidden in (
+        "📌 Карточка маршрута", "Основной модуль", "AI Lead Radar", "Safety Layer",
+    ):
+        assert forbidden not in text
+    # Без workspace_context on_find_signals отвечает тем же текстом, что и
+    # при прямом вызове с главного меню — поведение не продублировано отдельно.
+    assert text == "Рабочее пространство недоступно."
+
+
+def test_v2_create_material_analyze_reuses_direct_handler() -> None:
+    """«Создать материал» → «Разобрать публикацию» переиспользует
+    start_source_analysis напрямую — тот же сценарий, что и прямая кнопка."""
+    message = _Message()
+    callback = _Callback(message)
+    state = _State()
+
+    _run(on_material_entry_analyze(callback, state))
+
+    assert callback.answered is True
+    assert message.reply_markup_edits == [None]
+    assert state.state == AnalyzeSource.waiting_for_text
+    text, _ = message.answers[0]
+    assert "чтение ссылок" not in text
 
 
 @pytest.mark.parametrize(

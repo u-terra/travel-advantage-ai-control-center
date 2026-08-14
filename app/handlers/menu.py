@@ -11,9 +11,7 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
-    ReplyKeyboardMarkup,
 )
 
 from app.domain.partners import WorkspaceContext
@@ -34,16 +32,20 @@ from app.keyboards import (
     BTN_V2_FIND_SIGNALS,
     BTN_V2_MAIN_MENU,
     CATEGORY_BUTTONS,
+    MATERIAL_ENTRY_ANALYZE,
+    MATERIAL_ENTRY_FIND_SIGNALS,
     TA_WEB_RESOURCE_LINKS,
     V2_CATEGORY_BUTTONS,
     V2_PLACEHOLDER_BUTTONS,
     WEB_RESOURCES_BACK,
     active_main_menu,
     main_menu,
+    material_entry_keyboard,
     material_result_keyboard,
     v2_back_keyboard,
     web_resources_keyboard,
 )
+from app.handlers.source_analysis import start_source_analysis
 from app.routing.modules import Module
 from app.routing.safety import SafetyLevel
 from app.services.lead_radar import (
@@ -191,8 +193,8 @@ async def on_v2_help(message: Message, state: FSMContext) -> None:
         "✍️ Создать материал — выбрать способ подготовки нового материала.\n"
         "💬 Ответить клиенту — подготовить черновик ответа на вопрос клиента.\n"
         "📡 Найти сигналы и идеи — найти свежие сигналы и идеи для контента.\n"
-        "🔗 Разобрать ссылку — разобрать публикацию или ссылку и подготовить "
-        "материал на её основе.\n"
+        "📝 Разобрать публикацию — разобрать вставленный текст новости, поста "
+        "или публикации и подготовить материал на его основе.\n"
         "🛡 Проверить и улучшить текст — проверить текст перед публикацией.\n"
         "📚 Мои материалы — открыть последние сохранённые материалы.\n"
         "📚 Источники — управлять источниками, за которыми следит бот.\n"
@@ -217,15 +219,48 @@ async def on_v2_create_material(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "Как хотите создать материал?\n\n"
-        "Можно разобрать публикацию или ссылку и подготовить материал на её "
+        "Можно разобрать текст публикации и подготовить материал на его "
         "основе — либо найти свежие сигналы и идеи для контента.",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text=BTN_V2_ANALYZE_LINK)],
-                      [KeyboardButton(text=BTN_V2_FIND_SIGNALS)],
-                      [KeyboardButton(text=BTN_V2_MAIN_MENU)]],
-            resize_keyboard=True,
-        ),
+        reply_markup=v2_back_keyboard(),
     )
+    await message.answer(
+        "Выберите способ:",
+        reply_markup=material_entry_keyboard(),
+    )
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data == MATERIAL_ENTRY_FIND_SIGNALS)
+async def on_material_entry_find_signals(
+    callback: CallbackQuery,
+    state: FSMContext,
+    lead_radar_config: LeadRadarConfig,
+    workspace_signal_repository: WorkspaceSignalRepository,
+    workspace_context: WorkspaceContext | None,
+) -> None:
+    """«Создать материал» → «Найти сигналы» переиспользует on_find_signals
+    напрямую: тот же результат, что и у прямой кнопки главного меню, без
+    какой-либо технической карточки маршрута."""
+    await callback.answer()
+    if callback.message is None:
+        return
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await on_find_signals(
+        callback.message, state, lead_radar_config,
+        workspace_signal_repository, workspace_context, True,
+    )
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data == MATERIAL_ENTRY_ANALYZE)
+async def on_material_entry_analyze(
+    callback: CallbackQuery, state: FSMContext,
+) -> None:
+    """«Создать материал» → «Разобрать публикацию» переиспользует
+    start_source_analysis напрямую — тот же сценарий, что и прямая кнопка."""
+    await callback.answer()
+    if callback.message is None:
+        return
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await start_source_analysis(callback.message, state)
 
 
 @router.message(F.text == BTN_UNSURE)

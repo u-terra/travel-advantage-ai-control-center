@@ -19,8 +19,8 @@ BTN_HOW_IT_WORKS = "ℹ️ Как это работает"
 BTN_WEB_RESOURCES = "🌐 Веб-ресурсы"
 BTN_BACK = "◀️ Назад"
 
-BTN_V2_ANALYZE_LINK = "🔗 Разобрать ссылку"
-BTN_V2_ANALYZE_MORE = "🔗 Разобрать ещё текст"
+BTN_V2_ANALYZE_LINK = "📝 Разобрать публикацию"
+BTN_V2_ANALYZE_MORE = "📝 Разобрать ещё текст"
 BTN_V2_CREATE_MATERIAL = "✍️ Создать материал"
 BTN_V2_FIND_SIGNALS = "📡 Найти сигналы и идеи"
 BTN_V2_CLIENT_REPLY = "💬 Ответить клиенту"
@@ -48,6 +48,8 @@ ARTIFACT_REVIEW_KEEP = "artifact_review_keep"
 TEXT_REVIEW_SAVE = "text_review_save"
 ARTIFACT_OPEN_PREFIX = "artifact_open:"
 COMPETITOR_REGISTRY_ADD = "competitor_registry:add"
+MATERIAL_ENTRY_ANALYZE = "material_entry:analyze"
+MATERIAL_ENTRY_FIND_SIGNALS = "material_entry:find_signals"
 
 
 WEB_RESOURCES_BACK = "web_resources_back"
@@ -291,6 +293,24 @@ def web_resources_keyboard(
         [InlineKeyboardButton(text=BTN_BACK, callback_data=WEB_RESOURCES_BACK)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def material_entry_keyboard() -> InlineKeyboardMarkup:
+    """Выбор способа создания материала — inline, а не reply-кнопки.
+
+    Callback нельзя ввести свободным текстом, поэтому выбор здесь не может
+    случайно провалиться в общий текстовый роутинг (и, как следствие,
+    в техническую карточку маршрута): нажатие однозначно ведёт в тот же
+    handler, что и прямая кнопка главного меню.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=BTN_V2_ANALYZE_LINK, callback_data=MATERIAL_ENTRY_ANALYZE,
+        )],
+        [InlineKeyboardButton(
+            text=BTN_V2_FIND_SIGNALS, callback_data=MATERIAL_ENTRY_FIND_SIGNALS,
+        )],
+    ])
 
 
 def competitors_list_keyboard() -> InlineKeyboardMarkup:

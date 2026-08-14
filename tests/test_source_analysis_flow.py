@@ -33,11 +33,15 @@ class Message:
 
 
 def test_button_sets_dedicated_state_and_honest_prompt():
+    """Приглашение честно описывает текущую функцию (разбор вставленного
+    текста) и не раскрывает внутреннюю дорожную карту («чтение ссылок
+    подключим позже»)."""
     message, state = Message(BTN_V2_ANALYZE_LINK), State()
     run(start_source_analysis(message, state))
     assert state.state == AnalyzeSource.waiting_for_text
     assert "вставленный текст" in message.answers[0][0]
-    assert "чтение ссылок" in message.answers[0][0]
+    assert "чтение ссылок" not in message.answers[0][0]
+    assert "подключим позже" not in message.answers[0][0]
 
 
 def test_real_router_order_and_repeat_keyboard_label():
