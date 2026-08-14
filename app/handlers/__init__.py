@@ -1,6 +1,7 @@
 from aiogram import Router
 
 from app.handlers import (
+    competitors,
     material_generation,
     materials,
     consent,
@@ -25,5 +26,6 @@ def build_router() -> Router:
     r.include_router(text_review.router)
     r.include_router(profile.router)
     r.include_router(materials.router)
+    r.include_router(competitors.router)
     r.include_router(tasks.router)
     return r

@@ -14,7 +14,7 @@ from app.domain.sources import (
     normalize_telegram_username,
     telegram_url,
 )
-from app.keyboards import WEB_RESOURCE_LINKS
+from app.keyboards import TA_WEB_RESOURCE_LINKS
 from app.services.source_registry import (
     DEFAULT_REGISTRY_PATH,
     IMPLEMENTED_COLLECTOR_PLATFORMS,
@@ -798,14 +798,14 @@ def test_existing_web_resources_are_present_in_registry():
         source.url for source in load_registry().by_platform("web", only_enabled=False)
     }
 
-    for _title, url in WEB_RESOURCE_LINKS:
+    for _title, url in TA_WEB_RESOURCE_LINKS:
         assert url in registry_urls
 
 
 def test_existing_web_resources_stay_enabled():
     web_urls = {source.url for source in collection_targets(platform="web")}
 
-    for _title, url in WEB_RESOURCE_LINKS:
+    for _title, url in TA_WEB_RESOURCE_LINKS:
         assert url in web_urls
 
 

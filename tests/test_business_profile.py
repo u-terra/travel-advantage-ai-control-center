@@ -122,6 +122,63 @@ def test_legacy_migration_preserves_exact_row_and_is_idempotent(tmp_path: Path) 
     assert json.loads(row["context_json"])["communication"]["tone"] == "Дружелюбный"
 
 
+def test_pre_ta_affiliated_schema_gets_column_and_grandfathers_ta_owner_only(
+    tmp_path: Path,
+) -> None:
+    """Additive-миграция для баз без ta_affiliated: новая колонка добавляется
+    без потери данных, дефолт — не аффилирован, и только строка с точной
+    сигнатурой internal-профиля Travel Advantage получает ta_affiliated=1
+    (не любой club_partner)."""
+    db_path = tmp_path / "db.sqlite3"
+    pre_ddl = partner_module._PROFILE_SCHEMA.replace(
+        "ta_affiliated INTEGER NOT NULL DEFAULT 0,\n    ", ""
+    )
+    assert "ta_affiliated" not in pre_ddl
+    with sqlite3.connect(db_path) as db:
+        db.executescript("""CREATE TABLE partner_workspaces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );""")
+        db.execute(pre_ddl.format(table_name="partner_profiles"))
+        db.execute(
+            "INSERT INTO partner_workspaces VALUES (1, 'TA', 'ta', 'active', 'w', 'w')"
+        )
+        db.execute(
+            "INSERT INTO partner_workspaces VALUES (2, 'Other', 'other', 'active', 'w', 'w')"
+        )
+        columns = (
+            "id, workspace_id, telegram_user_id, partner_name, project_name, "
+            "business_description, communication_style, business_name, business_type, "
+            "short_description, profile_status, schema_version, revision, context_json, "
+            "created_at, updated_at"
+        )
+        db.execute(
+            f"INSERT INTO partner_profiles ({columns}) VALUES "
+            "(1, 1, 100, 'Owner', 'Travel Advantage AI Ecosystem', "
+            "'Внутреннее партнёрское рабочее пространство.', 'Спокойный', "
+            "'Travel Advantage AI Ecosystem', 'club_partner', "
+            "'Внутреннее партнёрское рабочее пространство.', 'incomplete', 1, 1, '{}', 'c', 'u')"
+        )
+        db.execute(
+            f"INSERT INTO partner_profiles ({columns}) VALUES "
+            "(2, 2, 200, 'Anna', 'Other Club', 'Описание другого клуба', 'Дружелюбный', "
+            "'Other Club', 'club_partner', 'Описание другого клуба', 'incomplete', 1, 1, "
+            "'{}', 'c', 'u')"
+        )
+
+    run(PartnerRepository(db_path).init())
+    run(PartnerRepository(db_path).init())  # идемпотентность
+
+    with sqlite3.connect(db_path) as db:
+        db.row_factory = sqlite3.Row
+        rows = {row["id"]: row for row in db.execute("SELECT * FROM partner_profiles")}
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+    assert rows[1]["business_type"] == "club_partner" and rows[1]["ta_affiliated"] == 1
+    assert rows[2]["business_type"] == "club_partner" and rows[2]["ta_affiliated"] == 0
+
+
 def test_valid_stage5_schema_init_is_noop_and_preserves_data(tmp_path: Path) -> None:
     repo = PartnerRepository(tmp_path / "db.sqlite3")
     run(repo.init())

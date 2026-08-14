@@ -44,7 +44,7 @@ def test_real_router_order_and_repeat_keyboard_label():
     owner = router.parent_router or build_router()
     assert [child.name for child in owner.sub_routers] == [
         "start", "consent", "menu", "sources", "source_analysis", "material_generation",
-        "text_review", "profile", "materials", "tasks",
+        "text_review", "profile", "materials", "competitors", "tasks",
     ]
     message, state = Message(BTN_V2_ANALYZE_MORE), State()
     run(start_source_analysis(message, state))

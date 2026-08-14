@@ -28,6 +28,7 @@ BTN_V2_CONTENT_PLAN = "📅 Контент-план"
 BTN_V2_CHECK_TEXT = "🛡 Проверить и улучшить текст"
 BTN_V2_MATERIALS = "📚 Мои материалы"
 BTN_V2_SOURCES = "📚 Источники"
+BTN_V2_COMPETITORS = "🎯 Мои конкуренты"
 BTN_V2_PROFILE = "⚙️ Профиль"
 BTN_V2_HELP = "ℹ️ Помощь"
 BTN_V2_MAIN_MENU = "⬅️ Главное меню"
@@ -46,11 +47,17 @@ ARTIFACT_REVIEW_SAVE_PREFIX = "artifact_review_save:"
 ARTIFACT_REVIEW_KEEP = "artifact_review_keep"
 TEXT_REVIEW_SAVE = "text_review_save"
 ARTIFACT_OPEN_PREFIX = "artifact_open:"
+COMPETITOR_REGISTRY_ADD = "competitor_registry:add"
 
 
 WEB_RESOURCES_BACK = "web_resources_back"
 
-WEB_RESOURCE_LINKS: tuple[tuple[str, str], ...] = (
+# Ресурсы Travel Advantage: показываются только workspace с явным признаком
+# BusinessProfile.ta_affiliated (не по business_type, названию или описанию —
+# см. app/domain/business_profiles.py и app/handlers/menu.py:
+# _resolve_web_resource_links). Сторонние независимые workspace эти ссылки
+# не должны видеть ни при каких обстоятельствах.
+TA_WEB_RESOURCE_LINKS: tuple[tuple[str, str], ...] = (
     ("🏭 Travel Content Factory", "https://factory.vassian-ai.ru"),
     (
         "🤖 AI Travel Assistant",
@@ -89,13 +96,14 @@ def main_menu() -> ReplyKeyboardMarkup:
 def v2_main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_V2_ANALYZE_LINK)],
             [KeyboardButton(text=BTN_V2_CREATE_MATERIAL)],
             [KeyboardButton(text=BTN_V2_CLIENT_REPLY)],
             [KeyboardButton(text=BTN_V2_FIND_SIGNALS)],
+            [KeyboardButton(text=BTN_V2_ANALYZE_LINK)],
             [KeyboardButton(text=BTN_V2_CHECK_TEXT)],
             [KeyboardButton(text=BTN_V2_MATERIALS)],
             [KeyboardButton(text=BTN_V2_SOURCES)],
+            [KeyboardButton(text=BTN_V2_COMPETITORS)],
             [KeyboardButton(text=BTN_V2_PROFILE)],
             [KeyboardButton(text=BTN_V2_HELP)],
         ],
@@ -267,12 +275,30 @@ def materials_list_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def web_resources_keyboard() -> InlineKeyboardMarkup:
+def web_resources_keyboard(
+    links: tuple[tuple[str, str], ...],
+) -> InlineKeyboardMarkup:
+    """Ресурсы, разрешённые для конкретного workspace.
+
+    Клавиатура не решает, какие ссылки допустимы — это делает вызывающий
+    код (см. app/handlers/menu.py), исходя из business_type workspace.
+    """
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text=title, url=url)]
-        for title, url in WEB_RESOURCE_LINKS
+        for title, url in links
     ]
     rows.append(
         [InlineKeyboardButton(text=BTN_BACK, callback_data=WEB_RESOURCES_BACK)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def competitors_list_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="➕ Добавить конкурента", callback_data=COMPETITOR_REGISTRY_ADD
+        )],
+        [InlineKeyboardButton(
+            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )],
+    ])

@@ -15,6 +15,7 @@ from app.services.source_registry import SEED_REGISTRY_PATH, runtime_registry_pa
 
 _PROFILE_KEYS = {
     "business_name", "business_type", "short_description", "context", "schema_version",
+    "ta_affiliated",
 }
 
 
@@ -101,6 +102,7 @@ async def _show(repository: PartnerRepository, telegram_user_id: int) -> int:
             print(f"profile_revision: {profile.revision}")
             print(f"business_name: {profile.business_name}")
             print(f"business_type: {profile.business_type}")
+            print(f"ta_affiliated: {profile.ta_affiliated}")
     return 0 if len(memberships) == 1 else 2
 
 

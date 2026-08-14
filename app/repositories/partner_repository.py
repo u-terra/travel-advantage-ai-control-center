@@ -114,6 +114,7 @@ _PROFILE_SCHEMA = """CREATE TABLE {table_name} (
     business_type TEXT NOT NULL CHECK (
         business_type IN ('independent_agent', 'club_partner', 'agency', 'travel_company', 'other')
     ),
+    ta_affiliated INTEGER NOT NULL DEFAULT 0,
     short_description TEXT NOT NULL,
     profile_status TEXT NOT NULL CHECK (profile_status IN ('incomplete', 'usable')),
     schema_version INTEGER NOT NULL CHECK (schema_version = 1),
@@ -148,8 +149,19 @@ _LEGACY_PROFILE_COLUMNS = frozenset({
 })
 _STAGE5_PROFILE_COLUMNS = _LEGACY_PROFILE_COLUMNS | frozenset({
     "business_name", "business_type", "short_description", "profile_status",
-    "schema_version", "revision", "context_json",
+    "schema_version", "revision", "context_json", "ta_affiliated",
 })
+# Столбцы Stage5-схемы до добавления ta_affiliated — нужны только чтобы
+# распознать более раннюю базу и безопасно доехать ALTER TABLE ADD COLUMN,
+# не трогая остальные данные.
+_PRE_TA_AFFILIATED_PROFILE_COLUMNS = _STAGE5_PROFILE_COLUMNS - {"ta_affiliated"}
+
+# Точная сигнатура internal-профиля Travel Advantage, создаваемого
+# ensure_owner_workspace/_create_initial_owner. Используется только для
+# грандфазеринга уже смигрированных строк при добавлении столбца
+# ta_affiliated — не общий эвристический признак для рантайм-логики.
+_TA_OWNER_PROJECT_NAME = "Travel Advantage AI Ecosystem"
+_TA_OWNER_BUSINESS_DESCRIPTION = "Внутреннее партнёрское рабочее пространство."
 
 
 class PartnerRepository:
@@ -189,6 +201,15 @@ class PartnerRepository:
             await _assert_stage5_profile_schema(db, columns)
             await _assert_foreign_keys(db)
             return
+        if column_names == _PRE_TA_AFFILIATED_PROFILE_COLUMNS:
+            await self._add_ta_affiliated_column(db)
+            columns = {
+                row["name"]: row for row in
+                await (await db.execute("PRAGMA table_info(partner_profiles)")).fetchall()
+            }
+            await _assert_stage5_profile_schema(db, columns)
+            await _assert_foreign_keys(db)
+            return
         if column_names != _LEGACY_PROFILE_COLUMNS:
             raise BusinessProfileSchemaError(
                 "partner_profiles имеет несовместимую частично мигрированную схему"
@@ -204,17 +225,23 @@ class PartnerRepository:
             for row in legacy_rows:
                 context = empty_business_context()
                 context["communication"]["tone"] = row["communication_style"]
+                is_ta_owner = (
+                    row["project_name"] == _TA_OWNER_PROJECT_NAME
+                    and row["business_description"] == _TA_OWNER_BUSINESS_DESCRIPTION
+                )
                 await db.execute(
                     "INSERT INTO partner_profiles_new "
                     "(id, workspace_id, telegram_user_id, partner_name, project_name, "
                     "business_description, communication_style, business_name, business_type, "
-                    "short_description, profile_status, schema_version, revision, context_json, "
-                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)",
+                    "ta_affiliated, short_description, profile_status, schema_version, revision, "
+                    "context_json, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)",
                     (
                         row["id"], row["workspace_id"], row["telegram_user_id"],
                         row["partner_name"], row["project_name"],
                         row["business_description"], row["communication_style"],
                         row["project_name"], _legacy_business_type(row),
+                        1 if is_ta_owner else 0,
                         row["business_description"],
                         "incomplete", _encode_context(context), row["created_at"], row["updated_at"],
                     ),
@@ -227,6 +254,31 @@ class PartnerRepository:
             await db.execute("DROP TABLE partner_profiles")
             await db.execute("ALTER TABLE partner_profiles_new RENAME TO partner_profiles")
             await _assert_foreign_keys(db)
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+
+    @staticmethod
+    async def _add_ta_affiliated_column(db: aiosqlite.Connection) -> None:
+        """Additive миграция для баз, созданных до появления ta_affiliated.
+
+        Новые строки по умолчанию не аффилированы. Единственное исключение —
+        грандфазеринг уже существующей internal-строки Travel Advantage по её
+        точной сигнатуре (см. _TA_OWNER_PROJECT_NAME), чтобы владелец сервиса
+        не потерял доступ к своим же TA-ссылкам после апгрейда схемы.
+        """
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute(
+                "ALTER TABLE partner_profiles "
+                "ADD COLUMN ta_affiliated INTEGER NOT NULL DEFAULT 0"
+            )
+            await db.execute(
+                "UPDATE partner_profiles SET ta_affiliated = 1 "
+                "WHERE project_name = ? AND business_description = ?",
+                (_TA_OWNER_PROJECT_NAME, _TA_OWNER_BUSINESS_DESCRIPTION),
+            )
             await db.commit()
         except BaseException:
             await db.rollback()
@@ -267,18 +319,19 @@ class PartnerRepository:
                         "INSERT INTO partner_profiles "
                         "(workspace_id, telegram_user_id, partner_name, "
                         "project_name, business_description, communication_style, "
-                        "business_name, business_type, short_description, profile_status, "
-                        "schema_version, revision, context_json, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 'club_partner', ?, 'incomplete', 1, 1, ?, ?, ?)",
+                        "business_name, business_type, ta_affiliated, short_description, "
+                        "profile_status, schema_version, revision, context_json, "
+                        "created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 'club_partner', 1, ?, 'incomplete', 1, 1, ?, ?, ?)",
                         (
                             workspace_row["id"],
                             telegram_user_id,
                             "Владелец",
-                            "Travel Advantage AI Ecosystem",
-                            "Внутреннее партнёрское рабочее пространство.",
+                            _TA_OWNER_PROJECT_NAME,
+                            _TA_OWNER_BUSINESS_DESCRIPTION,
                             "Спокойный и профессиональный",
-                            "Travel Advantage AI Ecosystem",
-                            "Внутреннее партнёрское рабочее пространство.",
+                            _TA_OWNER_PROJECT_NAME,
+                            _TA_OWNER_BUSINESS_DESCRIPTION,
                             _encode_context(_legacy_context("Спокойный и профессиональный")),
                             now,
                             now,
@@ -373,6 +426,7 @@ class PartnerRepository:
         short_description: str,
         context: Mapping[str, Any],
         schema_version: int = BUSINESS_PROFILE_SCHEMA_VERSION,
+        ta_affiliated: bool = False,
     ) -> ProvisionedPartner:
         if type(telegram_user_id) is not int or telegram_user_id < 1:
             raise ValueError("telegram_user_id должен быть положительным целым числом")
@@ -380,6 +434,8 @@ class PartnerRepository:
             raise ValueError("workspace_name обязателен")
         if not isinstance(workspace_slug, str) or not workspace_slug.strip():
             raise ValueError("workspace_slug обязателен")
+        if not isinstance(ta_affiliated, bool):
+            raise ValueError("ta_affiliated должен быть булевым значением")
         normalized = validate_business_profile_input(
             business_name, business_type, short_description, context, schema_version
         )
@@ -416,6 +472,7 @@ class PartnerRepository:
                         short_description=short_description,
                         normalized_context=normalized,
                         input_context=context,
+                        ta_affiliated=ta_affiliated,
                     )
                     await db.commit()
                     return result
@@ -443,13 +500,13 @@ class PartnerRepository:
                     "INSERT INTO partner_profiles "
                     "(workspace_id, telegram_user_id, partner_name, project_name, "
                     "business_description, communication_style, business_name, business_type, "
-                    "short_description, profile_status, schema_version, revision, context_json, "
-                    "created_at, updated_at) "
-                    "VALUES (?, NULL, '', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+                    "ta_affiliated, short_description, profile_status, schema_version, revision, "
+                    "context_json, created_at, updated_at) "
+                    "VALUES (?, NULL, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
                     (
                         workspace_id, business_name, short_description, tone,
-                        business_name, business_type, short_description, profile_status,
-                        schema_version, _encode_context(normalized), now, now,
+                        business_name, business_type, int(ta_affiliated), short_description,
+                        profile_status, schema_version, _encode_context(normalized), now, now,
                     ),
                 )
                 workspace_row = await self._workspace_row_by_id(db, workspace_id)
@@ -532,6 +589,7 @@ class PartnerRepository:
         short_description: str,
         normalized_context: Mapping[str, Any],
         input_context: Mapping[str, Any],
+        ta_affiliated: bool,
     ) -> ProvisionedPartner:
         expected = [
             row for row in memberships if row["workspace_id"] == workspace_row["id"]
@@ -558,6 +616,7 @@ class PartnerRepository:
             profile.business_name != business_name
             or profile.business_type != business_type
             or profile.short_description != short_description
+            or profile.ta_affiliated != ta_affiliated
             or not _profile_context_matches_input(
                 profile.context, normalized_context, input_context
             )
@@ -927,15 +986,15 @@ class PartnerRepository:
             "INSERT INTO partner_profiles "
             "(workspace_id, telegram_user_id, partner_name, project_name, "
             "business_description, communication_style, business_name, business_type, "
-            "short_description, profile_status, schema_version, revision, context_json, "
-            "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'club_partner', ?, 'incomplete', 1, 1, ?, ?, ?)",
+            "ta_affiliated, short_description, profile_status, schema_version, revision, "
+            "context_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'club_partner', 1, ?, 'incomplete', 1, 1, ?, ?, ?)",
             (
                 workspace_row["id"], telegram_user_id, "Владелец",
-                "Travel Advantage AI Ecosystem",
-                "Внутреннее партнёрское рабочее пространство.",
-                "Спокойный и профессиональный", "Travel Advantage AI Ecosystem",
-                "Внутреннее партнёрское рабочее пространство.",
+                _TA_OWNER_PROJECT_NAME,
+                _TA_OWNER_BUSINESS_DESCRIPTION,
+                "Спокойный и профессиональный", _TA_OWNER_PROJECT_NAME,
+                _TA_OWNER_BUSINESS_DESCRIPTION,
                 _encode_context(_legacy_context("Спокойный и профессиональный")), now, now,
             ),
         )
@@ -990,7 +1049,7 @@ def _business_profile_from_row(row: aiosqlite.Row) -> BusinessProfile:
         short_description=row["short_description"], profile_status=row["profile_status"],
         schema_version=row["schema_version"], revision=row["revision"],
         context=_context_dto(normalized), created_at=row["created_at"],
-        updated_at=row["updated_at"],
+        updated_at=row["updated_at"], ta_affiliated=bool(row["ta_affiliated"]),
     )
 
 
@@ -1266,9 +1325,8 @@ async def _assert_unique_and_fk(db: aiosqlite.Connection) -> None:
 
 def _legacy_business_type(row: aiosqlite.Row) -> str:
     if (
-        row["project_name"] == "Travel Advantage AI Ecosystem"
-        and row["business_description"]
-        == "Внутреннее партнёрское рабочее пространство."
+        row["project_name"] == _TA_OWNER_PROJECT_NAME
+        and row["business_description"] == _TA_OWNER_BUSINESS_DESCRIPTION
     ):
         return "club_partner"
     return "other"

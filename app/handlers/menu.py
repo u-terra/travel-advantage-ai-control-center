@@ -34,6 +34,7 @@ from app.keyboards import (
     BTN_V2_FIND_SIGNALS,
     BTN_V2_MAIN_MENU,
     CATEGORY_BUTTONS,
+    TA_WEB_RESOURCE_LINKS,
     V2_CATEGORY_BUTTONS,
     V2_PLACEHOLDER_BUTTONS,
     WEB_RESOURCES_BACK,
@@ -164,7 +165,7 @@ async def on_category(message: Message, state: FSMContext) -> None:
 @router.message(MagicData(F.v2_menu_enabled), F.text.in_(V2_CATEGORY_BUTTONS))
 async def on_v2_category(message: Message, state: FSMContext) -> None:
     module = BUTTON_TO_MODULE[message.text]
-    await state.update_data(forced_module=module.value)
+    await state.update_data(forced_module=module.value, skip_route_card=True)
     await state.set_state(AwaitTask.waiting)
     await message.answer(
         BUTTON_HINTS[message.text],
@@ -187,14 +188,15 @@ async def on_v2_help(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "ℹ️ Что можно сделать:\n\n"
-        "🔗 Разобрать ссылку — разобрать публикацию или ссылку и подготовить "
-        "материал на её основе.\n"
         "✍️ Создать материал — выбрать способ подготовки нового материала.\n"
         "💬 Ответить клиенту — подготовить черновик ответа на вопрос клиента.\n"
         "📡 Найти сигналы и идеи — найти свежие сигналы и идеи для контента.\n"
+        "🔗 Разобрать ссылку — разобрать публикацию или ссылку и подготовить "
+        "материал на её основе.\n"
         "🛡 Проверить и улучшить текст — проверить текст перед публикацией.\n"
         "📚 Мои материалы — открыть последние сохранённые материалы.\n"
         "📚 Источники — управлять источниками, за которыми следит бот.\n"
+        "🎯 Мои конкуренты — сохранить ссылки на конкурентов для анализа.\n"
         "⚙️ Профиль — посмотреть бизнес-профиль, который использует Оркестратор.",
         reply_markup=v2_back_keyboard(),
     )
@@ -233,11 +235,62 @@ async def on_unsure(message: Message, state: FSMContext) -> None:
     await message.answer(BUTTON_HINTS[BTN_UNSURE], reply_markup=main_menu())
 
 
+_WEB_RESOURCES_EMPTY = (
+    "🌐 Веб-ресурсы\n\n"
+    "Для вашего рабочего пространства пока не настроены дополнительные "
+    "веб-ресурсы. Обратитесь к администратору сервиса, чтобы добавить "
+    "ссылки в профиль."
+)
+
+
+def _own_workspace_links(profile) -> tuple[tuple[str, str], ...]:
+    """Ссылки из public_contacts самого workspace — никогда не TA."""
+    links: list[tuple[str, str]] = []
+    for key, value in profile.context.public_contacts.items():
+        address = (value or "").strip()
+        if address.startswith("http://") or address.startswith("https://"):
+            title = key.strip().replace("_", " ").capitalize() or "Ссылка"
+            links.append((f"🔗 {title}", address))
+    return tuple(links)
+
+
+async def _resolve_web_resource_links(
+    partner_repository: PartnerRepository,
+    workspace_context: WorkspaceContext | None,
+) -> tuple[tuple[str, str], ...]:
+    """Ссылки для конкретного workspace — никакого общего fallback на TA.
+
+    Ресурсы Travel Advantage видит только workspace с явным признаком
+    profile.ta_affiliated. business_type описывает тип бизнеса (в т.ч. у
+    сторонних клубов/партнёров) и сам по себе НЕ означает аффилиацию с
+    Travel Advantage — поэтому здесь он не участвует в решении. Остальные
+    workspace видят только ссылки собственного профиля.
+    """
+    if workspace_context is None:
+        return ()
+    profile = await partner_repository.get_business_profile(
+        workspace_context.workspace_id
+    )
+    if profile is None:
+        return ()
+    if profile.ta_affiliated:
+        return TA_WEB_RESOURCE_LINKS
+    return _own_workspace_links(profile)
+
+
 @router.message(F.text == BTN_WEB_RESOURCES)
-async def on_web_resources(message: Message) -> None:
+async def on_web_resources(
+    message: Message,
+    workspace_context: WorkspaceContext | None,
+    partner_repository: PartnerRepository,
+) -> None:
+    links = await _resolve_web_resource_links(partner_repository, workspace_context)
+    if not links:
+        await message.answer(_WEB_RESOURCES_EMPTY, reply_markup=web_resources_keyboard(links))
+        return
     await message.answer(
-        "🌐 Веб-ресурсы Travel-экосистемы. Откройте нужный сайт в браузере.",
-        reply_markup=web_resources_keyboard(),
+        "🌐 Веб-ресурсы. Откройте нужный сайт в браузере.",
+        reply_markup=web_resources_keyboard(links),
     )
 
 

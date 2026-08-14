@@ -18,6 +18,7 @@ from app.handlers.menu import (
     on_v2_create_material,
     on_v2_placeholder,
 )
+from app.handlers import competitors as competitors_handlers
 from app.handlers import materials as materials_handlers
 from app.handlers import menu as menu_handlers
 from app.handlers import profile as profile_handlers
@@ -37,6 +38,7 @@ from app.keyboards import (
     BTN_V2_ANALYZE_LINK,
     BTN_V2_CHECK_TEXT,
     BTN_V2_CLIENT_REPLY,
+    BTN_V2_COMPETITORS,
     BTN_V2_CONTENT_PLAN,
     BTN_V2_CREATE_MATERIAL,
     BTN_V2_FIND_SIGNALS,
@@ -65,13 +67,14 @@ V1_BUTTONS = [
     BTN_WEB_RESOURCES,
 ]
 V2_BUTTONS = [
-    BTN_V2_ANALYZE_LINK,
     BTN_V2_CREATE_MATERIAL,
     BTN_V2_CLIENT_REPLY,
     BTN_V2_FIND_SIGNALS,
+    BTN_V2_ANALYZE_LINK,
     BTN_V2_CHECK_TEXT,
     BTN_V2_MATERIALS,
     BTN_V2_SOURCES,
+    BTN_V2_COMPETITORS,
     BTN_V2_PROFILE,
     BTN_V2_HELP,
 ]
@@ -255,7 +258,7 @@ def test_v2_existing_scenarios_reuse_await_task(button: str, module: Module) -> 
 
     _run(on_v2_category(message, state))
 
-    assert state.data == {"forced_module": module.value}
+    assert state.data == {"forced_module": module.value, "skip_route_card": True}
     assert state.state == AwaitTask.waiting
     assert _texts(message.answers[0][1]) == V2_BUTTONS
 
@@ -266,7 +269,7 @@ async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None
     for router in (
         menu_handlers.router, text_review_handlers.router,
         profile_handlers.router, materials_handlers.router,
-        task_handlers.router,
+        competitors_handlers.router, task_handlers.router,
     ):
         for handler in router.message.handlers:
             matched, _ = await handler.check(message, **data)
@@ -280,6 +283,7 @@ async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None
     [
         (BTN_V2_PROFILE, "show_profile"),
         (BTN_V2_MATERIALS, "show_materials"),
+        (BTN_V2_COMPETITORS, "show_competitors"),
         (BTN_V2_FIND_SIGNALS, "on_find_signals"),
         (BTN_V2_CREATE_MATERIAL, "on_v2_create_material"),
         (BTN_V2_CONTENT_PLAN, "on_v2_placeholder"),

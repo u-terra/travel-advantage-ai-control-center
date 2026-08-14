@@ -56,3 +56,8 @@ class BusinessProfile:
     context: BusinessContext
     created_at: str
     updated_at: str
+    # Явный признак аффилиации с Travel Advantage. Не выводится из business_type,
+    # названия или описания — устанавливается только системными путями создания
+    # workspace (владелец сервиса, provisioning), никогда через самостоятельное
+    # редактирование профиля.
+    ta_affiliated: bool = False

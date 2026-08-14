@@ -56,6 +56,7 @@ async def on_task_after_button(
 ) -> None:
     data = await state.get_data()
     forced_raw = data.get("forced_module")
+    skip_route_card = bool(data.get("skip_route_card"))
     task_text = (message.text or "").strip()
     await state.clear()
 
@@ -85,6 +86,13 @@ async def on_task_after_button(
         secondary_modules=tuple(m.value for m in decision.secondary_modules),
         safety_level=decision.safety_level.value,
     )
+    if skip_route_card:
+        await _maybe_send_module_result(
+            message, decision, llm_provider,
+            workspace_context.workspace_id, partner_repository,
+        )
+        return
+
     await message.answer(
         build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
     )

@@ -155,6 +155,26 @@ def test_task_handlers_pass_workspace_id_to_journal() -> None:
     assert second_journal.add.await_args.args == (23,)
 
 
+def test_client_reply_v2_flow_skips_technical_route_card() -> None:
+    """«Ответить клиенту» в v2-меню помечает состояние skip_route_card —
+    пользователь должен сразу получить черновик, без 📌 Карточки маршрута."""
+    message = Message("Можно ли оплатить бронирование из России?")
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик ответа", ()))
+    profiles = profile_repository(business_profile())
+    state = State({
+        "forced_module": Module.TRAVEL_ASSISTANT.value,
+        "skip_route_card": True,
+    })
+    run(on_task_after_button(
+        message, state, journal(), provider, context(), profiles,
+    ))
+    assert len(message.answers) == 1
+    text, _ = message.answers[0]
+    assert "📌 Карточка маршрута" not in text
+    assert "💬 Черновик ответа клиенту" in text
+    assert "Черновик ответа" in text
+
+
 def test_radar_handler_does_not_write_without_workspace_context() -> None:
     current_journal = journal()
     state = State({"radar_content_ideas": [{"title": "Тема"}]})
