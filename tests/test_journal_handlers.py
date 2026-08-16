@@ -627,7 +627,6 @@ def test_foreign_profile_fails_closed_before_provider_call():
     [
         "Сделай сценарий Reels о путешествиях",
         "Нужен пост о тарифах Travel Advantage",
-        "Подготовь инструкцию для нового партнёра",
     ],
 )
 def test_non_regular_post_branches_do_not_lookup_profile_or_personalize(text):
@@ -636,6 +635,20 @@ def test_non_regular_post_branches_do_not_lookup_profile_or_personalize(text):
     profiles = profile_repository(business_profile())
     run(on_free_text(message, journal(), provider, context(), profiles))
     profiles.get_business_profile.assert_not_awaited()
+    provider.generate_draft.assert_not_called()
+
+
+def test_partner_packaging_branch_looks_up_profile_for_tenant_scoping():
+    """Partner Packaging обязан смотреть Business Profile workspace, чтобы
+
+    не выдавать TA-материалы сторонним tenant'ам (см. test_partner_packaging_flow.py).
+    LLM для этого MVP-комплекта не используется.
+    """
+    message = Message("Подготовь инструкцию для нового партнёра")
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(message, journal(), provider, context(), profiles))
+    profiles.get_business_profile.assert_awaited_once()
     provider.generate_draft.assert_not_called()
 
 
