@@ -55,6 +55,8 @@ def test_ta_affiliated_workspace_keeps_existing_ta_wording():
     text = message.answers[-1][0]
     assert "Короткое объяснение Travel Advantage" in text
     assert "Travel Advantage" in text
+    assert "не обещать окупаемость, доход или результат" in text
+    assert "не представлять партнёрский формат как трудоустройство" in text
 
 
 def test_non_ta_workspace_has_no_travel_advantage_mention_and_uses_business_name():
@@ -68,6 +70,11 @@ def test_non_ta_workspace_has_no_travel_advantage_mention_and_uses_business_name
     assert "Travel Content Factory" not in text
     assert "Тестовое турагентство" in text
     assert "Короткое представление вашего бизнеса" in text
+    assert "окупаемость" not in text
+    assert "не обещать окупаемость, доход или результат" not in text
+    assert "трудоустройств" not in text
+    assert "— не обещать условия или результат, которые не подтверждены;" in text
+    assert "— ясно описывать формат сотрудничества и роли сторон." in text
 
 
 def test_missing_profile_fails_closed_to_neutral_template():
@@ -80,6 +87,11 @@ def test_missing_profile_fails_closed_to_neutral_template():
     assert "Travel Advantage" not in text
     assert "Travel Content Factory" not in text
     assert "Короткое представление вашего бизнеса" in text
+    assert "окупаемость" not in text
+    assert "не обещать окупаемость, доход или результат" not in text
+    assert "трудоустройств" not in text
+    assert "— не обещать условия или результат, которые не подтверждены;" in text
+    assert "— ясно описывать формат сотрудничества и роли сторон." in text
 
 
 def test_variable_terms_warning_still_appended_for_non_ta_workspace():
