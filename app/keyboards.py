@@ -19,6 +19,7 @@ BTN_HOW_IT_WORKS = "ℹ️ Как это работает"
 BTN_WEB_RESOURCES = "🌐 Веб-ресурсы"
 BTN_BACK = "◀️ Назад"
 
+BTN_V2_DAILY_ACTIONS = "☀️ Что делать сегодня"
 BTN_V2_ANALYZE_LINK = "📝 Разобрать публикацию"
 BTN_V2_ANALYZE_MORE = "📝 Разобрать ещё текст"
 BTN_V2_CREATE_MATERIAL = "✍️ Создать материал"
@@ -50,6 +51,16 @@ ARTIFACT_OPEN_PREFIX = "artifact_open:"
 COMPETITOR_REGISTRY_ADD = "competitor_registry:add"
 MATERIAL_ENTRY_ANALYZE = "material_entry:analyze"
 MATERIAL_ENTRY_FIND_SIGNALS = "material_entry:find_signals"
+
+# «☀️ Что делать сегодня»: карточка НЕ знает про WorkItem — вызывающий код
+# (app/handlers/daily_actions.py) уже классифицировал строку в один из трёх
+# бакетов (active_dialog / due_follow_up / waiting_not_due) и просто передаёт
+# id + бакет. daily_action_keyboard ниже решает, какой набор кнопок показать.
+DAILY_ACTION_PROMPT_PREFIX = "daily_action:prompt:"
+DAILY_ACTION_REPLIED_PREFIX = "daily_action:replied:"
+DAILY_ACTION_SNOOZE_PREFIX = "daily_action:snooze:"
+DAILY_ACTION_DONE_PREFIX = "daily_action:done:"
+DAILY_ACTION_DISMISS_PREFIX = "daily_action:dismiss:"
 
 
 WEB_RESOURCES_BACK = "web_resources_back"
@@ -98,6 +109,7 @@ def main_menu() -> ReplyKeyboardMarkup:
 def v2_main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text=BTN_V2_DAILY_ACTIONS)],
             [KeyboardButton(text=BTN_V2_CREATE_MATERIAL)],
             [KeyboardButton(text=BTN_V2_CLIENT_REPLY)],
             [KeyboardButton(text=BTN_V2_FIND_SIGNALS)],
@@ -321,4 +333,39 @@ def competitors_list_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(
             text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
         )],
+    ])
+
+
+def daily_action_keyboard(work_item_id: int, bucket: str) -> InlineKeyboardMarkup:
+    """Кнопки под одной карточкой work_item в «Что делать сегодня».
+
+    ``bucket`` — уже принятое вызывающим кодом решение о том, к какому из
+    трёх состояний относится строка (active_dialog / due_follow_up /
+    waiting_not_due), а не сырое поле WorkItem — набор кнопок для каждого
+    состояния разный и зафиксирован продуктовым решением, не выводится
+    здесь заново из lifecycle/loop_state.
+    """
+    if bucket == "active_dialog":
+        rows = [
+            ("💬 Продолжить разговор", DAILY_ACTION_PROMPT_PREFIX),
+            ("✅ Завершить", DAILY_ACTION_DONE_PREFIX),
+            ("🚫 Не актуально", DAILY_ACTION_DISMISS_PREFIX),
+        ]
+    elif bucket == "due_follow_up":
+        rows = [
+            ("💬 Написать снова", DAILY_ACTION_PROMPT_PREFIX),
+            ("⏭ Перенести", DAILY_ACTION_SNOOZE_PREFIX),
+            ("✅ Завершить", DAILY_ACTION_DONE_PREFIX),
+        ]
+    elif bucket == "waiting_not_due":
+        rows = [
+            ("💬 Ответил(а)", DAILY_ACTION_REPLIED_PREFIX),
+            ("✅ Завершить", DAILY_ACTION_DONE_PREFIX),
+            ("🚫 Не актуально", DAILY_ACTION_DISMISS_PREFIX),
+        ]
+    else:
+        raise ValueError(f"Неизвестный bucket для daily_action_keyboard: {bucket!r}")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=text, callback_data=f"{prefix}{work_item_id}")]
+        for text, prefix in rows
     ])
