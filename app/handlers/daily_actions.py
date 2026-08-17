@@ -1,16 +1,20 @@
 """«☀️ Что делать сегодня»: минимальный экран Next Best Action.
 
-Только шаблонные карточки из уже посчитанного NextBestActionService.build() —
-без LLM. Этот экран умеет отображать уже существующие WorkSubject/WorkItem и
-переводить их состояние по нажатию кнопки.
+Только Telegram-рендеринг уже готового результата — сбор данных и переходы
+состояния вынесены в transport-independent сервисы: DailyActionsService
+(app/services/daily_actions.py) и WorkTransitionService
+(app/services/work_transitions.py). Здесь остаются: разбор callback_data,
+построение клавиатур, тексты для пользователя и перевод TransitionStatus в
+конкретное Telegram-сообщение — то, что реально специфично для Telegram и
+не обязано (и не должно) переиспользоваться VK-адаптером напрямую.
 
 «💬 Продолжить разговор» / «💬 Написать снова» — bridge в уже существующий
 TRAVEL_ASSISTANT Reply flow (app/handlers/tasks.py) через тот же FSM-вход,
-что и кнопка «Ответить клиенту» (AwaitTask.waiting + forced_module). Теперь
-это двустороннее: после генерации черновика Reply flow сам создаёт/обновляет
-work_item (см. tasks.py:_sync_reply_work_item) и прикладывает к черновику
-кнопки «✅ Отправил / 🕒 Позже / 🚫 Не актуально» — их хендлеры живут здесь же,
-рядом с остальными переходами состояния work_item.
+что и кнопка «Ответить клиенту» (AwaitTask.waiting + forced_module). После
+генерации черновика Reply flow сам создаёт/обновляет work_item (см.
+tasks.py:_sync_reply_work_item → app/services/reply_sync.py) и прикладывает
+к черновику кнопки «✅ Отправил / 🕒 Позже / 🚫 Не актуально» — их хендлеры
+живут здесь же, рядом с остальными переходами состояния work_item.
 
 derived-кандидаты (незаполненный профиль, черновики, сигналы) добираются
 максимально консервативно: если данных недостаточно для безопасной карточки
@@ -20,17 +24,15 @@ derived-кандидаты (незаполненный профиль, черн�
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.filters import MagicData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from app.domain.content import Artifact
 from app.domain.partners import WorkspaceContext
-from app.domain.work import NextAction, SignalOpportunity, WaitingSubject, WorkItem, work_item_revision
+from app.domain.work import NextAction, WaitingSubject
 from app.handlers.menu import AwaitTask
 from app.keyboards import (
     BTN_V2_DAILY_ACTIONS,
@@ -50,10 +52,10 @@ from app.repositories.partner_repository import PartnerRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.routing.modules import Module
-from app.services.next_best_action import NextBestActionService
+from app.services.daily_actions import DailyActionsService
+from app.services.work_transitions import TransitionStatus, WorkTransitionService
 
 router = Router(name="daily_actions")
-log = logging.getLogger(__name__)
 
 _UNAVAILABLE = "Рабочее пространство недоступно."
 _WORK_ITEM_NOT_FOUND = (
@@ -66,17 +68,17 @@ _HEADLINE = "☀️ Что делать сегодня"
 _NO_ACTIONS_TEXT = "Незавершённых задач нет — можно начать новую тему или контакт."
 _WAITING_HEADLINE = "⏳ Ждём ответ"
 
-_SNOOZE_OFFSET = timedelta(days=2)
-_SIGNAL_SCORE_THRESHOLD = 60.0
-_DRAFT_STATUSES = ("draft", "review_required")
-_DRAFT_FETCH_LIMIT = 5
-_SIGNAL_FETCH_LIMIT = 20
-
 _DIALOG_ACTION_BUCKETS = {"active_dialog": "active_dialog", "due_follow_up": "due_follow_up"}
 
 
-def _now(*, offset: timedelta = timedelta(0)) -> str:
-    return (datetime.now(timezone.utc) + offset).isoformat()
+def _failure_message(status: TransitionStatus) -> str:
+    """STALE — отдельное сообщение (revision не совпал, показана более
+    старая клавиатура). NOT_FOUND и INVALID_STATE для пользователя выглядят
+    одинаково — «действие недоступно» — различие между ними нужно только
+    внутри WorkTransitionService."""
+    if status is TransitionStatus.STALE:
+        return _STALE_ACTION_MESSAGE
+    return _WORK_ITEM_NOT_FOUND
 
 
 def _parse_work_item_id(data: str, prefix: str) -> int | None:
@@ -96,29 +98,6 @@ def _parse_reply_confirm_callback(data: str, prefix: str) -> tuple[int, str] | N
     if not work_item_part.isdigit() or int(work_item_part) <= 0:
         return None
     return int(work_item_part), revision
-
-
-async def _fetch_reply_confirm_item(
-    work_repository: WorkRepository,
-    workspace_context: WorkspaceContext | None,
-    data: str,
-    prefix: str,
-) -> tuple[str, WorkItem] | None:
-    """Разбирает id+revision из reply_confirm:* callback_data и находит item
-    строго в текущем workspace. Возвращает (revision из callback, item) —
-    сравнение revision с текущим work_item_revision(item) делает вызывающий
-    хендлер сам: «не найдено» (item is None здесь) и «устарело» (revision не
-    совпал) — разные сообщения пользователю, поэтому не смешиваются в одном
-    результате.
-    """
-    parsed = _parse_reply_confirm_callback(data, prefix)
-    if parsed is None or workspace_context is None:
-        return None
-    work_item_id, revision = parsed
-    item = await work_repository.get_work_item(workspace_context.workspace_id, work_item_id)
-    if item is None:
-        return None
-    return revision, item
 
 
 def _short_date(value: str) -> str:
@@ -145,49 +124,6 @@ def _waiting_text(waiting: WaitingSubject) -> str:
     return "\n".join(lines)
 
 
-async def _fetch_draft_artifacts(
-    artifact_repository: ArtifactRepository, workspace_id: int,
-) -> list[Artifact]:
-    drafts: list[Artifact] = []
-    for status in _DRAFT_STATUSES:
-        drafts.extend(await artifact_repository.list_artifacts(
-            workspace_id, limit=_DRAFT_FETCH_LIMIT, status=status,
-        ))
-    return drafts
-
-
-async def _fetch_signal_candidates(
-    workspace_signal_repository: WorkspaceSignalRepository | None, workspace_id: int,
-) -> list[SignalOpportunity]:
-    """Только уже авторизованные workspace-сигналы с известным заголовком и
-    высоким ai_score. Никакого вызова recommender/LLM здесь нет — это
-    сознательно самый простой и безопасный срез derived-кандидатов."""
-    if workspace_signal_repository is None:
-        return []
-    try:
-        records = await workspace_signal_repository.list_for_workspace(
-            workspace_id, limit=_SIGNAL_FETCH_LIMIT,
-        )
-    except Exception:
-        log.warning("daily_actions: failed to fetch workspace signals")
-        return []
-
-    candidates: list[SignalOpportunity] = []
-    for record in records:
-        if record.status != "new":
-            continue
-        if record.ai_score is None or record.ai_score < _SIGNAL_SCORE_THRESHOLD:
-            continue
-        if not record.item_title:
-            continue
-        candidates.append(SignalOpportunity(
-            signal_interpretation_id=record.interpretation_id,
-            title=record.item_title,
-            reason=record.ai_reason or record.item_summary or "Новый сигнал интереса.",
-        ))
-    return candidates
-
-
 @router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_DAILY_ACTIONS)
 async def show_daily_actions(
     message: Message,
@@ -202,28 +138,10 @@ async def show_daily_actions(
         return
 
     workspace_id = workspace_context.workspace_id
-    now = _now()
-
-    profile = await partner_repository.get_business_profile(workspace_id)
-    ta_affiliated = profile is not None and profile.ta_affiliated
-    profile_incomplete = profile is None or profile.profile_status == "incomplete"
-
-    open_items = await work_repository.list_open_actionable(workspace_id, now=now)
-    waiting_items = await work_repository.list_waiting_not_due(workspace_id, now=now)
-    draft_artifacts = await _fetch_draft_artifacts(artifact_repository, workspace_id)
-    signal_candidates = await _fetch_signal_candidates(
-        workspace_signal_repository, workspace_id,
-    )
-
-    daily = NextBestActionService().build(
-        workspace_id=workspace_id,
-        ta_affiliated=ta_affiliated,
-        open_work_items=open_items,
-        waiting_not_due=waiting_items,
-        profile_incomplete=profile_incomplete,
-        draft_artifacts=draft_artifacts,
-        signal_candidates=signal_candidates,
-    )
+    daily = await DailyActionsService(
+        work_repository, partner_repository, artifact_repository,
+        workspace_signal_repository,
+    ).build(workspace_id)
 
     await message.answer(_HEADLINE, reply_markup=v2_back_keyboard())
 
@@ -270,23 +188,6 @@ def _bridge_prompt_text(loop_state: str | None, subject_name: str | None) -> str
     return _DUE_FOLLOW_UP_PROMPT_NO_SUBJECT
 
 
-def _is_promptable(item: WorkItem, *, now: str) -> bool:
-    """Может ли этот work_item сейчас вести в Reply flow через кнопку.
-
-    Старое сообщение Telegram с callback от уже закрытого/отложенного item —
-    обычный сценарий (пользователь мог нажать «Завершить»/«Перенести» в
-    другом чате, или экран просто устарел): такой callback должен fail-closed
-    остановиться здесь, не трогая FSM и не запуская Reply flow.
-    """
-    if item.lifecycle != "open":
-        return False
-    if item.loop_state == "active_dialog":
-        return True
-    if item.loop_state == "waiting_reply" and item.due_at is not None and item.due_at <= now:
-        return True
-    return False
-
-
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(DAILY_ACTION_PROMPT_PREFIX))
 async def on_daily_action_prompt(
     callback: CallbackQuery,
@@ -304,18 +205,23 @@ async def on_daily_action_prompt(
     рядом, но tasks.py их сегодня не читает — это сознательно оставлено для
     отдельного шага, не переписывающего Reply flow.
 
-    Bridge не меняет lifecycle/loop_state work_item — только читает его
-    (get_work_item/get_subject). Состояние меняется исключительно явными
-    кнопками «Ответил(а)» / «Завершить» / «Перенести» / «Не актуально».
+    Bridge не меняет lifecycle/loop_state work_item — допустимость перехода
+    проверяет WorkTransitionService.prepare_bridge (только чтение). Состояние
+    меняется исключительно явными кнопками «Ответил(а)» / «Завершить» /
+    «Перенести» / «Не актуально».
     """
     work_item_id = _parse_work_item_id(callback.data or "", DAILY_ACTION_PROMPT_PREFIX)
     if work_item_id is None or workspace_context is None:
         await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
         return
-    item = await work_repository.get_work_item(workspace_context.workspace_id, work_item_id)
-    if item is None or not _is_promptable(item, now=_now()):
-        await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
+    result = await WorkTransitionService(work_repository).prepare_bridge(
+        workspace_context.workspace_id, work_item_id,
+    )
+    if result.status is not TransitionStatus.OK:
+        await callback.answer(_failure_message(result.status), show_alert=True)
         return
+    item = result.work_item
+    assert item is not None
 
     subject_name: str | None = None
     if item.subject_id is not None:
@@ -348,11 +254,11 @@ async def on_daily_action_replied(
     if work_item_id is None or workspace_context is None:
         await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
         return
-    updated = await work_repository.mark_reply_received(
+    result = await WorkTransitionService(work_repository).mark_reply_received(
         workspace_context.workspace_id, work_item_id,
     )
-    if updated is None:
-        await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
+    if result.status is not TransitionStatus.OK:
+        await callback.answer(_failure_message(result.status), show_alert=True)
         return
     await callback.answer("Отмечено: продолжайте разговор.")
     if callback.message is not None:
@@ -369,11 +275,11 @@ async def on_daily_action_snooze(
     if work_item_id is None or workspace_context is None:
         await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
         return
-    updated = await work_repository.snooze(
-        workspace_context.workspace_id, work_item_id, due_at=_now(offset=_SNOOZE_OFFSET),
+    result = await WorkTransitionService(work_repository).snooze(
+        workspace_context.workspace_id, work_item_id,
     )
-    if updated is None:
-        await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
+    if result.status is not TransitionStatus.OK:
+        await callback.answer(_failure_message(result.status), show_alert=True)
         return
     await callback.answer("Перенесено на 2 дня.")
     if callback.message is not None:
@@ -390,11 +296,11 @@ async def on_daily_action_done(
     if work_item_id is None or workspace_context is None:
         await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
         return
-    updated = await work_repository.resolve_done(
+    result = await WorkTransitionService(work_repository).mark_done(
         workspace_context.workspace_id, work_item_id,
     )
-    if updated is None:
-        await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
+    if result.status is not TransitionStatus.OK:
+        await callback.answer(_failure_message(result.status), show_alert=True)
         return
     await callback.answer("Завершено.")
     if callback.message is not None:
@@ -411,11 +317,11 @@ async def on_daily_action_dismiss(
     if work_item_id is None or workspace_context is None:
         await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
         return
-    updated = await work_repository.resolve_dismissed(
+    result = await WorkTransitionService(work_repository).mark_dismissed(
         workspace_context.workspace_id, work_item_id,
     )
-    if updated is None:
-        await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
+    if result.status is not TransitionStatus.OK:
+        await callback.answer(_failure_message(result.status), show_alert=True)
         return
     await callback.answer("Отмечено как неактуальное.")
     if callback.message is not None:
@@ -432,36 +338,22 @@ async def on_reply_confirm_sent(
     waiting_reply с новым due_at — не создаёт второй work_item ни при первом
     сообщении, ни при повторном нажатии (mark_reply_sent идемпотентен).
 
-    Revision-guard: если для этого же work_item успели подготовить более
-    новый черновик (updated_at сдвинулся), кнопка под ЭТИМ, более старым
-    черновиком, отклоняется как устаревшая — без этого случайный тап по
-    забытой клавиатуре мог бы откатить уже более свежее состояние.
+    Revision-guard (WorkTransitionService.mark_sent): если для этого же
+    work_item успели подготовить более новый черновик (updated_at сдвинулся),
+    кнопка под ЭТИМ, более старым черновиком, отклоняется как устаревшая —
+    без этого случайный тап по забытой клавиатуре мог бы откатить уже более
+    свежее состояние.
     """
-    found = await _fetch_reply_confirm_item(
-        work_repository, workspace_context, callback.data or "", REPLY_CONFIRM_SENT_PREFIX,
-    )
-    if found is None:
+    parsed = _parse_reply_confirm_callback(callback.data or "", REPLY_CONFIRM_SENT_PREFIX)
+    if parsed is None or workspace_context is None:
         await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
         return
-    revision, item = found
-    if work_item_revision(item) != revision:
-        await callback.answer(_STALE_ACTION_MESSAGE, show_alert=True)
-        return
-
-    subject_name: str | None = None
-    if item.subject_id is not None:
-        subject = await work_repository.get_subject(
-            workspace_context.workspace_id, item.subject_id,
-        )
-        subject_name = subject.name if subject is not None else None
-    next_step = f"Ждём ответ: {subject_name}" if subject_name else "Ждём ответ."
-
-    updated = await work_repository.mark_reply_sent(
-        workspace_context.workspace_id, item.id,
-        due_at=_now(offset=_SNOOZE_OFFSET), next_step=next_step,
+    work_item_id, revision = parsed
+    result = await WorkTransitionService(work_repository).mark_sent(
+        workspace_context.workspace_id, work_item_id, revision=revision,
     )
-    if updated is None:
-        await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
+    if result.status is not TransitionStatus.OK:
+        await callback.answer(_failure_message(result.status), show_alert=True)
         return
     await callback.answer("Отмечено: ждём ответ.")
     if callback.message is not None:
@@ -479,15 +371,16 @@ async def on_reply_confirm_later(
     мутирует ничего даже без revision-guard, но проверяем его тоже — ради
     единообразия и чтобы toast не подтверждал устаревший черновик как
     актуальный."""
-    found = await _fetch_reply_confirm_item(
-        work_repository, workspace_context, callback.data or "", REPLY_CONFIRM_LATER_PREFIX,
-    )
-    if found is None:
+    parsed = _parse_reply_confirm_callback(callback.data or "", REPLY_CONFIRM_LATER_PREFIX)
+    if parsed is None or workspace_context is None:
         await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
         return
-    revision, item = found
-    if work_item_revision(item) != revision:
-        await callback.answer(_STALE_ACTION_MESSAGE, show_alert=True)
+    work_item_id, revision = parsed
+    result = await WorkTransitionService(work_repository).later(
+        workspace_context.workspace_id, work_item_id, revision=revision,
+    )
+    if result.status is not TransitionStatus.OK:
+        await callback.answer(_failure_message(result.status), show_alert=True)
         return
     await callback.answer("Хорошо, останется в «Что делать сегодня».")
     if callback.message is not None:
@@ -502,28 +395,20 @@ async def on_reply_confirm_dismiss(
 ) -> None:
     """«🚫 Не актуально» под свежим Reply-черновиком.
 
-    Отдельный от DAILY_ACTION_DISMISS_PREFIX/on_daily_action_dismiss хендлер:
-    тот не несёт revision и не может отличить «дважды прочитанную» устаревшую
-    клавиатуру от актуальной — здесь именно это и требуется проверить, иначе
-    случайный тап по забытому черновику мог бы закрыть уже более новый цикл
-    разговора (см. отчёт по этому этапу).
+    Отдельный от DAILY_ACTION_DISMISS_PREFIX/on_daily_action_dismiss
+    callback: тот не несёт revision. Оба в итоге вызывают тот же
+    WorkTransitionService.mark_dismissed — с revision здесь, без него там.
     """
-    found = await _fetch_reply_confirm_item(
-        work_repository, workspace_context, callback.data or "", REPLY_CONFIRM_DISMISS_PREFIX,
-    )
-    if found is None:
+    parsed = _parse_reply_confirm_callback(callback.data or "", REPLY_CONFIRM_DISMISS_PREFIX)
+    if parsed is None or workspace_context is None:
         await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
         return
-    revision, item = found
-    if work_item_revision(item) != revision:
-        await callback.answer(_STALE_ACTION_MESSAGE, show_alert=True)
-        return
-
-    updated = await work_repository.resolve_dismissed(
-        workspace_context.workspace_id, item.id,
+    work_item_id, revision = parsed
+    result = await WorkTransitionService(work_repository).mark_dismissed(
+        workspace_context.workspace_id, work_item_id, revision=revision,
     )
-    if updated is None:
-        await callback.answer(_WORK_ITEM_NOT_FOUND, show_alert=True)
+    if result.status is not TransitionStatus.OK:
+        await callback.answer(_failure_message(result.status), show_alert=True)
         return
     await callback.answer("Отмечено как неактуальное.")
     if callback.message is not None:
