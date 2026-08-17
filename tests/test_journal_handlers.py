@@ -278,7 +278,12 @@ def test_radar_handler_passes_workspace_id_without_changing_flow() -> None:
     assert kwargs["content"] == "Черновик"
     assert kwargs["artifact_type"] == "post"
     reply_markup = callback.message.answers[-1][1]["reply_markup"]
-    assert reply_markup.inline_keyboard[0][0].callback_data == f"{ARTIFACT_CHECK_PREFIX}501"
+    buttons = [button for row in reply_markup.inline_keyboard for button in row]
+    check_button = next(
+        button for button in buttons
+        if button.callback_data.startswith(ARTIFACT_CHECK_PREFIX)
+    )
+    assert check_button.callback_data == f"{ARTIFACT_CHECK_PREFIX}501"
 
 
 def radar_record(*, summary="Описание", title="Тема"):
@@ -489,11 +494,15 @@ def test_radar_artifact_is_reviewable_via_existing_check_text_flow(tmp_path) -> 
     provider.generate_draft.assert_called_once()
 
     reply_markup = callback.message.answers[-1][1]["reply_markup"]
-    check_callback_data = reply_markup.inline_keyboard[0][0].callback_data
-    assert check_callback_data.startswith(ARTIFACT_CHECK_PREFIX)
+    buttons = [button for row in reply_markup.inline_keyboard for button in row]
+    check_button = next(
+        (button for button in buttons if button.callback_data.startswith(ARTIFACT_CHECK_PREFIX)),
+        None,
+    )
+    assert check_button is not None
 
     review_callback = Callback()
-    review_callback.data = check_callback_data
+    review_callback.data = check_button.callback_data
     review_provider = FakeLLMProvider()
 
     run(review_artifact(
