@@ -249,6 +249,35 @@ class WorkRepository:
             )).fetchall()
         return [_work_item_from_row(row) for row in rows]
 
+    async def find_work_item_by_ref(
+        self,
+        workspace_id: int,
+        ref_type: str,
+        ref_id: int,
+        *,
+        kind: str | None = None,
+        lifecycle: str | None = None,
+    ) -> WorkItem | None:
+        """Идемпотентность content work_item: ContentUsageService использует
+        это, чтобы не создать вторую 'done' запись при повторном/гоночном
+        вызове mark_used для того же Artifact."""
+        query = (
+            "SELECT * FROM work_item "
+            "WHERE workspace_id = ? AND ref_type = ? AND ref_id = ?"
+        )
+        params: list[object] = [workspace_id, ref_type, ref_id]
+        if kind is not None:
+            query += " AND kind = ?"
+            params.append(kind)
+        if lifecycle is not None:
+            query += " AND lifecycle = ?"
+            params.append(lifecycle)
+        query += " ORDER BY id DESC LIMIT 1"
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(query, params)).fetchone()
+        return _work_item_from_row(row) if row is not None else None
+
     # ── WorkItem: переходы состояния ─────────────────────────────────────
 
     async def mark_reply_received(

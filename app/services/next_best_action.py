@@ -32,6 +32,7 @@ from app.domain.work import (
     NextAction,
     SignalOpportunity,
     WaitingSubject,
+    WorkItem,
     WorkItemView,
 )
 
@@ -79,6 +80,7 @@ class NextBestActionService:
         draft_artifacts: Sequence[Artifact] = (),
         signal_candidates: Sequence[SignalOpportunity] = (),
         include_cold_contact_fallback: bool = True,
+        recent_resolved_content: Sequence[WorkItem] = (),
     ) -> DailyActions:
         for view in (*open_work_items, *waiting_not_due):
             if view.item.workspace_id != workspace_id:
@@ -86,6 +88,9 @@ class NextBestActionService:
         for artifact in draft_artifacts:
             if artifact.workspace_id != workspace_id:
                 raise PermissionError("Artifact не принадлежит workspace")
+        for item in recent_resolved_content:
+            if item.workspace_id != workspace_id:
+                raise PermissionError("work_item не принадлежит workspace")
 
         # draft/review_required артефакты, уже отслеживаемые открытым
         # work_item, не должны задваиваться как отдельный derived-кандидат.
@@ -109,7 +114,11 @@ class NextBestActionService:
         candidates.sort(key=lambda pair: pair[0])
         actions = tuple(action for _, action in candidates[:MAX_ACTIONS])
         waiting = tuple(_waiting_subject(view) for view in waiting_not_due)
-        return DailyActions(actions=actions, waiting=waiting)
+        return DailyActions(
+            actions=actions,
+            waiting=waiting,
+            recent_resolved_content=tuple(recent_resolved_content),
+        )
 
 
 def _explicit_candidates(

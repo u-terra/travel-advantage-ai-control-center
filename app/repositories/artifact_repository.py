@@ -265,6 +265,26 @@ class ArtifactRepository:
             row = await self._artifact_row(db, workspace_id, artifact_id)
         return _artifact_from_row(row) if row is not None else None
 
+    async def mark_used_if_not_already(
+        self, workspace_id: int, artifact_id: int
+    ) -> tuple[Artifact | None, bool]:
+        """CAS-переход в 'used': UPDATE срабатывает, только если текущий
+        статус ещё не 'used' и не 'archived'. transitioned=True получает
+        ровно один вызов — используется как замок в ContentUsageService,
+        чтобы для одного artifact создавался ровно один content work_item."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            cursor = await db.execute(
+                "UPDATE artifacts SET status = 'used', updated_at = ? "
+                "WHERE workspace_id = ? AND id = ? AND status NOT IN ('used', 'archived')",
+                (_now(), workspace_id, artifact_id),
+            )
+            transitioned = cursor.rowcount == 1
+            await db.commit()
+            row = await self._artifact_row(db, workspace_id, artifact_id)
+        return (_artifact_from_row(row) if row is not None else None), transitioned
+
     async def add_artifact_version(
         self,
         workspace_id: int,

@@ -212,7 +212,7 @@ def test_generation_calls_factory_once_then_saves_linked_artifact(output_format)
     assert "secret" not in callback.message.answers[-1][0]
     buttons = callback.message.answers[-1][1]["reply_markup"].inline_keyboard
     artifact = artifacts.create_artifact_with_initial_version.return_value[0]
-    assert buttons[0][0].callback_data == f"{ARTIFACT_CHECK_PREFIX}{artifact.id}"
+    assert buttons[2][0].callback_data == f"{ARTIFACT_CHECK_PREFIX}{artifact.id}"
 
 
 def test_ai_failure_creates_no_artifact_and_hides_details():

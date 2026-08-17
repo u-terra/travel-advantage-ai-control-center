@@ -48,6 +48,11 @@ ARTIFACT_REVIEW_SAVE_PREFIX = "artifact_review_save:"
 ARTIFACT_REVIEW_KEEP = "artifact_review_keep"
 TEXT_REVIEW_SAVE = "text_review_save"
 ARTIFACT_OPEN_PREFIX = "artifact_open:"
+# Content → work memory: фиксация факта публикации/использования Artifact
+# (app/services/content_usage.py). Живут в material_result_keyboard, общей
+# для всех Content entry points — не отдельная параллельная клавиатура.
+ARTIFACT_MARK_USED_PREFIX = "artifact_used:"
+ARTIFACT_KEEP_LATER_PREFIX = "artifact_later:"
 COMPETITOR_REGISTRY_ADD = "competitor_registry:add"
 MATERIAL_ENTRY_ANALYZE = "material_entry:analyze"
 MATERIAL_ENTRY_FIND_SIGNALS = "material_entry:find_signals"
@@ -208,6 +213,14 @@ def source_material_formats_keyboard(source_id: int) -> InlineKeyboardMarkup:
 
 def material_result_keyboard(artifact_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ Опубликовал",
+            callback_data=f"{ARTIFACT_MARK_USED_PREFIX}{artifact_id}",
+        )],
+        [InlineKeyboardButton(
+            text="📌 Оставить на потом",
+            callback_data=f"{ARTIFACT_KEEP_LATER_PREFIX}{artifact_id}",
+        )],
         [InlineKeyboardButton(
             text="🛡 Проверить текст",
             callback_data=f"{ARTIFACT_CHECK_PREFIX}{artifact_id}",

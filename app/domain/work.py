@@ -165,3 +165,7 @@ class WaitingSubject:
 class DailyActions:
     actions: tuple[NextAction, ...]
     waiting: tuple[WaitingSubject, ...]
+    # История недавно опубликованного/использованного контента (kind='content',
+    # lifecycle='done') — контекст для будущих этапов (повтор темы, история
+    # публикаций), сейчас нигде не рендерится в UI. Не влияет на ranking/actions.
+    recent_resolved_content: tuple[WorkItem, ...] = ()

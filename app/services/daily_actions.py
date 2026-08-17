@@ -14,10 +14,10 @@ NextBestActionService, сюда перенесена только сборка �
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.domain.content import Artifact
-from app.domain.work import DailyActions, SignalOpportunity
+from app.domain.work import DailyActions, SignalOpportunity, WorkItem
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.work_repository import WorkRepository
@@ -30,6 +30,11 @@ _SIGNAL_SCORE_THRESHOLD = 60.0
 _DRAFT_STATUSES = ("draft", "review_required")
 _DRAFT_FETCH_LIMIT = 5
 _SIGNAL_FETCH_LIMIT = 20
+# История для контекста (повтор темы, будущий анализ тактики) — не влияет на
+# ranking/actions и сейчас нигде не рендерится, см. app/domain/work.py:
+# DailyActions.recent_resolved_content.
+_RECENT_RESOLVED_WINDOW_DAYS = 30
+_RECENT_RESOLVED_FETCH_LIMIT = 10
 
 
 def _now() -> str:
@@ -60,6 +65,9 @@ class DailyActionsService:
         waiting_items = await self._work_repository.list_waiting_not_due(workspace_id, now=now)
         draft_artifacts = await self._fetch_draft_artifacts(workspace_id)
         signal_candidates = await self._fetch_signal_candidates(workspace_id)
+        recent_resolved_content = await self._fetch_recent_resolved_content(
+            workspace_id, now=now,
+        )
 
         return NextBestActionService().build(
             workspace_id=workspace_id,
@@ -69,6 +77,7 @@ class DailyActionsService:
             profile_incomplete=profile_incomplete,
             draft_artifacts=draft_artifacts,
             signal_candidates=signal_candidates,
+            recent_resolved_content=recent_resolved_content,
         )
 
     async def _fetch_draft_artifacts(self, workspace_id: int) -> list[Artifact]:
@@ -78,6 +87,16 @@ class DailyActionsService:
                 workspace_id, limit=_DRAFT_FETCH_LIMIT, status=status,
             ))
         return drafts
+
+    async def _fetch_recent_resolved_content(
+        self, workspace_id: int, *, now: str
+    ) -> list[WorkItem]:
+        since = (
+            datetime.fromisoformat(now) - timedelta(days=_RECENT_RESOLVED_WINDOW_DAYS)
+        ).isoformat()
+        return await self._work_repository.list_recent_resolved_content(
+            workspace_id, since=since, limit=_RECENT_RESOLVED_FETCH_LIMIT,
+        )
 
     async def _fetch_signal_candidates(self, workspace_id: int) -> list[SignalOpportunity]:
         """Только уже авторизованные workspace-сигналы с известным заголовком
