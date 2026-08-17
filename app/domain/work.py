@@ -12,6 +12,7 @@ due_at <= now), а не отдельное состояние — иначе к�
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 
@@ -81,6 +82,20 @@ class WorkItem:
     created_at: str
     updated_at: str
     resolved_at: str | None
+
+
+def work_item_revision(item: WorkItem) -> str:
+    """Короткий (10 hex) optimistic-revision токен из updated_at — для
+    callback_data кнопок, показанных под конкретным Reply-черновиком.
+
+    Нет отдельной колонки version: updated_at уже меняется при КАЖДОЙ
+    мутации work_item (mark_reply_sent/received, snooze, resolve_*,
+    подготовка нового черновика) — этого достаточно, чтобы отличить кнопки,
+    показанные под текущим состоянием, от кнопок под уже устаревшим. SHA-256
+    (не сам updated_at) — чтобы токен помещался в 64-байтный лимит
+    callback_data вместе с префиксом и id.
+    """
+    return hashlib.sha256(item.updated_at.encode("utf-8")).hexdigest()[:10]
 
 
 @dataclass(frozen=True)

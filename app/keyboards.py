@@ -62,6 +62,18 @@ DAILY_ACTION_SNOOZE_PREFIX = "daily_action:snooze:"
 DAILY_ACTION_DONE_PREFIX = "daily_action:done:"
 DAILY_ACTION_DISMISS_PREFIX = "daily_action:dismiss:"
 
+# Кнопки под свежесгенерированным черновиком Reply flow. Каждая несёт
+# work_item_id И revision (optimistic-версия из updated_at, см.
+# app.domain.work.work_item_revision) — новый черновик для того же item
+# обновляет updated_at, поэтому кнопки под предыдущим, уже неактуальным
+# черновиком отличаются revision'ом и отклоняются как устаревшие (см.
+# app/handlers/daily_actions.py:_parse_reply_confirm_callback). Свой
+# REPLY_CONFIRM_DISMISS_PREFIX, а не DAILY_ACTION_DISMISS_PREFIX — тот не
+# несёт revision и не годится для этого guard'а.
+REPLY_CONFIRM_SENT_PREFIX = "reply_confirm:sent:"
+REPLY_CONFIRM_LATER_PREFIX = "reply_confirm:later:"
+REPLY_CONFIRM_DISMISS_PREFIX = "reply_confirm:dismiss:"
+
 
 WEB_RESOURCES_BACK = "web_resources_back"
 
@@ -368,4 +380,30 @@ def daily_action_keyboard(work_item_id: int, bucket: str) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=text, callback_data=f"{prefix}{work_item_id}")]
         for text, prefix in rows
+    ])
+
+
+def reply_confirm_keyboard(work_item_id: int, revision: str) -> InlineKeyboardMarkup:
+    """Кнопки под черновиком, подготовленным Reply flow для конкретного
+    work_item. Кнопки сами ничего не генерируют — только меняют состояние
+    уже существующего work_item.
+
+    ``revision`` — версия work_item на момент показа ЭТОГО черновика (см.
+    app.domain.work.work_item_revision). Обязательна: без неё нечем отличить
+    кнопки под текущим черновиком от кнопок под более старым, если для того
+    же work_item успели подготовить новый.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ Отправил",
+            callback_data=f"{REPLY_CONFIRM_SENT_PREFIX}{work_item_id}:{revision}",
+        )],
+        [InlineKeyboardButton(
+            text="🕒 Позже",
+            callback_data=f"{REPLY_CONFIRM_LATER_PREFIX}{work_item_id}:{revision}",
+        )],
+        [InlineKeyboardButton(
+            text="🚫 Не актуально",
+            callback_data=f"{REPLY_CONFIRM_DISMISS_PREFIX}{work_item_id}:{revision}",
+        )],
     ])

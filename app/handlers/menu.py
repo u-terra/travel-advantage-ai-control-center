@@ -79,6 +79,14 @@ class AwaitTask(StatesGroup):
     waiting = State()
 
 
+class AwaitReplySubject(StatesGroup):
+    """Промежуточный шаг перед AwaitTask.waiting только для TRAVEL_ASSISTANT:
+    «Кому отвечаем?» — до того, как получить сам вопрос/сообщение клиента.
+    См. on_reply_subject_received в app/handlers/tasks.py."""
+
+    waiting = State()
+
+
 BUTTON_TO_MODULE: dict[str, Module] = {
     BTN_CREATE_CONTENT: Module.CONTENT_FACTORY,
     BTN_CLIENT_QUESTION: Module.TRAVEL_ASSISTANT,
@@ -118,6 +126,17 @@ BUTTON_HINTS: dict[str, str] = {
         "Бот попробует разложить её на отдельные маршруты."
     ),
 }
+
+# Шаг перед вопросом клиента: имя/метка нужны только чтобы связать между
+# собой несколько сообщений одного человека в «Что делать сегодня» — не
+# контакт, не CRM-поле, поэтому телефон/email/канал не спрашиваются.
+_REPLY_SUBJECT_PROMPT = (
+    "Кому отвечаем?\n"
+    "Напишите имя или короткое обозначение, например:\n"
+    "Иван\n"
+    "Мария\n"
+    "Клиент по Турции"
+)
 
 
 def _short_title(text: str, max_len: int = 42) -> str:
@@ -168,6 +187,13 @@ async def on_category(message: Message, state: FSMContext) -> None:
 async def on_v2_category(message: Message, state: FSMContext) -> None:
     module = BUTTON_TO_MODULE[message.text]
     await state.update_data(forced_module=module.value, skip_route_card=True)
+    if module is Module.TRAVEL_ASSISTANT:
+        # «Ответить клиенту» сначала спрашивает «Кому отвечаем?» — вопрос
+        # клиента ждём только на следующем шаге, см. AwaitReplySubject и
+        # on_reply_subject_received в app/handlers/tasks.py.
+        await state.set_state(AwaitReplySubject.waiting)
+        await message.answer(_REPLY_SUBJECT_PROMPT, reply_markup=active_main_menu(True))
+        return
     await state.set_state(AwaitTask.waiting)
     await message.answer(
         BUTTON_HINTS[message.text],

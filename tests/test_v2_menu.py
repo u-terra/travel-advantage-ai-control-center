@@ -10,6 +10,7 @@ from aiogram import Router
 from app.config import load_settings
 from app.domain.partners import PartnerWorkspace, WorkspaceContext
 from app.handlers.menu import (
+    AwaitReplySubject,
     AwaitTask,
     on_find_signals,
     on_material_entry_analyze,
@@ -320,21 +321,23 @@ def test_v2_create_material_analyze_reuses_direct_handler() -> None:
     assert "чтение ссылок" not in text
 
 
-@pytest.mark.parametrize(
-    ("button", "module"),
-    [
-        (BTN_V2_CLIENT_REPLY, Module.TRAVEL_ASSISTANT),
-    ],
-)
-def test_v2_existing_scenarios_reuse_await_task(button: str, module: Module) -> None:
-    message = _Message(button)
+def test_v2_client_reply_asks_subject_before_await_task() -> None:
+    """«Ответить клиенту» больше не ведёт в AwaitTask.waiting напрямую:
+    сперва AwaitReplySubject.waiting («Кому отвечаем?»), и только после
+    ответа на этот вопрос (on_reply_subject_received в tasks.py) — AwaitTask.
+    Остальные CATEGORY_BUTTONS этот промежуточный шаг не проходят."""
+    message = _Message(BTN_V2_CLIENT_REPLY)
     state = _State()
 
     _run(on_v2_category(message, state))
 
-    assert state.data == {"forced_module": module.value, "skip_route_card": True}
-    assert state.state == AwaitTask.waiting
-    assert _texts(message.answers[0][1]) == V2_BUTTONS
+    assert state.data == {
+        "forced_module": Module.TRAVEL_ASSISTANT.value, "skip_route_card": True,
+    }
+    assert state.state == AwaitReplySubject.waiting
+    text, markup = message.answers[0]
+    assert "Кому отвечаем" in text
+    assert _texts(markup) == V2_BUTTONS
 
 
 async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None:

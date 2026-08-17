@@ -295,3 +295,32 @@ def test_create_work_item_rejects_ref_type_without_ref_id(tmp_path: Path) -> Non
         _run(repo.create_work_item(
             workspace_a, kind="content", ref_type="artifact", ref_id=None,
         ))
+
+
+def test_rapid_successive_mutations_get_distinct_updated_at(tmp_path: Path) -> None:
+    """На этой машине datetime.now() читает системные часы с разрешением
+    ~15.6мс (Windows tick) — без монотонной подстраховки в _now() две быстрые
+    подряд идущие мутации одного work_item могли бы получить идентичный
+    updated_at и, следовательно, неотличимую optimistic-revision."""
+    from app.domain.work import work_item_revision
+
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repo = _work_repo(db_path)
+    item = _run(repo.create_work_item(
+        workspace_a, kind="dialog", loop_state="active_dialog",
+        next_step="Отправить подготовленный ответ: Иван",
+    ))
+
+    updated_at_values = {item.updated_at}
+    revisions = {work_item_revision(item)}
+    current = item
+    for _ in range(50):
+        current = _run(repo.mark_draft_prepared(
+            workspace_a, current.id, next_step="Отправить подготовленный ответ: Иван",
+        ))
+        assert current is not None
+        updated_at_values.add(current.updated_at)
+        revisions.add(work_item_revision(current))
+
+    assert len(updated_at_values) == 51
+    assert len(revisions) == 51

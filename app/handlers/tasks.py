@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from dataclasses import dataclass
 
 from aiogram import F, Router
+from aiogram.filters import MagicData
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.cards import build_card
 from app.domain.partners import WorkspaceContext
-from app.handlers.menu import AwaitTask
-from app.keyboards import active_main_menu
+from app.domain.work import WorkSubjectValidationError, work_item_revision
+from app.handlers.menu import AwaitReplySubject, AwaitTask, BUTTON_HINTS
+from app.keyboards import BTN_V2_CLIENT_REPLY, active_main_menu, reply_confirm_keyboard
+from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
+from app.repositories.work_repository import WorkRepository
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
@@ -20,6 +26,7 @@ from app.services.material_orchestration import MaterialOrchestrationService
 from app.storage import Journal
 
 router = Router(name="tasks")
+log = logging.getLogger(__name__)
 
 _CLIENT_QUESTION_MATERIAL_TYPE = "client_question"
 _DRAFT_OUTPUT_FORMAT = "telegram"
@@ -43,6 +50,70 @@ _TEXT_CHECK_FAILURE_MESSAGE = (
     "Попробуйте ещё раз или откройте Travel Content Factory вручную."
 )
 
+_REPLY_SUBJECT_EMPTY = (
+    "Имя не должно быть пустым. Напишите имя или короткое обозначение, например: Иван."
+)
+_REPLY_WORKSPACE_UNAVAILABLE = "Рабочее пространство недоступно."
+
+# Artifact для Reply-черновика: существующий, ничего не расширяющий kind
+# (см. app/domain/content.py:ARTIFACT_TYPES) — «ответ клиенту» уже описан
+# как client_message, отдельный material kind под этот сценарий не нужен.
+_REPLY_ARTIFACT_TYPE = "client_message"
+
+
+@dataclass(frozen=True)
+class _ReplyBridgeContext:
+    """Что уже известно о собеседнике к моменту, когда Reply flow получил
+    сообщение клиента — из AwaitReplySubject (новый subject) или из
+    daily_actions bridge (уже существующий work_item)."""
+
+    work_item_id: int | None
+    subject_id: int | None
+    subject_name: str | None
+
+
+@router.message(
+    MagicData(F.v2_menu_enabled), AwaitReplySubject.waiting,
+    F.text & ~F.text.startswith("/"),
+)
+async def on_reply_subject_received(
+    message: Message,
+    state: FSMContext,
+    work_repository: WorkRepository,
+    workspace_context: WorkspaceContext | None,
+) -> None:
+    """Первый шаг «Ответить клиенту» (v2): «Кому отвечаем?» -> WorkSubject.
+
+    Не дублирует Reply flow — только получает/создаёт WorkSubject и передаёт
+    управление дальше, на AwaitTask.waiting, откуда обычный сценарий
+    (on_task_after_button -> _maybe_send_draft) продолжает как раньше.
+    """
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer(_REPLY_SUBJECT_EMPTY, reply_markup=active_main_menu(True))
+        return
+    if workspace_context is None:
+        await message.answer(_REPLY_WORKSPACE_UNAVAILABLE, reply_markup=active_main_menu(True))
+        await state.clear()
+        return
+
+    try:
+        subject = await work_repository.get_or_create_subject(
+            workspace_context.workspace_id, name,
+        )
+    except WorkSubjectValidationError:
+        await message.answer(_REPLY_SUBJECT_EMPTY, reply_markup=active_main_menu(True))
+        return
+
+    await state.update_data(
+        daily_action_subject_id=subject.id,
+        daily_action_subject_name=subject.name,
+    )
+    await state.set_state(AwaitTask.waiting)
+    await message.answer(
+        BUTTON_HINTS[BTN_V2_CLIENT_REPLY], reply_markup=active_main_menu(True),
+    )
+
 
 @router.message(AwaitTask.waiting, F.text & ~F.text.startswith("/"))
 async def on_task_after_button(
@@ -52,11 +123,20 @@ async def on_task_after_button(
     llm_provider: LLMProvider,
     workspace_context: WorkspaceContext | None,
     partner_repository: PartnerRepository,
+    work_repository: WorkRepository | None = None,
+    artifact_repository: ArtifactRepository | None = None,
     v2_menu_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
     forced_raw = data.get("forced_module")
     skip_route_card = bool(data.get("skip_route_card"))
+    # Заполняются либо on_reply_subject_received (новый subject), либо
+    # daily_actions.on_daily_action_prompt (уже существующий work_item) —
+    # для любого другого входа (обычная кнопка/свободный текст) их просто
+    # нет в data, и reply_context ниже останется None.
+    reply_work_item_id = data.get("daily_action_work_item_id")
+    reply_subject_id = data.get("daily_action_subject_id")
+    reply_subject_name = data.get("daily_action_subject_name")
     task_text = (message.text or "").strip()
     await state.clear()
 
@@ -86,10 +166,19 @@ async def on_task_after_button(
         secondary_modules=tuple(m.value for m in decision.secondary_modules),
         safety_level=decision.safety_level.value,
     )
+
+    reply_context = (
+        _ReplyBridgeContext(reply_work_item_id, reply_subject_id, reply_subject_name)
+        if decision.primary_module is Module.TRAVEL_ASSISTANT
+        else None
+    )
+
     if skip_route_card:
         await _maybe_send_module_result(
             message, decision, llm_provider,
             workspace_context.workspace_id, partner_repository,
+            work_repository=work_repository, artifact_repository=artifact_repository,
+            reply_context=reply_context,
         )
         return
 
@@ -99,6 +188,8 @@ async def on_task_after_button(
     await _maybe_send_module_result(
         message, decision, llm_provider,
         workspace_context.workspace_id, partner_repository,
+        work_repository=work_repository, artifact_repository=artifact_repository,
+        reply_context=reply_context,
     )
 
 
@@ -147,6 +238,10 @@ async def _maybe_send_module_result(
     provider: LLMProvider,
     workspace_id: int,
     partner_repository: PartnerRepository,
+    *,
+    work_repository: WorkRepository | None = None,
+    artifact_repository: ArtifactRepository | None = None,
+    reply_context: _ReplyBridgeContext | None = None,
 ) -> None:
     if decision.primary_module is Module.SAFETY_LAYER:
         await _send_text_check(message, decision, provider)
@@ -160,6 +255,8 @@ async def _maybe_send_module_result(
 
     await _maybe_send_draft(
         message, decision, provider, workspace_id, partner_repository,
+        work_repository=work_repository, artifact_repository=artifact_repository,
+        reply_context=reply_context,
     )
 
 
@@ -392,6 +489,10 @@ async def _maybe_send_draft(
     provider: LLMProvider,
     workspace_id: int,
     partner_repository: PartnerRepository,
+    *,
+    work_repository: WorkRepository | None = None,
+    artifact_repository: ArtifactRepository | None = None,
+    reply_context: _ReplyBridgeContext | None = None,
 ) -> None:
     if (
         decision.primary_module is Module.CONTENT_FACTORY
@@ -447,4 +548,85 @@ async def _maybe_send_draft(
         lines.append("")
         lines.append("Текст требует ручной проверки перед отправкой.")
 
-    await message.answer("\n".join(lines))
+    reply_keyboard: InlineKeyboardMarkup | None = None
+    if (
+        decision.primary_module is Module.TRAVEL_ASSISTANT
+        and reply_context is not None
+        and work_repository is not None
+    ):
+        reply_keyboard = await _sync_reply_work_item(
+            workspace_id, draft.text, reply_context, work_repository, artifact_repository,
+        )
+
+    await message.answer("\n".join(lines), reply_markup=reply_keyboard)
+
+
+async def _sync_reply_work_item(
+    workspace_id: int,
+    draft_text: str,
+    reply_context: _ReplyBridgeContext,
+    work_repository: WorkRepository,
+    artifact_repository: ArtifactRepository | None,
+) -> InlineKeyboardMarkup | None:
+    """Связывает свежий Reply-черновик с рабочей памятью.
+
+    - Уже существующий work_item (bridge из daily_actions) — переиспользуем
+      как есть, второй не создаём: именно так due follow-up/active_dialog
+      «продолжить разговор» возвращает пользователя к тому же work_item. Но
+      подготовка НОВОГО черновика обязана обновить updated_at и, для due
+      follow-up, перевести loop_state в active_dialog («теперь ход
+      пользователя») — иначе кнопки под ПРЕДЫДУЩИМ черновиком того же item
+      остаются неотличимы от кнопок под этим и могут откатить более свежее
+      состояние (см. mark_draft_prepared).
+    - Новый subject без work_item — создаём один open/active_dialog work_item
+      (черновик подготовлен, но ещё не отправлен) и по возможности связываем
+      его с сохранённым Artifact через ref_type='artifact'. Продолжения того
+      же диалога повторно артефакт не создают (см. отчёт по этому этапу) —
+      это сознательное ограничение пилота, а не пропуск.
+    - Ни артефакт, ни работа с work_item не должны ронять Reply flow: любая
+      ошибка здесь оставляет пользователя с обычным черновиком без кнопок,
+      а не с исключением.
+    """
+    if reply_context.work_item_id is not None:
+        who = reply_context.subject_name or "клиент"
+        updated = await work_repository.mark_draft_prepared(
+            workspace_id, reply_context.work_item_id,
+            next_step=f"Отправить подготовленный ответ: {who}",
+        )
+        if updated is None:
+            return None
+        return reply_confirm_keyboard(updated.id, work_item_revision(updated))
+
+    if reply_context.subject_id is None:
+        return None
+
+    ref_type: str | None = None
+    ref_id: int | None = None
+    if artifact_repository is not None:
+        try:
+            artifact, _ = await artifact_repository.create_artifact_with_initial_version(
+                workspace_id,
+                artifact_type=_REPLY_ARTIFACT_TYPE,
+                title=f"Ответ: {reply_context.subject_name or 'клиент'}",
+                content=draft_text,
+                generation_note="TRAVEL_ASSISTANT Reply flow",
+            )
+            ref_type, ref_id = "artifact", artifact.id
+        except Exception:
+            log.warning("tasks: reply artifact persistence failed")
+
+    who = reply_context.subject_name or "клиент"
+    try:
+        item = await work_repository.create_work_item(
+            workspace_id,
+            kind="dialog",
+            subject_id=reply_context.subject_id,
+            loop_state="active_dialog",
+            next_step=f"Отправить подготовленный ответ: {who}",
+            ref_type=ref_type,
+            ref_id=ref_id,
+        )
+    except Exception:
+        log.warning("tasks: reply work_item creation failed")
+        return None
+    return reply_confirm_keyboard(item.id, work_item_revision(item))

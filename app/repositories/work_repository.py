@@ -13,7 +13,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -284,6 +285,88 @@ class WorkRepository:
                 raise
         return _work_item_from_row(updated) if updated is not None else None
 
+    async def mark_reply_sent(
+        self, workspace_id: int, work_item_id: int, *, due_at: str, next_step: str | None = None
+    ) -> WorkItem | None:
+        """«✅ Отправил»: active_dialog ИЛИ уже waiting_reply -> waiting_reply
+        с новым due_at. Разрешён и из waiting_reply, потому что due follow-up
+        (waiting_reply с наступившим due_at) после «Написать снова» тоже
+        проходит через эту же кнопку — тот же work_item, не второй.
+
+        Идемпотентно: повторное нажатие просто обновляет due_at/next_step на
+        месте, новая строка не создаётся ни при каких условиях.
+        """
+        if not isinstance(due_at, str) or not due_at.strip():
+            raise WorkItemValidationError("due_at не должен быть пустым")
+        now = _now()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._work_item_row(db, workspace_id, work_item_id)
+                if (
+                    row is None
+                    or row["lifecycle"] != "open"
+                    or row["kind"] != "dialog"
+                    or row["loop_state"] not in ("active_dialog", "waiting_reply")
+                ):
+                    await db.rollback()
+                    return None
+                updated_next_step = next_step if next_step is not None else row["next_step"]
+                await db.execute(
+                    "UPDATE work_item SET loop_state = 'waiting_reply', due_at = ?, "
+                    "next_step = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
+                    (due_at, updated_next_step, now, workspace_id, work_item_id),
+                )
+                updated = await self._work_item_row(db, workspace_id, work_item_id)
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _work_item_from_row(updated) if updated is not None else None
+
+    async def mark_draft_prepared(
+        self, workspace_id: int, work_item_id: int, *, next_step: str
+    ) -> WorkItem | None:
+        """Свежий Reply-черновик реально подготовлен для уже существующего
+        work_item (bridge из daily_actions): loop_state -> active_dialog,
+        due_at снимается — теперь ход пользователя, отправить черновик.
+
+        Работает и из active_dialog («продолжить разговор» — уже верное
+        состояние, просто обновляется), и из waiting_reply/due follow-up
+        («написать снова» — раньше ждали ответ, теперь сами проявляем
+        инициативу). due_at всегда очищается: новый due_at появится только
+        после «✅ Отправил» (mark_reply_sent), не раньше.
+
+        Обновляет updated_at — это единственная причина существования этого
+        метода: он же служит optimistic-revision для клавиатуры под свежим
+        черновиком (см. app.domain.work.work_item_revision), чтобы кнопки под
+        предыдущим, уже неактуальным черновиком того же work_item переставали
+        быть валидными.
+        """
+        now = _now()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._work_item_row(db, workspace_id, work_item_id)
+                if row is None or row["lifecycle"] != "open" or row["kind"] != "dialog":
+                    await db.rollback()
+                    return None
+                await db.execute(
+                    "UPDATE work_item SET loop_state = 'active_dialog', due_at = NULL, "
+                    "next_step = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
+                    (next_step, now, workspace_id, work_item_id),
+                )
+                updated = await self._work_item_row(db, workspace_id, work_item_id)
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _work_item_from_row(updated) if updated is not None else None
+
     async def snooze(
         self, workspace_id: int, work_item_id: int, *, due_at: str
     ) -> WorkItem | None:
@@ -406,8 +489,32 @@ async def _assert_ref_belongs_to_workspace(
         raise WorkItemValidationError(f"{ref_type} не принадлежит workspace")
 
 
+_now_lock = threading.Lock()
+_last_now: datetime | None = None
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """Монотонно возрастающий UTC-таймстамп для created_at/updated_at/
+    resolved_at work_item — эти поля служат optimistic-revision (см.
+    app.domain.work.work_item_revision) для reply_confirm callback'ов.
+
+    Обычный datetime.now() здесь недостаточен: измерено на этой машине —
+    время системных часов, которое читает datetime.now(), имеет разрешение
+    ~15.6мс (Windows system tick), и из 200 000 подряд идущих вызовов 199 818
+    вернули идентичную строку (максимальная серия — 4522 подряд). Две быстрые
+    последовательные мутации одного work_item могли бы получить одинаковый
+    updated_at и, следовательно, неотличимую revision — устаревшая клавиатура
+    ошибочно проходила бы проверку. Здесь без новой колонки: гарантируем
+    строго возрастающее значение, подстраховывая реальные часы шагом в
+    1 микросекунду, если те не продвинулись вперёд.
+    """
+    global _last_now
+    with _now_lock:
+        candidate = datetime.now(timezone.utc)
+        if _last_now is not None and candidate <= _last_now:
+            candidate = _last_now + timedelta(microseconds=1)
+        _last_now = candidate
+        return candidate.isoformat()
 
 
 def _limit(value: int) -> int:
