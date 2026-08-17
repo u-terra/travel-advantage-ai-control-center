@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,10 +29,27 @@ class Settings:
     # config/sources.json: деплой не должен затирать добавленные источники.
     sources_registry_path: Path
     v2_menu_enabled: bool
+    # Порог обязательного Business Onboarding: workspace, созданные ДО этого
+    # момента, никогда не блокируются онбордингом, даже с incomplete-профилем
+    # (legacy-совместимость). None (переменная не задана) — fail-safe в
+    # сторону НЕ требовать онбординг ни у кого, пока оператор явно не
+    # настроит момент rollout — см. app/services/business_profile_context.py:
+    # is_onboarding_required.
+    onboarding_rollout_at: datetime | None
 
 
 def _parse_bool(raw: str | None) -> bool:
     return bool(raw) and raw.strip().lower() == "true"
+
+
+def _parse_datetime(raw: str | None) -> datetime | None:
+    if not raw or not raw.strip():
+        return None
+    try:
+        value = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def load_settings() -> Settings:
@@ -58,6 +76,7 @@ def load_settings() -> Settings:
     v2_menu_enabled = _parse_bool(
         os.environ.get("TA_CONTROL_CENTER_V2_MENU_ENABLED")
     )
+    onboarding_rollout_at = _parse_datetime(os.environ.get("ONBOARDING_ROLLOUT_AT"))
 
     if not token:
         raise RuntimeError("BOT_TOKEN не задан. Заполните .env")
@@ -98,4 +117,5 @@ def load_settings() -> Settings:
         # чтобы консольные скрипты видели тот же путь без сборки Settings.
         sources_registry_path=runtime_registry_path(),
         v2_menu_enabled=v2_menu_enabled,
+        onboarding_rollout_at=onboarding_rollout_at,
     )

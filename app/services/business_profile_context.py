@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from app.domain.business_profiles import BusinessClaim, BusinessProfile
@@ -9,6 +10,31 @@ from app.repositories.partner_repository import PartnerRepository
 
 class BusinessProfileAccessError(PermissionError):
     pass
+
+
+def is_onboarding_required(
+    *, profile_status: str | None, workspace_created_at: str, rollout_at: datetime | None,
+) -> bool:
+    """Обязателен ли Business Onboarding для этого workspace прямо сейчас.
+
+    - ``usable`` профиль — никогда не требует онбординга, независимо от
+      cutoff (уже заполнен, повторно спрашивать нечего).
+    - ``rollout_at is None`` (ONBOARDING_ROLLOUT_AT не настроен) — fail-safe
+      в сторону НЕ требовать: без явно заданного момента rollout ни один уже
+      существующий пользователь не должен внезапно упереться в обязательную
+      форму при очередном деплое.
+    - Иначе — обязателен только если workspace создан в момент cutoff или
+      позже. ``updated_at`` сознательно не участвует: правка уже
+      существующего профиля после rollout (например, админом) не должна
+      задним числом превращать legacy workspace в подлежащий онбордингу —
+      только created_at, которое никогда не меняется после создания строки.
+    """
+    if profile_status == "usable":
+        return False
+    if rollout_at is None:
+        return False
+    created_at = datetime.fromisoformat(workspace_created_at)
+    return created_at >= rollout_at
 
 
 class BusinessProfileService:

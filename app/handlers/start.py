@@ -5,7 +5,9 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove
 
+from app.domain.business_profiles import BusinessProfile
 from app.domain.partners import WorkspaceContext
+from app.handlers.onboarding import enter_onboarding_gate
 from app.keyboards import BTN_HOW_IT_WORKS, active_main_menu, main_menu
 from app.repositories.partner_repository import PartnerRepository
 
@@ -77,9 +79,20 @@ async def cmd_start(
     workspace_context: WorkspaceContext | None = None,
     workspace_context_ambiguous: bool = False,
     partner_repository: PartnerRepository | None = None,
+    onboarding_required: bool = False,
+    onboarding_profile: BusinessProfile | None = None,
 ) -> None:
     if v2_menu_enabled:
         await state.clear()
+
+    # Централизованный gate (app/onboarding_gate.py) уже решил, обязателен ли
+    # Business Onboarding для этого workspace — здесь только ролевая
+    # развилка (владелец/админ заполняет, участник видит объяснение) и запуск
+    # диалога. Обычный /start-текст ниже в этом случае не показывается.
+    if onboarding_required and workspace_context is not None:
+        await enter_onboarding_gate(message, state, workspace_context, onboarding_profile)
+        return
+
     text, workspace_available = await _resolve_start_reply(
         workspace_context, workspace_context_ambiguous, partner_repository
     )

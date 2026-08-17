@@ -74,6 +74,12 @@ REPLY_CONFIRM_SENT_PREFIX = "reply_confirm:sent:"
 REPLY_CONFIRM_LATER_PREFIX = "reply_confirm:later:"
 REPLY_CONFIRM_DISMISS_PREFIX = "reply_confirm:dismiss:"
 
+# Business Onboarding: выбор business_type только для independent-сценария
+# (TA workspace его не проходит — ta_affiliated/business_type там уже заданы
+# провижининга). Значение в callback_data — одно из тех же BUSINESS_TYPES,
+# что уже принимает BusinessProfileService, никакой новой номенклатуры.
+ONBOARDING_BUSINESS_TYPE_PREFIX = "onboarding:business_type:"
+
 
 WEB_RESOURCES_BACK = "web_resources_back"
 
@@ -380,6 +386,25 @@ def daily_action_keyboard(work_item_id: int, bucket: str) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=text, callback_data=f"{prefix}{work_item_id}")]
         for text, prefix in rows
+    ])
+
+
+def onboarding_business_type_keyboard() -> InlineKeyboardMarkup:
+    """Выбор типа бизнеса только для independent-сценария Business Onboarding.
+    Никакого TA/Carbon/Travel Advantage текста — нейтральные формулировки."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="👤 Независимый турагент",
+            callback_data=f"{ONBOARDING_BUSINESS_TYPE_PREFIX}independent_agent",
+        )],
+        [InlineKeyboardButton(
+            text="🏢 Турагентство",
+            callback_data=f"{ONBOARDING_BUSINESS_TYPE_PREFIX}agency",
+        )],
+        [InlineKeyboardButton(
+            text="🏢 Турфирма",
+            callback_data=f"{ONBOARDING_BUSINESS_TYPE_PREFIX}travel_company",
+        )],
     ])
 
 

@@ -7,6 +7,7 @@ from app.handlers import (
     materials,
     consent,
     menu,
+    onboarding,
     profile,
     source_analysis,
     sources,
@@ -20,6 +21,12 @@ def build_router() -> Router:
     r = Router(name="owner")
     r.include_router(start.router)
     r.include_router(consent.router)
+    # Онбординг — после /start и /consent (обе команды должны оставаться
+    # доступны независимо от статуса профиля), но до всего остального меню:
+    # его catch-all перехватывает любую другую кнопку/свободный текст, пока
+    # обязательный Business Onboarding не завершён (см. app/handlers/
+    # onboarding.py — MagicData(F.onboarding_required)).
+    r.include_router(onboarding.router)
     r.include_router(menu.router)
     r.include_router(daily_actions.router)
     r.include_router(sources.router)

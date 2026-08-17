@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -9,6 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from app.access import AllowlistMiddleware
 from app.config import load_settings
 from app.handlers import build_router
+from app.onboarding_gate import OnboardingGateMiddleware
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.partner_repository import PartnerRepository
@@ -38,6 +40,7 @@ def _build_dispatcher(
     workspace_signal_repository: WorkspaceSignalRepository | None = None,
     competitor_repository: CompetitorRepository | None = None,
     work_repository: WorkRepository | None = None,
+    onboarding_rollout_at: datetime | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -51,6 +54,11 @@ def _build_dispatcher(
         workspace_context = WorkspaceContextMiddleware(partner_repository)
         dp.message.outer_middleware(workspace_context)
         dp.callback_query.outer_middleware(workspace_context)
+        # Требует уже готовый workspace_context — регистрируется следом,
+        # тем же принципом, что и WorkspaceContextMiddleware.
+        onboarding_gate = OnboardingGateMiddleware(partner_repository, onboarding_rollout_at)
+        dp.message.outer_middleware(onboarding_gate)
+        dp.callback_query.outer_middleware(onboarding_gate)
 
     dp.include_router(build_router())
 
@@ -149,6 +157,7 @@ async def _async_main() -> None:
         workspace_signal_repository,
         competitor_repository,
         work_repository,
+        settings.onboarding_rollout_at,
     )
 
     await dp.start_polling(bot)
