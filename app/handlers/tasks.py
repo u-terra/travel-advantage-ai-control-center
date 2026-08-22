@@ -48,9 +48,32 @@ _TEXT_CHECK_FAILURE_MESSAGE = (
 )
 
 _REPLY_SUBJECT_EMPTY = (
-    "Имя не должно быть пустым. Напишите имя или короткое обозначение, например: Иван."
+    "Сообщение не должно быть пустым. Пришлите вопрос клиента или короткое "
+    "имя/обозначение, например: Иван."
 )
 _REPLY_WORKSPACE_UNAVAILABLE = "Рабочее пространство недоступно."
+
+# UX polish: короткая метка/имя клиента vs уже присланное сообщение клиента —
+# детерминированная эвристика без LLM-классификатора. Метки вида «Иван»,
+# «Клиент по Турции», «Клиент по отелю в Питере», «Семья Ивановых Турция
+# июнь» — до 5 слов, без «?», короче лимита символов. Порог в 4 слова
+# ошибочно ловил «Клиент по отелю в Питере» (5 слов) как сообщение — поднят
+# до 5, все реальные вопросы клиента (см. тесты) остаются далеко за порогом
+# и по словам, и по символам. Всё остальное (вопрос, знак «?», длинное/
+# многословное сообщение) сразу считаем сообщением клиента, чтобы не
+# заставлять вводить его дважды.
+_SUBJECT_NAME_MAX_CHARS = 30
+_SUBJECT_NAME_MAX_WORDS = 5
+
+
+def _looks_like_client_message(text: str) -> bool:
+    if "?" in text:
+        return True
+    if len(text) > _SUBJECT_NAME_MAX_CHARS:
+        return True
+    if len(text.split()) > _SUBJECT_NAME_MAX_WORDS:
+        return True
+    return False
 
 
 @router.message(
@@ -60,17 +83,24 @@ _REPLY_WORKSPACE_UNAVAILABLE = "Рабочее пространство недо
 async def on_reply_subject_received(
     message: Message,
     state: FSMContext,
+    journal: Journal,
+    llm_provider: LLMProvider,
     work_repository: WorkRepository,
     workspace_context: WorkspaceContext | None,
+    partner_repository: PartnerRepository,
+    artifact_repository: ArtifactRepository | None = None,
 ) -> None:
     """Первый шаг «Ответить клиенту» (v2): «Кому отвечаем?» -> WorkSubject.
 
-    Не дублирует Reply flow — только получает/создаёт WorkSubject и передаёт
-    управление дальше, на AwaitTask.waiting, откуда обычный сценарий
-    (on_task_after_button -> _maybe_send_draft) продолжает как раньше.
+    Имя/метка необязательны: если текст похож на уже присланное сообщение
+    клиента (см. _looks_like_client_message), обрабатываем его сразу тем же
+    путём, что и обычный AwaitTask.waiting (_route_and_dispatch), без
+    отдельного WorkSubject — ReplyWorkSyncService корректно работает и без
+    subject_id (см. app/services/reply_sync.py). Иначе — прежнее поведение:
+    получаем/создаём WorkSubject и передаём управление на AwaitTask.waiting.
     """
-    name = (message.text or "").strip()
-    if not name:
+    text = (message.text or "").strip()
+    if not text:
         await message.answer(_REPLY_SUBJECT_EMPTY, reply_markup=active_main_menu(True))
         return
     if workspace_context is None:
@@ -78,9 +108,19 @@ async def on_reply_subject_received(
         await state.clear()
         return
 
+    if _looks_like_client_message(text):
+        await state.clear()
+        await _route_and_dispatch(
+            message, journal, llm_provider, workspace_context, partner_repository,
+            text, forced_module=Module.TRAVEL_ASSISTANT, skip_route_card=True,
+            reply_subject_data=(None, None, None),
+            work_repository=work_repository, artifact_repository=artifact_repository,
+        )
+        return
+
     try:
         subject = await work_repository.get_or_create_subject(
-            workspace_context.workspace_id, name,
+            workspace_context.workspace_id, text,
         )
     except WorkSubjectValidationError:
         await message.answer(_REPLY_SUBJECT_EMPTY, reply_markup=active_main_menu(True))
@@ -134,43 +174,13 @@ async def on_task_after_button(
         )
         return
 
-    if forced_raw:
-        forced = Module(forced_raw)
-        decision = route_for_button(forced, task_text)
-    else:
-        decision = route_text(task_text)
-
-    await journal.add(
-        workspace_context.workspace_id,
-        task_text=task_text,
-        primary_module=decision.primary_module.value,
-        secondary_modules=tuple(m.value for m in decision.secondary_modules),
-        safety_level=decision.safety_level.value,
-    )
-
-    reply_context = (
-        ReplyBridgeContext(reply_work_item_id, reply_subject_id, reply_subject_name)
-        if decision.primary_module is Module.TRAVEL_ASSISTANT
-        else None
-    )
-
-    if skip_route_card:
-        await _maybe_send_module_result(
-            message, decision, llm_provider,
-            workspace_context, partner_repository,
-            work_repository=work_repository, artifact_repository=artifact_repository,
-            reply_context=reply_context,
-        )
-        return
-
-    await message.answer(
-        build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
-    )
-    await _maybe_send_module_result(
-        message, decision, llm_provider,
-        workspace_context, partner_repository,
+    forced_module = Module(forced_raw) if forced_raw else None
+    await _route_and_dispatch(
+        message, journal, llm_provider, workspace_context, partner_repository,
+        task_text, forced_module=forced_module, skip_route_card=skip_route_card,
+        reply_subject_data=(reply_work_item_id, reply_subject_id, reply_subject_name),
         work_repository=work_repository, artifact_repository=artifact_repository,
-        reply_context=reply_context,
+        v2_menu_enabled=v2_menu_enabled,
     )
 
 
@@ -204,12 +214,70 @@ async def on_free_text(
         secondary_modules=tuple(m.value for m in decision.secondary_modules),
         safety_level=decision.safety_level.value,
     )
-    await message.answer(
-        build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
-    )
+    # UX polish: в v2 прямой свободный текст — самый частый вход в create
+    # material/reply flow, и техническая «📌 Карточка маршрута» тут не нужна
+    # (см. тот же принцип у skip_route_card в on_task_after_button/v2-кнопках)
+    # — пользователь сразу должен увидеть результат/следующий шаг. В v1 карточка
+    # остаётся как раньше.
+    if not v2_menu_enabled:
+        await message.answer(
+            build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
+        )
     await _maybe_send_module_result(
         message, decision, llm_provider,
         workspace_context, partner_repository,
+    )
+
+
+async def _route_and_dispatch(
+    message: Message,
+    journal: Journal,
+    llm_provider: LLMProvider,
+    workspace_context: WorkspaceContext,
+    partner_repository: PartnerRepository,
+    task_text: str,
+    *,
+    forced_module: Module | None,
+    skip_route_card: bool,
+    reply_subject_data: tuple[int | None, int | None, str | None],
+    work_repository: WorkRepository | None = None,
+    artifact_repository: ArtifactRepository | None = None,
+    v2_menu_enabled: bool = False,
+) -> None:
+    """Общий хвост on_task_after_button и «сообщение вместо имени» в
+    on_reply_subject_received: маршрутизация, Journal, показ/скип карточки
+    маршрута и диспатч в _maybe_send_module_result. Вынесено, чтобы оба входа
+    вели себя идентично и не дублировали routing/journal/reply_context код.
+    """
+    decision = (
+        route_for_button(forced_module, task_text)
+        if forced_module is not None
+        else route_text(task_text)
+    )
+
+    await journal.add(
+        workspace_context.workspace_id,
+        task_text=task_text,
+        primary_module=decision.primary_module.value,
+        secondary_modules=tuple(m.value for m in decision.secondary_modules),
+        safety_level=decision.safety_level.value,
+    )
+
+    reply_context = (
+        ReplyBridgeContext(*reply_subject_data)
+        if decision.primary_module is Module.TRAVEL_ASSISTANT
+        else None
+    )
+
+    if not skip_route_card:
+        await message.answer(
+            build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
+        )
+    await _maybe_send_module_result(
+        message, decision, llm_provider,
+        workspace_context, partner_repository,
+        work_repository=work_repository, artifact_repository=artifact_repository,
+        reply_context=reply_context,
     )
 
 

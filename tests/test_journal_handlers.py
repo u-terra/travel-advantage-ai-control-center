@@ -10,7 +10,7 @@ import pytest
 from app.domain.business_profiles import BusinessClaim, BusinessContext, BusinessProfile
 from app.domain.partners import WorkspaceContext, WorkspaceUserPreferences
 from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected
-from app.handlers.tasks import on_free_text, on_task_after_button
+from app.handlers.tasks import _looks_like_client_message, on_free_text, on_task_after_button
 from app.handlers.text_review import review_artifact
 from app.keyboards import ARTIFACT_CHECK_PREFIX, BTN_V2_MAIN_MENU, active_main_menu
 from app.repositories.artifact_repository import ArtifactRepository
@@ -877,3 +877,102 @@ def test_free_text_provider_failure_keeps_existing_error_and_no_persistence():
     run(on_free_text(message, journal(), provider, context(), profiles))
     assert "Не удалось получить черновик автоматически" in message.answers[-1][0]
     profiles.create_artifact_with_initial_version.assert_not_awaited()
+
+
+# --- UX polish: v2 прямой post/reply не показывает техническую route card ---
+
+
+def test_ux_polish_v2_direct_free_text_post_skips_route_card_and_sends_draft():
+    """A. Прямой обычный v2 post: route card не отправляется; черновик
+    отправляется."""
+    message = Message(
+        "Напиши короткий пост для Telegram о том, почему иногда поезд "
+        "удобнее самолёта"
+    )
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик про поезд", ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(message, journal(), provider, context(), profiles, True))
+    texts = [text for text, _ in message.answers]
+    assert not any("📌 Карточка маршрута" in t for t in texts)
+    assert any("Черновик про поезд" in t for t in texts)
+
+
+def test_ux_polish_v1_direct_free_text_still_shows_route_card():
+    """Legacy v1 (v2_menu_enabled=False) поведение не ломается — карточка
+    маршрута остаётся, как и раньше."""
+    message = Message(
+        "Напиши короткий пост для Telegram о том, почему иногда поезд "
+        "удобнее самолёта"
+    )
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик про поезд", ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(message, journal(), provider, context(), profiles, False))
+    texts = [text for text, _ in message.answers]
+    assert any("📌 Карточка маршрута" in t for t in texts)
+    assert any("Черновик про поезд" in t for t in texts)
+
+
+def test_ux_polish_safety_layer_still_responds_with_route_card_skipped():
+    """Review point 2: скрытие route card не должно молча "съедать" Safety
+    Layer/check-text — существующий сценарий по-прежнему отвечает."""
+    from app.services.llm.models import TextCheckResult, TextSafetyFinding
+
+    message = Message("Любой текст на проверку")
+    provider = FakeLLMProvider(check=TextCheckResult(
+        warnings=(TextSafetyFinding("скидка", "Проверить условие"),),
+        rewritten_text="Безопасный вариант", rewrite_warnings=(),
+        generation_mode="ai", ai_note=None,
+    ))
+    profiles = profile_repository(business_profile())
+    state = State({"forced_module": Module.SAFETY_LAYER.value, "skip_route_card": True})
+    run(on_task_after_button(message, state, journal(), provider, context(), profiles))
+    texts = [text for text, _ in message.answers]
+    assert not any("📌 Карточка маршрута" in t for t in texts)
+    assert any("🛡 Проверка текста" in t for t in texts)
+    assert any("Безопасный вариант" in t for t in texts)
+
+
+def test_ux_polish_partner_packaging_still_responds_with_route_card_skipped():
+    """Review point 2: то же самое для Partner Packaging."""
+    message = Message("Подготовь инструкцию для нового партнёра")
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    profiles = profile_repository(business_profile())
+    state = State({"forced_module": Module.PARTNER_PACKAGING.value, "skip_route_card": True})
+    run(on_task_after_button(message, state, journal(), provider, context(), profiles))
+    texts = [text for text, _ in message.answers]
+    assert not any("📌 Карточка маршрута" in t for t in texts)
+    assert any("📦 Черновик комплекта материалов" in t for t in texts)
+
+
+# --- B. UX polish: имя vs сообщение клиента (_looks_like_client_message) ---
+
+
+def test_looks_like_client_message_short_names_are_labels():
+    assert _looks_like_client_message("Иван") is False
+    assert _looks_like_client_message("Мария") is False
+    assert _looks_like_client_message("Клиент по Турции") is False
+
+
+def test_looks_like_client_message_up_to_five_word_labels_stay_labels():
+    """Регрессия review: порог >4 слова ошибочно ловил «Клиент по отелю в
+    Питере» (5 слов) как сообщение — поднят до >5 слов."""
+    assert _looks_like_client_message("Семья Ивановых Турция июнь") is False
+    assert _looks_like_client_message("Клиент по отелю в Питере") is False
+
+
+def test_looks_like_client_message_question_mark_is_always_a_message():
+    assert _looks_like_client_message("Сколько?") is True
+    for text in (
+        "А правда, что через Travel Advantage всегда дешевле бронировать отели?",
+        "Сколько это стоит и как можно оплатить?",
+        "Мы хотим поехать в Турцию в сентябре, что можете предложить?",
+    ):
+        assert _looks_like_client_message(text) is True
+
+
+def test_looks_like_client_message_long_text_without_question_mark_is_a_message():
+    for text in (
+        "Расскажите подробнее про условия бронирования тура в Италию",
+        "Подскажите, пожалуйста, есть ли варианты на эти даты.",
+    ):
+        assert _looks_like_client_message(text) is True

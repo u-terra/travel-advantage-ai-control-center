@@ -144,8 +144,16 @@ async def _start_reply(state: _State) -> _Message:
 async def _submit_subject(
     state: _State, work_repo: WorkRepository, workspace_id: int, name: str,
 ) -> _Message:
+    """Короткие имена/метки (все случаи в этом файле) не задействуют journal/
+    llm_provider/partner_repository — on_reply_subject_received использует их
+    только когда текст похож на уже присланное сообщение клиента (см.
+    _looks_like_client_message в app/handlers/tasks.py), поэтому здесь
+    достаточно минимальных заглушек."""
     message = _Message(name)
-    await on_reply_subject_received(message, state, work_repo, _ctx(workspace_id))
+    await on_reply_subject_received(
+        message, state, _journal(), FakeLLMProvider(), work_repo,
+        _ctx(workspace_id), PartnerRepository(work_repo.db_path),
+    )
     return message
 
 
@@ -753,6 +761,76 @@ def test_current_reply_confirm_callbacks_still_work(tmp_path: Path) -> None:
     assert _run(work_repo.get_work_item(
         workspace_id, dismiss_item.id,
     )).lifecycle == "dismissed"
+
+
+# ── 15. UX polish: сообщение вместо имени сразу обрабатывается ─────────────
+
+
+def test_message_instead_of_name_is_processed_immediately_without_repeat_prompt(
+    tmp_path: Path,
+) -> None:
+    """Живой тест Stage 3B1: пользователь после «Ответить клиенту» сразу
+    вставляет вопрос клиента вместо имени — не должен получить повторный
+    вопрос «Опишите вопрос клиента» (см. _looks_like_client_message в
+    app/handlers/tasks.py)."""
+    partners, work_repo, artifact_repo, workspace_id = _stack(tmp_path)
+    state = _State()
+    _run(_start_reply(state))
+
+    provider = FakeLLMProvider(draft=ContentDraft("Ответ клиенту", ()))
+    message = _Message(
+        "А правда, что через Travel Advantage всегда дешевле бронировать отели?"
+    )
+    _run(on_reply_subject_received(
+        message, state, _journal(), provider, work_repo, _ctx(workspace_id),
+        partners, artifact_repo,
+    ))
+
+    provider.generate_draft.assert_called_once()
+    assert state.state is None  # состояние сброшено, повторный вопрос не задан
+    texts = [text for text, _ in message.answers]
+    assert not any("Опишите вопрос клиента" in (t or "") for t in texts)
+    assert any("Ответ клиенту" in (t or "") for t in texts)
+
+
+def test_message_instead_of_name_makes_name_optional_and_does_not_break_work_memory(
+    tmp_path: Path,
+) -> None:
+    """Имя необязательно: без subject_id ReplyWorkSyncService корректно не
+    создаёт work_item (см. app/services/reply_sync.py), но черновик всё
+    равно доставляется — Reply flow не падает и не требует имени."""
+    partners, work_repo, artifact_repo, workspace_id = _stack(tmp_path)
+    state = _State()
+    _run(_start_reply(state))
+
+    provider = FakeLLMProvider(draft=ContentDraft("Ответ без имени", ()))
+    message = _Message(
+        "Подскажите, пожалуйста, какие есть варианты тарифов на туры в Италию?"
+    )
+    _run(on_reply_subject_received(
+        message, state, _journal(), provider, work_repo, _ctx(workspace_id),
+        partners, artifact_repo,
+    ))
+
+    provider.generate_draft.assert_called_once()
+    now = _iso(timedelta(0))
+    assert _run(work_repo.list_open_actionable(workspace_id, now=now)) == []
+    text, kwargs = message.answers[-1]
+    assert "Ответ без имени" in text
+    assert kwargs.get("reply_markup") is None
+
+
+def test_short_name_still_treated_as_label_not_message(tmp_path: Path) -> None:
+    """Контрольный случай: короткое «Иван» по-прежнему воспринимается как
+    метка клиента, а не как сообщение — второй шаг («Опишите вопрос
+    клиента») остаётся, имя сохраняется в WorkSubject."""
+    _, work_repo, _, workspace_id = _stack(tmp_path)
+    state = _State()
+    _run(_start_reply(state))
+
+    subject_message = _run(_submit_subject(state, work_repo, workspace_id, "Иван"))
+    assert state.state == AwaitTask.waiting
+    assert "Опишите вопрос клиента" in subject_message.answers[0][0]
 
 
 def test_reply_confirm_revision_guard_is_tenant_scoped(tmp_path: Path) -> None:

@@ -374,3 +374,90 @@ def test_radar_injection_remains_data_and_cannot_change_controls():
 def test_radar_foreign_profile_fails_closed():
     with pytest.raises(PermissionError):
         radar_spec(profile(11), workspace_id=10)
+
+
+# --- UX polish: анти-AI-хвост в обычном посте и client reply (живой тест
+# Stage 3B1 показал черновики, заканчивающиеся «если хотите, могу сравнить
+# варианты...» / «напишите — разберу») ---
+
+def client_reply_spec(profile_value=None, *, workspace_id=10, safety_required=False):
+    return MaterialOrchestrationService().build_client_reply_generation_spec(
+        workspace_id, "Вопрос клиента", profile_value, safety_required=safety_required,
+    )
+
+
+def test_free_text_spec_constraints_forbid_assistant_style_tail():
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, "Задача", profile(),
+    )
+    joined = " ".join(spec.constraints).lower()
+    assert "если хотите, могу" in joined
+    assert "могу помочь" in joined
+    assert "напишите — разберу" in joined or "напишите" in joined
+
+
+def test_free_text_spec_constraints_still_allow_natural_cta():
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, "Задача", profile(),
+    )
+    joined = " ".join(spec.constraints).lower()
+    assert "не запрещён" in joined
+
+
+def test_free_text_spec_constraints_give_example_posts_stronger_priority():
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, "Задача", profile(),
+    )
+    joined = " ".join(spec.constraints)
+    assert "example_posts" in joined and "более сильный ориентир" in joined
+
+
+def test_regular_spec_also_gets_assistant_tail_constraint():
+    # build_generation_spec (material_generation.py flow) делит _CONSTRAINTS
+    # с build_free_text_generation_spec — тот же анти-хвост-constraint.
+    spec = build(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "если хотите, могу" in joined
+
+
+def test_client_reply_spec_constraints_forbid_assistant_tail_but_allow_human_cta():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "если хотите, могу" in joined
+    assert "реплика самого пользователя" in joined
+    assert "уместно" in joined
+
+
+def test_client_reply_spec_constraints_include_safety_only_when_required():
+    from app.services.material_orchestration import _CLIENT_REPLY_SAFETY_CONSTRAINT
+
+    without_safety = client_reply_spec(profile(), safety_required=False)
+    with_safety = client_reply_spec(profile(), safety_required=True)
+    assert _CLIENT_REPLY_SAFETY_CONSTRAINT not in without_safety.constraints
+    assert _CLIENT_REPLY_SAFETY_CONSTRAINT in with_safety.constraints
+    joined = " ".join(with_safety.constraints).lower()
+    assert "safety-проверк" in joined
+
+
+def test_client_reply_spec_does_not_leak_into_radar_or_regular_post():
+    from app.services.material_orchestration import (
+        _CONSTRAINTS,
+        _RADAR_CONSTRAINTS,
+    )
+
+    reply = client_reply_spec(profile())
+    regular = build(profile())
+    radar = radar_spec(profile())
+    assert reply.constraints != regular.constraints
+    assert reply.constraints != radar.constraints
+    assert regular.constraints == _CONSTRAINTS
+    assert radar.constraints == _RADAR_CONSTRAINTS
+
+
+def test_radar_constraints_are_unchanged_by_ux_polish():
+    # Radar намеренно не трогается на этом этапе — свой отдельный набор
+    # constraints с уже существующим анти-хвост-правилом.
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "если хотите, могу" not in joined
+    assert "могу..." in joined  # уже существующее radar-правило, не новое
