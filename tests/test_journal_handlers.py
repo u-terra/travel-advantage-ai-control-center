@@ -944,6 +944,66 @@ def test_ux_polish_partner_packaging_still_responds_with_route_card_skipped():
     assert any("📦 Черновик комплекта материалов" in t for t in texts)
 
 
+# --- Anti-AI-tail deterministic cleanup: second layer after prompt (b718685) ---
+
+
+def test_free_text_draft_strips_trailing_assistant_self_offer():
+    """A. Прямой free-text: production regression — модель заканчивает
+    черновик self-offer'ом вопреки prompt constraint; deterministic cleanup
+    должен вырезать именно этот хвост перед отправкой пользователю."""
+    message = Message("Напиши короткий пост про поезд vs самолёт")
+    provider = FakeLLMProvider(draft=ContentDraft(
+        "Если выбирать между поездом и самолётом, лучше смотреть на "
+        "конкретную поездку, а не на привычку.\n\nМогу сравнить варианты.",
+        (),
+    ))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(message, journal(), provider, context(), profiles))
+    text, _ = message.answers[-1]
+    assert "Могу сравнить" not in text
+    assert (
+        "Если выбирать между поездом и самолётом, лучше смотреть на "
+        "конкретную поездку, а не на привычку." in text
+    )
+
+
+def test_client_reply_draft_strips_trailing_assistant_self_offer():
+    """B. «Ответить клиенту»: тот же production regression — self-offer в
+    конце client reply черновика должен вырезаться тем же cleanup'ом."""
+    message = Message("Можно ли оплатить бронирование из России?")
+    provider = FakeLLMProvider(draft=ContentDraft(
+        "Оплата возможна несколькими способами в зависимости от направления.\n\n"
+        "Если хотите, можем вместе проверить конкретный отель и даты.",
+        (),
+    ))
+    profiles = profile_repository(business_profile())
+    state = State({
+        "forced_module": Module.TRAVEL_ASSISTANT.value, "skip_route_card": True,
+    })
+    run(on_task_after_button(message, state, journal(), provider, context(), profiles))
+    text, _ = message.answers[-1]
+    assert "можем вместе проверить" not in text
+    assert "Оплата возможна несколькими способами в зависимости от направления." in text
+
+
+def test_client_reply_cleanup_does_not_break_safety_label():
+    """Safety Layer label/предупреждение — отдельный блок, добавляемый ПОСЛЕ
+    очистки draft.text, и не должен пострадать от cleanup хвоста черновика."""
+    message = Message("Можно ли оплатить бронирование из России?")
+    provider = FakeLLMProvider(draft=ContentDraft(
+        "Оплата зависит от направления и провайдера.\n\nМогу помочь.", (),
+    ))
+    profiles = profile_repository(business_profile())
+    state = State({
+        "forced_module": Module.TRAVEL_ASSISTANT.value, "skip_route_card": True,
+    })
+    run(on_task_after_button(message, state, journal(), provider, context(), profiles))
+    text, _ = message.answers[-1]
+    assert "Могу помочь" not in text
+    assert "🛡 Safety Layer" in text
+    assert "Оплата зависит от направления и провайдера." in text
+
+
 # --- B. UX polish: имя vs сообщение клиента (_looks_like_client_message) ---
 
 

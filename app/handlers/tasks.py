@@ -18,6 +18,7 @@ from app.repositories.work_repository import WorkRepository
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
+from app.services.assistant_tail_cleanup import strip_assistant_tail
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
@@ -554,7 +555,15 @@ async def _maybe_send_draft(
         await message.answer(_DRAFT_FAILURE_MESSAGE)
         return
 
-    lines: list[str] = [heading, "", draft.text]
+    # UX polish: второй защитный слой поверх anti-AI-tail constraints в
+    # prompt (см. commit b718685) — модель иногда всё равно заканчивает
+    # черновик ассистентским self-offer'ом ("Могу сравнить варианты.",
+    # "Если хотите, можем вместе проверить конкретный отель и даты.")
+    # несмотря на инструкцию. Режем только это, не меняя середину текста
+    # (см. app/services/assistant_tail_cleanup.py).
+    draft_text = strip_assistant_tail(draft.text)
+
+    lines: list[str] = [heading, "", draft_text]
 
     if (
         decision.primary_module is Module.TRAVEL_ASSISTANT
@@ -587,7 +596,7 @@ async def _maybe_send_draft(
         # independent, ничего не знает про InlineKeyboardMarkup. Клавиатуру
         # строим здесь же, сразу после: это Telegram-специфика.
         sync_service = ReplyWorkSyncService(work_repository, artifact_repository)
-        updated_item = await sync_service.sync(workspace_id, draft.text, reply_context)
+        updated_item = await sync_service.sync(workspace_id, draft_text, reply_context)
         if updated_item is not None:
             reply_keyboard = reply_confirm_keyboard(
                 updated_item.id, work_item_revision(updated_item),
