@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.domain.business_profiles import BusinessClaim, BusinessContext, BusinessProfile
-from app.domain.partners import WorkspaceContext
+from app.domain.partners import WorkspaceContext, WorkspaceUserPreferences
 from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected
 from app.handlers.tasks import on_free_text, on_task_after_button
 from app.handlers.text_review import review_artifact
@@ -25,8 +25,20 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def context(workspace_id: int = 42) -> WorkspaceContext:
-    return WorkspaceContext(100, workspace_id, "owner", "active")
+def context(workspace_id: int = 42, telegram_user_id: int = 100) -> WorkspaceContext:
+    return WorkspaceContext(telegram_user_id, workspace_id, "owner", "active")
+
+
+def user_preferences(
+    telegram_user_id: int = 100, workspace_id: int = 42, *,
+    style_description: str = "", example_posts: tuple[str, ...] = (),
+    avoid_phrases: tuple[str, ...] = (),
+) -> WorkspaceUserPreferences:
+    return WorkspaceUserPreferences(
+        workspace_id=workspace_id, telegram_user_id=telegram_user_id,
+        style_description=style_description, example_posts=example_posts,
+        avoid_phrases=avoid_phrases, created_at="now", updated_at="now",
+    )
 
 
 class Message:
@@ -119,6 +131,7 @@ def business_profile(
 def profile_repository(profile=None):
     return SimpleNamespace(
         get_business_profile=AsyncMock(return_value=profile),
+        get_user_preferences=AsyncMock(return_value=None),
         create_artifact_with_initial_version=AsyncMock(),
         api_key="must-not-leak", telegram_user_id=999, member_id=888,
     )
@@ -661,16 +674,171 @@ def test_partner_packaging_branch_looks_up_profile_for_tenant_scoping():
     provider.generate_draft.assert_not_called()
 
 
-def test_client_reply_flow_is_unchanged_and_does_not_lookup_profile():
+def test_client_reply_flow_now_uses_structured_orchestration_with_profile():
+    """Stage 3B1: раньше TRAVEL_ASSISTANT client reply был legacy bypass —
+
+    провайдер вызывался напрямую с сырым source_text, Business Profile не
+    смотрелся вообще (см. историю этого теста). Теперь путь идёт через
+    MaterialOrchestrationService.build_client_reply_generation_spec(), как и
+    остальные генерации, поэтому Business Profile теперь тоже проверяется и
+    попадает в provider request как [TRUSTED BUSINESS CONTEXT - DATA]."""
     message = Message("Человек спрашивает, можно ли оплатить бронирование из России?")
     provider = FakeLLMProvider(draft=ContentDraft("Ответ клиенту", ()))
     profiles = profile_repository(business_profile())
     run(on_free_text(message, journal(), provider, context(), profiles))
-    profiles.get_business_profile.assert_not_awaited()
+    profiles.get_business_profile.assert_awaited_once_with(42)
     kwargs = provider.generate_draft.call_args.kwargs
     assert kwargs["material_type"] == "client_question"
     assert kwargs["output_format"] == "telegram"
-    assert "Нужен короткий личный ответ клиенту" in kwargs["source_text"]
+    request = kwargs["source_text"]
+    assert "[OBJECTIVE - CONTROL]" in request
+    assert "Сформировать короткий личный ответ клиенту" in request
+    assert "Travel Business" in request
+    assert "Verified business claim" in request
+    assert "Unverified business claim" in request
+    assert "Ответ клиенту" in message.answers[-1][0]
+
+
+def test_stage3b1_content_factory_free_text_uses_personal_style():
+    """A. CONTENT_FACTORY legacy/free-text flow: личный стиль текущего
+
+    пользователя попадает в provider request; style_description присутствует
+    в [PERSONAL STYLE - DATA]."""
+    message = Message("Нужен пост о путешествиях")
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    profiles = profile_repository(business_profile())
+    profiles.get_user_preferences = AsyncMock(return_value=user_preferences(
+        style_description="Пишу с юмором",
+        example_posts=("Пример поста",), avoid_phrases=("лучший тур",),
+    ))
+    run(on_free_text(message, journal(), provider, context(), profiles))
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    assert "[PERSONAL STYLE - DATA]" in request
+    assert "Пишу с юмором" in request
+    assert "Пример поста" in request
+    assert "лучший тур" in request
+
+
+def test_stage3b1_travel_assistant_uses_personal_style_and_keeps_safety():
+    """B. TRAVEL_ASSISTANT legacy flow: личный стиль текущего пользователя
+
+    попадает в provider request; client reply по-прежнему сохраняет Safety
+    constraints (обязательная Safety-проверка для вопросов про оплату)."""
+    message = Message("Можно ли оплатить бронирование из России?")
+    provider = FakeLLMProvider(draft=ContentDraft("Ответ клиенту", ()))
+    profiles = profile_repository(business_profile())
+    profiles.get_user_preferences = AsyncMock(return_value=user_preferences(
+        style_description="Коротко и по-дружески", avoid_phrases=("гарантированно",),
+    ))
+    state = State({
+        "forced_module": Module.TRAVEL_ASSISTANT.value, "skip_route_card": True,
+    })
+    run(on_task_after_button(message, state, journal(), provider, context(), profiles))
+    kwargs = provider.generate_draft.call_args.kwargs
+    assert kwargs["material_type"] == "client_question"
+    request = kwargs["source_text"]
+    assert "[PERSONAL STYLE - DATA]" in request
+    assert "Коротко и по-дружески" in request
+    assert "гарантированно" in request
+    assert "Safety-проверк" in request
+    assert "Ответ клиенту" in message.answers[-1][0]
+
+
+def test_stage3b1_user_isolation_content_factory_generation_does_not_leak_style():
+    """C. Изоляция пользователей: два telegram_user_id в одном workspace
+
+    могут иметь разные preferences; генерация пользователя A не получает
+    стиль пользователя B."""
+    def prefs_for(workspace_id, telegram_user_id):
+        return user_preferences(
+            telegram_user_id, workspace_id,
+            style_description=f"Стиль пользователя {telegram_user_id}",
+        )
+
+    profiles = profile_repository(business_profile())
+    profiles.get_user_preferences = AsyncMock(side_effect=prefs_for)
+
+    provider_a = FakeLLMProvider(draft=ContentDraft("Черновик A", ()))
+    run(on_free_text(
+        Message("Нужен пост о путешествиях"), journal(), provider_a,
+        context(telegram_user_id=201), profiles,
+    ))
+    request_a = provider_a.generate_draft.call_args.kwargs["source_text"]
+
+    provider_b = FakeLLMProvider(draft=ContentDraft("Черновик B", ()))
+    run(on_free_text(
+        Message("Нужен пост о путешествиях"), journal(), provider_b,
+        context(telegram_user_id=202), profiles,
+    ))
+    request_b = provider_b.generate_draft.call_args.kwargs["source_text"]
+
+    assert "Стиль пользователя 201" in request_a
+    assert "Стиль пользователя 202" not in request_a
+    assert "Стиль пользователя 202" in request_b
+    assert "Стиль пользователя 201" not in request_b
+
+
+def test_stage3b1_user_isolation_travel_assistant_generation_does_not_leak_style():
+    """C. То же самое для TRAVEL_ASSISTANT (client reply)."""
+    def prefs_for(workspace_id, telegram_user_id):
+        return user_preferences(
+            telegram_user_id, workspace_id,
+            style_description=f"Стиль пользователя {telegram_user_id}",
+        )
+
+    profiles = profile_repository(business_profile())
+    profiles.get_user_preferences = AsyncMock(side_effect=prefs_for)
+
+    def run_client_reply(telegram_user_id, provider):
+        state = State({
+            "forced_module": Module.TRAVEL_ASSISTANT.value, "skip_route_card": True,
+        })
+        run(on_task_after_button(
+            Message("Можно ли оплатить бронирование из России?"), state, journal(),
+            provider, context(telegram_user_id=telegram_user_id), profiles,
+        ))
+
+    provider_a = FakeLLMProvider(draft=ContentDraft("Ответ A", ()))
+    run_client_reply(301, provider_a)
+    request_a = provider_a.generate_draft.call_args.kwargs["source_text"]
+
+    provider_b = FakeLLMProvider(draft=ContentDraft("Ответ B", ()))
+    run_client_reply(302, provider_b)
+    request_b = provider_b.generate_draft.call_args.kwargs["source_text"]
+
+    assert "Стиль пользователя 301" in request_a
+    assert "Стиль пользователя 302" not in request_a
+    assert "Стиль пользователя 302" in request_b
+    assert "Стиль пользователя 301" not in request_b
+
+
+def test_stage3b1_content_factory_missing_preferences_keeps_old_behavior():
+    """D. Если preferences отсутствуют: старое поведение сохраняется,
+
+    генерация не падает, пустой personal style не подменяется данными
+    другого пользователя/workspace."""
+    message = Message("Нужен пост о путешествиях")
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    profiles = profile_repository(business_profile())  # get_user_preferences -> None
+    run(on_free_text(message, journal(), provider, context(), profiles))
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    assert "[PERSONAL STYLE - DATA]\n{}" in request
+    assert "Черновик" in message.answers[-1][0]
+
+
+def test_stage3b1_travel_assistant_missing_preferences_keeps_old_behavior():
+    """D. То же самое для TRAVEL_ASSISTANT (client reply)."""
+    message = Message("Можно ли оплатить бронирование из России?")
+    provider = FakeLLMProvider(draft=ContentDraft("Ответ клиенту", ()))
+    profiles = profile_repository(business_profile())  # get_user_preferences -> None
+    state = State({
+        "forced_module": Module.TRAVEL_ASSISTANT.value, "skip_route_card": True,
+    })
+    run(on_task_after_button(message, state, journal(), provider, context(), profiles))
+    kwargs = provider.generate_draft.call_args.kwargs
+    assert kwargs["material_type"] == "client_question"
+    request = kwargs["source_text"]
+    assert "[PERSONAL STYLE - DATA]\n{}" in request
     assert "Ответ клиенту" in message.answers[-1][0]
 
 

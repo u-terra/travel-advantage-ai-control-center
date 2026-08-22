@@ -7,7 +7,7 @@ from typing import Any, Mapping
 from app.domain.orchestration import GenerationSpec, validate_generation_spec
 
 
-_PROVIDER_MATERIAL_TYPES = {"post": "market_offer"}
+_PROVIDER_MATERIAL_TYPES = {"post": "market_offer", "client_message": "client_question"}
 
 
 @dataclass(frozen=True)

@@ -22,12 +22,11 @@ from app.services.generation_request_builder import build_provider_generation_re
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
+from app.services.user_style import UserStyleService
 from app.storage import Journal
 
 router = Router(name="tasks")
 
-_CLIENT_QUESTION_MATERIAL_TYPE = "client_question"
-_DRAFT_OUTPUT_FORMAT = "telegram"
 _DRAFT_MODE = "ai"
 
 _NON_POST_FORMAT_MARKERS: tuple[str, ...] = (
@@ -158,7 +157,7 @@ async def on_task_after_button(
     if skip_route_card:
         await _maybe_send_module_result(
             message, decision, llm_provider,
-            workspace_context.workspace_id, partner_repository,
+            workspace_context, partner_repository,
             work_repository=work_repository, artifact_repository=artifact_repository,
             reply_context=reply_context,
         )
@@ -169,7 +168,7 @@ async def on_task_after_button(
     )
     await _maybe_send_module_result(
         message, decision, llm_provider,
-        workspace_context.workspace_id, partner_repository,
+        workspace_context, partner_repository,
         work_repository=work_repository, artifact_repository=artifact_repository,
         reply_context=reply_context,
     )
@@ -210,7 +209,7 @@ async def on_free_text(
     )
     await _maybe_send_module_result(
         message, decision, llm_provider,
-        workspace_context.workspace_id, partner_repository,
+        workspace_context, partner_repository,
     )
 
 
@@ -218,7 +217,7 @@ async def _maybe_send_module_result(
     message: Message,
     decision: RouteDecision,
     provider: LLMProvider,
-    workspace_id: int,
+    workspace_context: WorkspaceContext,
     partner_repository: PartnerRepository,
     *,
     work_repository: WorkRepository | None = None,
@@ -231,12 +230,12 @@ async def _maybe_send_module_result(
 
     if decision.primary_module is Module.PARTNER_PACKAGING:
         await _send_partner_package(
-            message, decision, workspace_id, partner_repository,
+            message, decision, workspace_context.workspace_id, partner_repository,
         )
         return
 
     await _maybe_send_draft(
-        message, decision, provider, workspace_id, partner_repository,
+        message, decision, provider, workspace_context, partner_repository,
         work_repository=work_repository, artifact_repository=artifact_repository,
         reply_context=reply_context,
     )
@@ -431,77 +430,56 @@ def _is_regular_post(text_lower: str) -> bool:
     return any(marker in text_lower for marker in _POST_MARKERS)
 
 
-def _draft_request_for(
-    decision: RouteDecision,
-) -> tuple[str, str, str] | None:
-    """Определяет, нужен ли безопасный черновик и в каком формате."""
-    if decision.primary_module is Module.TRAVEL_ASSISTANT:
-        safety_instruction = ""
-        if decision.safety_level is not SafetyLevel.NOT_REQUIRED:
-            safety_instruction = (
-                "\n\nЭто вопрос с обязательной Safety-проверкой. "
-                "Не сообщай цены, тарифы, доступность, способы оплаты, "
-                "варианты бронирования или сравнения как установленный факт. "
-                "Дай только общее объяснение и прямо укажи, что конкретные "
-                "условия нужно сверить вручную."
-            )
-
-        source_text = (
-            "Нужен короткий личный ответ клиенту для Telegram.\n"
-            f"Вопрос клиента: {decision.task_text}\n\n"
-            "Ответь простыми словами и по существу. Не обещай доход, "
-            "окупаемость или гарантированные скидки. Не утверждай, что "
-            "формат подходит всем. Не используй фразу «без давления». "
-            "Если точных данных недостаточно, не выдумывай: предложи "
-            "уточнить детали или спокойно разобрать вопрос лично."
-            + safety_instruction
-        )
-        return (
-            source_text,
-            _CLIENT_QUESTION_MATERIAL_TYPE,
-            "💬 Черновик ответа клиенту — для ручной проверки",
-        )
-
-    return None
+_CLIENT_REPLY_HEADING = "💬 Черновик ответа клиенту — для ручной проверки"
 
 
 async def _maybe_send_draft(
     message: Message,
     decision: RouteDecision,
     provider: LLMProvider,
-    workspace_id: int,
+    workspace_context: WorkspaceContext,
     partner_repository: PartnerRepository,
     *,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
     reply_context: ReplyBridgeContext | None = None,
 ) -> None:
-    if (
+    workspace_id = workspace_context.workspace_id
+    is_regular_post = (
         decision.primary_module is Module.CONTENT_FACTORY
         and decision.safety_level is SafetyLevel.NOT_REQUIRED
         and _is_regular_post(decision.task_text.lower())
-    ):
-        profile = await partner_repository.get_business_profile(workspace_id)
+    )
+    is_client_reply = decision.primary_module is Module.TRAVEL_ASSISTANT
+    if not is_regular_post and not is_client_reply:
+        return
+
+    profile = await partner_repository.get_business_profile(workspace_id)
+    # Stage 3B1: личный стиль ТЕКУЩЕГО пользователя — UserStyleService читает
+    # свою же запись по (workspace_id, telegram_user_id) из workspace_context,
+    # структурно не может получить чужую (см. app/services/user_style.py).
+    user_preferences = await UserStyleService(partner_repository).get(workspace_context)
+
+    if is_regular_post:
         spec = MaterialOrchestrationService().build_free_text_generation_spec(
             workspace_id, decision.task_text, profile,
+            user_preferences=user_preferences,
         )
-        provider_request = build_provider_generation_request(spec)
-        source_text = provider_request.source_text
-        material_type = provider_request.material_type
-        output_format = provider_request.output_format
         heading = "📝 Черновик для ручной проверки"
     else:
-        request = _draft_request_for(decision)
-        if request is None:
-            return
-        source_text, material_type, heading = request
-        output_format = _DRAFT_OUTPUT_FORMAT
+        spec = MaterialOrchestrationService().build_client_reply_generation_spec(
+            workspace_id, decision.task_text, profile,
+            safety_required=decision.safety_level is not SafetyLevel.NOT_REQUIRED,
+            user_preferences=user_preferences,
+        )
+        heading = _CLIENT_REPLY_HEADING
 
+    provider_request = build_provider_generation_request(spec)
     draft = await asyncio.to_thread(
         provider.generate_draft,
-        source_text=source_text,
-        material_type=material_type,
-        output_format=output_format,
+        source_text=provider_request.source_text,
+        material_type=provider_request.material_type,
+        output_format=provider_request.output_format,
         mode=_DRAFT_MODE,
     )
     if draft is None:

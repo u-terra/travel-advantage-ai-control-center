@@ -5,6 +5,7 @@ from typing import Any, Mapping
 from app.domain.business_profiles import BusinessProfile
 from app.domain.content import Source, SourceAnalysis
 from app.domain.orchestration import GenerationAction, GenerationSpec
+from app.domain.partners import WorkspaceUserPreferences
 from app.services.business_profile_context import (
     build_content_context,
     build_limited_content_context,
@@ -14,7 +15,45 @@ from app.services.business_profile_context import (
 _OBJECTIVE = "Создать черновик материала по выбранному и разобранному источнику."
 _FREE_TEXT_OBJECTIVE = "Создать черновик обычного поста по запросу пользователя."
 _RADAR_OBJECTIVE = "Создать черновик информационного материала по выбранному Radar-сигналу."
-_CONSTRAINTS = ("Черновик требует ручной проверки перед использованием.",)
+_CONSTRAINTS = (
+    "Черновик требует ручной проверки перед использованием.",
+    # Stage 3B1: приоритет источников стиля — эти правила (безопасность,
+    # бизнес-факты) всегда выше личного стиля пользователя. [PERSONAL STYLE
+    # - DATA] влияет только на тон/формулировки и содержит avoid_phrases —
+    # список слов/оборотов, которых явно нужно избегать.
+    "Если задан раздел [PERSONAL STYLE - DATA], учитывай style_description и "
+    "example_posts как ориентир тона и манеры речи, а avoid_phrases — как "
+    "прямой запрет на эти слова/обороты в тексте. Личный стиль не должен "
+    "противоречить бизнес-контексту, фактам источника и другим правилам выше.",
+)
+
+_CLIENT_REPLY_OBJECTIVE = "Сформировать короткий личный ответ клиенту в Telegram по его вопросу."
+
+# Stage 3B1: TRAVEL_ASSISTANT (client reply) больше не обходит structured
+# orchestration через сырой source_text — та же логика приоритета источников
+# стиля, что и в _CONSTRAINTS выше, плюс сохранённая формулировка прежнего
+# ручного prompt'а из app/handlers/tasks.py (_draft_request_for).
+_CLIENT_REPLY_CONSTRAINTS = (
+    "Черновик требует ручной проверки перед отправкой.",
+    "Ответь простыми словами и по существу. Не обещай доход, окупаемость или "
+    "гарантированные скидки. Не утверждай, что формат подходит всем. Не "
+    "используй фразу «без давления». Если точных данных недостаточно, не "
+    "выдумывай: предложи уточнить детали или спокойно разобрать вопрос лично.",
+    "Если задан раздел [PERSONAL STYLE - DATA], учитывай style_description и "
+    "example_posts как ориентир тона и манеры речи, а avoid_phrases — как "
+    "прямой запрет на эти слова/обороты в тексте. Личный стиль не должен "
+    "противоречить бизнес-контексту, verified/unverified claims и другим "
+    "правилам выше.",
+)
+
+# Добавляется к _CLIENT_REPLY_CONSTRAINTS только когда decision.safety_level
+# не NOT_REQUIRED — прежнее поведение safety_instruction в _draft_request_for.
+_CLIENT_REPLY_SAFETY_CONSTRAINT = (
+    "Это вопрос с обязательной Safety-проверкой. Не сообщай цены, тарифы, "
+    "доступность, способы оплаты, варианты бронирования или сравнения как "
+    "установленный факт. Дай только общее объяснение и прямо укажи, что "
+    "конкретные условия нужно сверить вручную."
+)
 
 
 class MaterialOrchestrationService:
@@ -69,6 +108,8 @@ class MaterialOrchestrationService:
         workspace_id: int,
         task_text: str,
         profile: BusinessProfile | None,
+        *,
+        user_preferences: WorkspaceUserPreferences | None = None,
     ) -> GenerationSpec:
         if not isinstance(task_text, str) or not task_text.strip():
             raise ValueError("task_text не должен быть пустым")
@@ -85,6 +126,7 @@ class MaterialOrchestrationService:
             trusted_business_context=trusted_context,
             untrusted_source_content=task_text,
             tone_preferences=tone_preferences,
+            personal_style=_personal_style_values(user_preferences),
             verified_claims_allowed=verified,
             unverified_claims_requiring_caution=unverified,
             constraints=_CONSTRAINTS,
@@ -132,6 +174,67 @@ class MaterialOrchestrationService:
             constraints=_CONSTRAINTS,
             profile_revision_used=revision,
         )
+
+    def build_client_reply_generation_spec(
+        self,
+        workspace_id: int,
+        client_question: str,
+        profile: BusinessProfile | None,
+        *,
+        safety_required: bool,
+        user_preferences: WorkspaceUserPreferences | None = None,
+    ) -> GenerationSpec:
+        """Stage 3B1: заменяет прежний прямой вызов provider.generate_draft()
+        для TRAVEL_ASSISTANT (client reply) в app/handlers/tasks.py — тот путь
+        полностью обходил structured orchestration и personal_style. Здесь
+        используется тот же BusinessProfile workspace, verified/unverified
+        claims и приоритет источников стиля, что и в остальных build_*
+        методах этого сервиса.
+        """
+        if not isinstance(client_question, str) or not client_question.strip():
+            raise ValueError("client_question не должен быть пустым")
+        trusted_context, tone_preferences, verified, unverified, revision = (
+            _profile_generation_values(workspace_id, profile)
+        )
+        constraints = _CLIENT_REPLY_CONSTRAINTS
+        if safety_required:
+            constraints = (*constraints, _CLIENT_REPLY_SAFETY_CONSTRAINT)
+        return GenerationSpec(
+            action_type=GenerationAction.CREATE_ARTIFACT,
+            artifact_type="client_message",
+            objective=_CLIENT_REPLY_OBJECTIVE,
+            audience=tuple(trusted_context.get("audiences", ())),
+            output_format="telegram",
+            source_facts={},
+            trusted_business_context=trusted_context,
+            untrusted_source_content=client_question,
+            tone_preferences=tone_preferences,
+            personal_style=_personal_style_values(user_preferences),
+            verified_claims_allowed=verified,
+            unverified_claims_requiring_caution=unverified,
+            constraints=constraints,
+            profile_revision_used=revision,
+        )
+
+
+def _personal_style_values(
+    user_preferences: WorkspaceUserPreferences | None,
+) -> dict[str, Any]:
+    """Личный стиль КОНКРЕТНОГО пользователя — отдельная DATA-секция от
+    trusted_business_context (стиль компании). Пусто, если пользователь
+    ничего не заполнил — тогда генерация просто не получает эту секцию,
+    не заменяет её выдуманными значениями.
+    """
+    if user_preferences is None:
+        return {}
+    values: dict[str, Any] = {}
+    if user_preferences.style_description.strip():
+        values["style_description"] = user_preferences.style_description
+    if user_preferences.example_posts:
+        values["example_posts"] = list(user_preferences.example_posts)
+    if user_preferences.avoid_phrases:
+        values["avoid_phrases"] = list(user_preferences.avoid_phrases)
+    return values
 
 
 def _profile_generation_values(
