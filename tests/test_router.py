@@ -13,6 +13,33 @@ def test_post_routes_to_content_factory():
     assert not d.is_uncertain
 
 
+# --- Live prod-баг: root cause "Сделай план публикаций на 14 дней" не
+# отвечал вообще. Причина — ни одно слово CONTENT_KEYWORDS не совпадало
+# («план» намеренно не входит в CONTENT_KEYWORDS, иначе он перебивал бы
+# предметные ASSISTANT_TOPIC_KEYWORDS вроде «тарифный план»), запрос уходил
+# в Module.ORCHESTRATOR как is_uncertain. Общий regex-сигнал в
+# CONTENT_PATTERNS покрывает весь класс «план/график/расписание
+# публикаций/постов/контента», а не только эту формулировку. ---
+
+def test_publication_plan_without_content_word_routes_to_content_factory():
+    d = route_text("Сделай план публикаций на 14 дней")
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert not d.is_uncertain
+
+
+def test_posting_schedule_phrasing_also_routes_to_content_factory():
+    d = route_text("Нужен график постов на неделю")
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert not d.is_uncertain
+
+
+def test_bare_plan_word_alone_does_not_force_content_factory():
+    # "план" сам по себе не должен перебивать явный клиентский/тарифный
+    # сигнал — только "план публикаций/постов/контента" — конкретный класс.
+    d = route_text("Человек спрашивает, какой у вас тарифный план")
+    assert d.primary_module is Module.TRAVEL_ASSISTANT
+
+
 def test_client_question_routes_to_assistant():
     d = route_text("Человек спрашивает, чем Travel Advantage отличается от обычного поиска отелей")
     assert d.primary_module is Module.TRAVEL_ASSISTANT

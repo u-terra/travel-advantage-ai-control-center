@@ -40,6 +40,11 @@ _TEXT_CHECK_FAILURE_MESSAGE = (
     "Попробуйте ещё раз или откройте Travel Content Factory вручную."
 )
 
+_UNCERTAIN_ROUTE_MESSAGE = (
+    "⚠️ Не удалось уверенно определить маршрут для этой задачи. "
+    "Выберите категорию задачи кнопкой главного меню или переформулируйте запрос."
+)
+
 _REPLY_SUBJECT_EMPTY = (
     "Сообщение не должно быть пустым. Пришлите вопрос клиента или короткое "
     "имя/обозначение, например: Иван."
@@ -293,6 +298,18 @@ async def _maybe_send_module_result(
         await _send_partner_package(
             message, decision, workspace_context.workspace_id, partner_repository,
         )
+        return
+
+    # Prod bug: в v2 UI карточка маршрута («📌 Карточка маршрута», содержащая
+    # предупреждение "Маршрут не определён уверенно") не показывается
+    # (skip_route_card/v2_menu_enabled) — она была единственным местом, где
+    # это предупреждение доходило до пользователя. Ниже по стеку ни один из
+    # веток (_maybe_send_draft) не обрабатывает Module.ORCHESTRATOR, поэтому
+    # запрос молча оставался без единого ответа бота. Это не проблема
+    # конкретной формулировки: любой запрос, который router не смог уверенно
+    # классифицировать, должен получить явный ответ, а не тишину.
+    if decision.is_uncertain:
+        await message.answer(_UNCERTAIN_ROUTE_MESSAGE)
         return
 
     await _maybe_send_draft(

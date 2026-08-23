@@ -1057,6 +1057,121 @@ def test_free_text_general_task_prompt_forbids_deferral_pattern_from_live_bug():
     assert "Персональный черновик" in message.answers[-1][0]
 
 
+# --- Live smoke-test regression suite (после commit 6816118) ---
+#
+# Ручной smoke-test через prod-бота показал 4 живых дефекта поверх уже
+# исправленного prod-бага про "если нужен план...". Ниже — все 6 реальных
+# запросов из smoke-теста, включая 2 уже рабочих (как non-regression якоря).
+
+def test_smoke_1_two_week_content_plan_uses_weekly_plan_format():
+    """1) «Составь контент-план на 2 недели» — уже работало, не регрессирует."""
+    text = "Составь контент-план на 2 недели"
+    message, provider, _, _ = run_regular_post(business_profile(), text=text)
+    kwargs = provider.generate_draft.call_args.kwargs
+    assert kwargs["output_format"] == "weekly_plan"
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+def test_smoke_2_plan_publikatsy_14_days_no_longer_silent():
+    """2) Root cause: «Сделай план публикаций на 14 дней» не содержало ни
+    одного слова из CONTENT_KEYWORDS («план» сам по себе туда не входит) и
+    роутилось в Module.ORCHESTRATOR (маршрут не определён уверенно). В v2 UI
+    карточка маршрута с этим предупреждением не показывается
+    (skip_route_card), а _maybe_send_draft ничего не делает для
+    ORCHESTRATOR — итог: бот не отвечал вообще, даже с ошибкой.
+
+    Фикс — на двух уровнях: (a) router получил общий regex-сигнал
+    "план/график/расписание [+ до 3 слов] публикаций/постов/контента", не
+    зависящий от конкретной формулировки; (b) _maybe_send_module_result
+    теперь всегда отвечает пользователю на decision.is_uncertain, а не
+    только когда карточка маршрута показана.
+    """
+    text = "Сделай план публикаций на 14 дней"
+    message = Message(text)
+    provider = FakeLLMProvider(draft=ContentDraft("Персональный черновик", ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+    ))
+    assert message.answers, "бот обязан ответить хоть что-то на любой free-text"
+    provider.generate_draft.assert_called_once()
+    kwargs = provider.generate_draft.call_args.kwargs
+    assert kwargs["output_format"] == "weekly_plan"
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+def test_uncertain_route_always_gets_a_reply_in_v2_ui():
+    """Общая защита (не про конкретную формулировку): в v2 UI карточка
+    маршрута не показывается (skip_route_card), поэтому предупреждение
+    "Маршрут не определён уверенно" внутри build_card никогда не доходило
+    до пользователя, а _maybe_send_draft молча ничего не делает для
+    Module.ORCHESTRATOR — итог был полное молчание бота на любой
+    нераспознанный запрос, не только на "план публикаций на 14 дней"."""
+    text = "просто что-то непонятное про абстракцию"
+    message = Message(text)
+    provider = FakeLLMProvider(draft=ContentDraft("Персональный черновик", ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+    ))
+    assert message.answers, "бот обязан ответить хоть что-то на любой free-text"
+    provider.generate_draft.assert_not_called()
+
+
+def test_smoke_3_weekly_content_plan_without_explicit_number_uses_weekly_plan_format():
+    """3) «Нужен контент-план на неделю» — раньше не совпадало с regex,
+    требовавшим число дней/недель, и уходило в короткий "telegram" формат,
+    из-за чего получался общий список тем вместо готового плана."""
+    text = "Нужен контент-план на неделю"
+    message, provider, _, _ = run_regular_post(business_profile(), text=text)
+    kwargs = provider.generate_draft.call_args.kwargs
+    assert kwargs["output_format"] == "weekly_plan"
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+def test_smoke_4_explicit_quantity_of_posts_uses_weekly_plan_format_and_quantity_constraint():
+    """4) «Подготовь 10 постов для Telegram» — модель делала один пост и
+    предлагала подготовить остальные отдельно. Фикс: (a) явное количество
+    единиц контента ("10 постов") — общий сигнал на multi-item output_format
+    (тот же бюджет/prompt, что и у многодневного плана); (b) отдельный
+    constraint прямо запрещает паттерн "вот пример, могу подготовить
+    остальные" для любого количества, не только для 10."""
+    text = "Подготовь 10 постов для Telegram"
+    message, provider, _, _ = run_regular_post(business_profile(), text=text)
+    kwargs = provider.generate_draft.call_args.kwargs
+    assert kwargs["output_format"] == "weekly_plan"
+    request = kwargs["source_text"].lower()
+    assert "ровно это количество полностью готовых" in request
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+def test_smoke_5_single_post_request_stays_a_simple_post():
+    """5) «Напиши пост про Travel Advantage» — должно остаться простым
+    постом: обычный "telegram" формат, без искусственного превращения в
+    план или серию."""
+    text = "Напиши пост про Travel Advantage"
+    message, provider, _, _ = run_regular_post(business_profile(), text=text)
+    kwargs = provider.generate_draft.call_args.kwargs
+    assert kwargs["output_format"] == "telegram"
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+def test_smoke_6_series_for_month_uses_workspace_context_as_default_topic():
+    """6) «Составь серию постов на месяц» — модель отказывалась выполнять
+    задачу и просила пользователя прислать тему/аудиторию/тезисы/источники,
+    хотя workspace уже содержит заполненный Business Profile. Фикс: отдельный
+    constraint требует использовать [TRUSTED BUSINESS CONTEXT - DATA] как
+    тему по умолчанию, если тема не указана явно, вместо отказа."""
+    text = "Составь серию постов на месяц"
+    message, provider, _, _ = run_regular_post(business_profile(), text=text)
+    kwargs = provider.generate_draft.call_args.kwargs
+    request = kwargs["source_text"]
+    assert kwargs["output_format"] == "weekly_plan"
+    assert "Travel Business" in request  # business_name из workspace context доступен модели
+    assert "используй этот контекст как тему по умолчанию" in request.lower()
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
 def test_partner_packaging_branch_looks_up_profile_for_tenant_scoping():
     """Partner Packaging обязан смотреть Business Profile workspace, чтобы
 

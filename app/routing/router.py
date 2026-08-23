@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.routing.keywords import (
     ASSISTANT_INTENT_KEYWORDS,
     ASSISTANT_TOPIC_KEYWORDS,
     CONTENT_KEYWORDS,
+    CONTENT_PATTERNS,
     PACKAGING_KEYWORDS,
     RADAR_KEYWORDS,
     SAFETY_KEYWORDS,
@@ -41,6 +43,12 @@ def _count_matches(text_lower: str, keywords: tuple[str, ...]) -> int:
     return sum(1 for kw in keywords if kw in text_lower)
 
 
+def _count_pattern_matches(
+    text_lower: str, patterns: tuple[re.Pattern[str], ...]
+) -> int:
+    return sum(1 for pattern in patterns if pattern.search(text_lower))
+
+
 def _sort_matched(scores: dict[Module, int]) -> tuple[Module, ...]:
     def key(m: Module) -> tuple[int, int]:
         priority_index = MODULE_PRIORITY.index(m) if m in MODULE_PRIORITY else 99
@@ -62,7 +70,9 @@ def _promote_safety(
 def route_text(task_text: str) -> RouteDecision:
     text_lower = task_text.lower()
 
-    content_score = _count_matches(text_lower, CONTENT_KEYWORDS)
+    content_score = _count_matches(
+        text_lower, CONTENT_KEYWORDS
+    ) + _count_pattern_matches(text_lower, CONTENT_PATTERNS)
     intent_score = _count_matches(text_lower, ASSISTANT_INTENT_KEYWORDS)
     topic_score = _count_matches(text_lower, ASSISTANT_TOPIC_KEYWORDS)
     radar_score = _count_matches(text_lower, RADAR_KEYWORDS)

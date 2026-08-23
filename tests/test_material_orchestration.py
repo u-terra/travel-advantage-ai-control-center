@@ -379,14 +379,17 @@ def test_radar_spec_constraints_require_standalone_post_and_no_invented_facts():
 def test_radar_spec_constraints_do_not_leak_into_other_flows():
     # _RADAR_CONSTRAINTS должен использоваться только build_radar_generation_spec —
     # обычная генерация и free-text не должны получать этот расширенный набор.
-    from app.services.material_orchestration import _CONSTRAINTS
+    # Free-text дополнительно получает _FREE_TEXT_CONSTRAINTS (quantity/topic
+    # fallback правила поверх базовых _CONSTRAINTS) — свой отдельный набор,
+    # не пересекающийся с Radar.
+    from app.services.material_orchestration import _CONSTRAINTS, _FREE_TEXT_CONSTRAINTS
 
     regular_spec = build(profile())
     free_text_spec = MaterialOrchestrationService().build_free_text_generation_spec(
         10, "Задача", profile()
     )
     assert regular_spec.constraints == _CONSTRAINTS
-    assert free_text_spec.constraints == _CONSTRAINTS
+    assert free_text_spec.constraints == _FREE_TEXT_CONSTRAINTS
     radar = radar_spec(profile())
     assert radar.constraints != regular_spec.constraints
     assert "самостоятельный готовый пост" in " ".join(radar.constraints)
