@@ -37,6 +37,12 @@ class GenerationSpec:
     trusted_business_context: Mapping[str, Any]
     untrusted_source_content: str
     tone_preferences: Mapping[str, Any]
+    # Stage 3B1: личный стиль КОНКРЕТНОГО пользователя (не workspace) —
+    # style_description/example_posts/avoid_phrases. Отдельная DATA-секция,
+    # ниже по значимости, чем trusted_business_context/constraints (см.
+    # generation_request_builder.py и комментарий в material_orchestration.py
+    # про порядок приоритета).
+    personal_style: Mapping[str, Any]
     verified_claims_allowed: tuple[Mapping[str, Any], ...]
     unverified_claims_requiring_caution: tuple[Mapping[str, Any], ...]
     constraints: tuple[str, ...]
@@ -50,7 +56,7 @@ class GenerationSpec:
             raise GenerationSpecValidationError("Неизвестный action_type/output_format") from exc
         for field in (
             "audience", "source_facts", "trusted_business_context",
-            "tone_preferences", "verified_claims_allowed",
+            "tone_preferences", "personal_style", "verified_claims_allowed",
             "unverified_claims_requiring_caution", "constraints",
         ):
             object.__setattr__(self, field, freeze_json_value(getattr(self, field)))
@@ -95,7 +101,9 @@ def validate_generation_spec(spec: GenerationSpec) -> None:
         raise GenerationSpecValidationError("profile_revision_used должен быть >= 1 либо None")
     _validate_string_tuple(spec.audience, "audience")
     _validate_string_tuple(spec.constraints, "constraints")
-    for field in ("source_facts", "trusted_business_context", "tone_preferences"):
+    for field in (
+        "source_facts", "trusted_business_context", "tone_preferences", "personal_style",
+    ):
         value = getattr(spec, field)
         if not isinstance(value, Mapping):
             raise GenerationSpecValidationError(f"{field} должен быть mapping")
