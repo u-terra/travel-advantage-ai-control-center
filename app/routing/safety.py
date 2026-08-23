@@ -15,6 +15,18 @@ class SafetyLevel(str, Enum):
 # ценой, ценам — и при этом не цепляет «сценарий» / «оценить».
 _MANDATORY_PRICE_PATTERN = re.compile(r"\bцен")
 
+# Название/слоган в кавычках («Путешествуй выгодно», "Название группы") —
+# собственное имя, а не утверждение или обещание от лица бота: keyword внутри
+# него не должен приравниваться к такому же слову в основном тексте запроса
+# (ср. «Разработай стратегию для группы «Путешествуй выгодно»» — MANDATORY не
+# нужен — и «Расскажи про выгодный тариф» — MANDATORY нужен). Вырезается
+# только перед keyword-проверкой, сам текст задачи не меняется.
+_QUOTED_SPAN_PATTERN = re.compile(r"«[^»]*»|\"[^\"]*\"")
+
+
+def _without_quoted_spans(text_lower: str) -> str:
+    return _QUOTED_SPAN_PATTERN.sub(" ", text_lower)
+
 
 # Темы, при которых Safety Layer обязателен (см. п.7 ТЗ).
 MANDATORY_SAFETY_KEYWORDS: tuple[str, ...] = (
@@ -64,12 +76,13 @@ RECOMMENDED_SAFETY_KEYWORDS: tuple[str, ...] = (
 
 def detect_safety_level(text_lower: str) -> SafetyLevel:
     """Определяет уровень Safety Layer по содержимому текста (lower-cased)."""
-    if _MANDATORY_PRICE_PATTERN.search(text_lower):
+    unquoted = _without_quoted_spans(text_lower)
+    if _MANDATORY_PRICE_PATTERN.search(unquoted):
         return SafetyLevel.MANDATORY
     for kw in MANDATORY_SAFETY_KEYWORDS:
-        if kw in text_lower:
+        if kw in unquoted:
             return SafetyLevel.MANDATORY
     for kw in RECOMMENDED_SAFETY_KEYWORDS:
-        if kw in text_lower:
+        if kw in unquoted:
             return SafetyLevel.RECOMMENDED
     return SafetyLevel.NOT_REQUIRED

@@ -51,3 +51,27 @@ def test_recommended_safety_topics(phrase: str) -> None:
 
 def test_no_sensitive_topic_not_required() -> None:
     assert detect_safety_level("пост о красивых горах") is SafetyLevel.NOT_REQUIRED
+
+
+# --- Fix: название/слоган в кавычках не должно давать ложный MANDATORY ---
+# (живой прод-баг: «Путешествуй выгодно» как название группы ловилось на
+# подстроке "выгод" из MANDATORY_SAFETY_KEYWORDS)
+
+def test_quoted_brand_name_with_vygod_substring_is_not_mandatory() -> None:
+    text = (
+        "разработай стратегию ведения моей группы вконтакте «путешествуй "
+        "выгодно». нужны рубрики и контент-план на 2 недели"
+    )
+    assert detect_safety_level(text) is SafetyLevel.NOT_REQUIRED
+
+
+def test_real_financial_benefit_request_outside_quotes_stays_mandatory() -> None:
+    text = "расскажи, какая финансовая выгода и тариф для клиента при бронировании"
+    assert detect_safety_level(text) is SafetyLevel.MANDATORY
+
+
+def test_quoted_span_does_not_hide_mandatory_keyword_in_open_text() -> None:
+    # Кавычки вырезают только сам процитированный фрагмент — если keyword
+    # встречается вне кавычек, поведение не меняется.
+    text = 'группа «путешествуй легко», но у нас выгодный тариф для клиента'
+    assert detect_safety_level(text) is SafetyLevel.MANDATORY

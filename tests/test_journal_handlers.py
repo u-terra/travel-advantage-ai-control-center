@@ -1011,6 +1011,27 @@ def test_free_text_safety_gated_content_task_still_does_not_bypass_safety():
     provider.generate_draft.assert_not_called()
 
 
+# --- BUG 1 fix: general Content Factory задача ("стратегия", "план",
+# "рубрикатор") генерируется как структурированное ТЗ, а не как обычный
+# короткий пост ---
+
+def test_free_text_general_content_task_generates_and_preserves_task_structure():
+    text = (
+        "Разработай стратегию ведения моей туристической группы ВКонтакте. "
+        "Нужны позиционирование, рубрики, частота публикаций, идеи "
+        "вовлечения и контент-план на 2 недели."
+    )
+    message, provider, _, _ = run_regular_post(business_profile(), text=text)
+    provider.generate_draft.assert_called_once()
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    # Полное ТЗ пользователя доходит до провайдера без потерь...
+    assert text in request
+    # ...и prompt прямо требует сохранить запрошенную структуру, а не
+    # подменять её шаблоном обычного короткого поста.
+    assert "сохранить запрошенную структуру" in request
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
 def test_partner_packaging_branch_looks_up_profile_for_tenant_scoping():
     """Partner Packaging обязан смотреть Business Profile workspace, чтобы
 

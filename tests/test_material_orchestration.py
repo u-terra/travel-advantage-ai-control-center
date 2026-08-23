@@ -554,6 +554,30 @@ def test_free_text_spec_constraints_give_example_posts_stronger_priority():
     assert "example_posts" in joined and "более сильный ориентир" in joined
 
 
+# --- Fix: free-text objective больше не подменяет структурированную задачу
+# ("стратегия", "план", "рубрикатор") шаблоном обычного короткого поста ---
+
+def test_free_text_objective_lets_task_own_format_override_default_post():
+    from app.services.material_orchestration import _FREE_TEXT_OBJECTIVE
+
+    joined = _FREE_TEXT_OBJECTIVE.lower()
+    assert "техническое задание" in joined
+    assert "сохранить запрошенную структуру" in joined
+    # обычный пост остаётся, но только как явный fallback по умолчанию.
+    assert "по умолчанию" in joined and "обычного поста" in joined
+
+
+def test_free_text_spec_untrusted_content_carries_full_task_text_unchanged():
+    text = (
+        "Разработай стратегию ведения группы ВКонтакте. Нужны позиционирование, "
+        "рубрики, частота публикаций и контент-план на 2 недели."
+    )
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, text, profile(),
+    )
+    assert spec.untrusted_source_content == text
+
+
 def test_regular_spec_also_gets_assistant_tail_constraint():
     # build_generation_spec (material_generation.py flow) делит _CONSTRAINTS
     # с build_free_text_generation_spec — тот же анти-хвост-constraint.
