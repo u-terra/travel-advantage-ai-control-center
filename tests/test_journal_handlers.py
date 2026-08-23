@@ -387,6 +387,77 @@ def run_radar(
     return callback, provider, profiles, repository, current_journal
 
 
+def run_radar_with_content_draft(
+    content_draft, *, analysis=_ANALYSIS_DEFAULT, profile=None,
+):
+    """Как run_radar, но с прямым контролем над ContentDraft.warnings —
+    нужно для тестов на форматирование блока «🛡 Проверка» (run_radar всегда
+    создаёт ContentDraft с пустыми warnings)."""
+    if analysis is _ANALYSIS_DEFAULT:
+        analysis = analysis_payload()
+    callback = Callback()
+    provider = FakeLLMProvider(draft=content_draft, analysis=analysis)
+    profiles = profile_repository(profile)
+    profiles.get_user_preferences = AsyncMock(return_value=None)
+    repository = signal_repository(radar_record())
+    artifacts = artifact_repository()
+    with patch("app.services.lead_radar._load_recommender") as load:
+        load.return_value = SimpleNamespace(
+            recommend_action=lambda row: {
+                "recommended_action": "content", "action_reason": "Подходит",
+            },
+            action_label=lambda action: "Создать контент",
+        )
+        run(on_radar_content_selected(
+            callback, State(), journal(), provider, context(42),
+            repository, radar_config(), profiles, artifacts,
+        ))
+    return callback
+
+
+# --- Radar UX / Content Quality: единый блок «🛡 Проверка», без дублей и
+# без технических имён внутренних валидаторов ---
+
+def test_radar_safety_block_clean_draft_shows_single_short_message():
+    callback = run_radar_with_content_draft(ContentDraft("Обычный черновик без проблем.", ()))
+    shown = callback.message.answers[-1][0]
+    assert shown.count("Существенных замечаний нет") == 1
+    assert shown.endswith("🛡 Проверка\nСущественных замечаний нет.")
+
+
+def test_radar_safety_block_disputed_claims_warn_without_leaking_claim_text():
+    # Fail-closed инвариант Stage 1 Content Quality Gate: сам текст спорного
+    # факта не должен долетать до пользователя ни в каком виде — ни в теле
+    # черновика (см. test_radar_disputed_claim_does_not_reach_final_text),
+    # ни в блоке "Проверка".
+    payload = analysis_payload(disputed_claims=("Петроглифы старше египетских пирамид",))
+    callback = run_radar_with_content_draft(
+        ContentDraft("Обычный черновик без спорных фраз.", ()), analysis=payload,
+    )
+    shown = callback.message.answers[-1][0]
+    assert "пирамид" not in shown
+    assert "не подтверждена" in shown
+    assert "Существенных замечаний нет" not in shown
+    assert shown.count("🛡 Проверка") == 1
+
+
+def test_radar_safety_block_dedupes_duplicate_warnings():
+    callback = run_radar_with_content_draft(
+        ContentDraft("Черновик.", ("Проверьте цены.", "Проверьте цены.")),
+    )
+    shown = callback.message.answers[-1][0]
+    assert shown.count("Проверьте цены.") == 1
+
+
+def test_radar_safety_block_does_not_leak_technical_validator_names():
+    callback = run_radar_with_content_draft(
+        ContentDraft("Черновик.", ("Проверьте цены.",)),
+    )
+    shown = callback.message.answers[-1][0]
+    for forbidden in ("Content Factory", "content_factory", "Lead Radar", "validator"):
+        assert forbidden not in shown
+
+
 # --- Stage 1 Content Quality Gate: Source Analysis + disputed_claims ---
 
 def test_radar_calls_source_analysis_before_generation():
@@ -724,6 +795,7 @@ def test_radar_persistence_failure_does_not_grow_draft_message_beyond_success_pa
 
     expected_draft_text = "\n".join([
         "📝 Черновик по идее из Radar — для ручной проверки", "", near_limit_draft,
+        "", "🛡 Проверка\nСущественных замечаний нет.",
     ])
     # Тот же текст, что уходил бы в сообщении при успешном сохранении —
     # без предупреждения впереди и без увеличения объёма.

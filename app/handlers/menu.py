@@ -84,6 +84,45 @@ _RADAR_ANALYSIS_UNAVAILABLE = (
     "Попробуйте ещё раз позже."
 )
 
+_SAFETY_CLEAN = "🛡 Проверка\nСущественных замечаний нет."
+_SAFETY_HEADER = "🛡 Проверка\nПеред публикацией лучше перепроверить:"
+# Fail-closed, как и в draft_sanitizer: сам текст disputed_claim уже вырезан
+# из sanitized_text и НЕ должен попадать пользователю ни в каком виде, в том
+# числе как "цитата" в предупреждении — иначе непроверенный факт всё равно
+# долетает до пользователя, просто через другое поле сообщения. Поэтому здесь
+# только обезличенное уведомление о факте вырезки, без цитирования claim.
+_SAFETY_UNVERIFIED_NOTE = (
+    "часть фактов из источника не подтверждена и не вошла в черновик — "
+    "при необходимости уточните детали отдельно"
+)
+
+
+def _format_radar_safety(
+    draft_warnings: tuple[str, ...], disputed_claims: tuple[str, ...]
+) -> str:
+    """Единый компактный блок «🛡 Проверка» вместо технических «Предупреждения
+    Content Factory» и вместо возможных дублирующихся «Существенных замечаний
+    нет» — по одному короткому сообщению на каждый исход, без имён внутренних
+    валидаторов.
+    """
+    items: list[str] = []
+    seen: set[str] = set()
+    for warning in draft_warnings:
+        warning = warning.strip()
+        if not warning:
+            continue
+        key = warning.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(warning)
+    if disputed_claims:
+        items.append(_SAFETY_UNVERIFIED_NOTE)
+    if not items:
+        return _SAFETY_CLEAN
+    lines = [_SAFETY_HEADER, *(f"— {item}" for item in items)]
+    return "\n".join(lines)
+
 
 class AwaitTask(StatesGroup):
     waiting = State()
@@ -548,18 +587,17 @@ async def on_radar_content_selected(
         )
         return
 
+    safety_block = _format_radar_safety(
+        draft.warnings,
+        analysis.disputed_claims if analysis is not None else (),
+    )
     lines: list[str] = [
         "📝 Черновик по идее из Radar — для ручной проверки",
         "",
         sanitized_text,
+        "",
+        safety_block,
     ]
-    if draft.warnings:
-        lines.append("")
-        lines.append("⚠️ Предупреждения Content Factory:")
-        for warning in draft.warnings:
-            lines.append(f"— {warning}")
-        lines.append("")
-        lines.append("Текст требует ручной проверки перед публикацией.")
     draft_text = "\n".join(lines)
 
     try:

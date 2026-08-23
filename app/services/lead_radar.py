@@ -431,28 +431,23 @@ def _truncate(text: str, max_len: int) -> str:
     return text[: max_len - 1].rstrip() + "…"
 
 
-def _format_date(created_at: str) -> str:
-    s = (created_at or "").strip()
-    if len(s) >= 10:
-        return s[:10]
-    return s or "—"
+# Человекочитаемое «почему стоит обратить внимание» по типу рекомендованного
+# действия — используется только когда action_reason (от action_recommender)
+# пуст. Ничего не придумывает про конкретный сигнал, только нейтральная
+# формулировка по категории — сам score/source_type сюда никогда не попадают.
+_WHY_FALLBACK: dict[str, str] = {
+    "content": "Тема перекликается с интересами вашей аудитории и может стать поводом для поста.",
+    "observe": "Похоже, эта тема сейчас активно обсуждается на рынке — стоит держать её в поле зрения.",
+    "careful_reply": "Похоже на вопрос от потенциального клиента — стоит ответить лично.",
+}
+_WHY_DEFAULT_FALLBACK = "Сигнал может быть полезен для вашей аудитории."
 
-
-def _format_score(score: Optional[float]) -> str:
-    if score is None:
-        return "—"
-    if score == int(score):
-        return str(int(score))
-    return f"{score:.1f}"
-
-
-def _format_source(source_type: str) -> str:
-    s = (source_type or "").strip()
-    if not s:
-        return "—"
-    if s.lower() in {"rss", "vk"}:
-        return s.upper()
-    return s
+# Компактная редакционная подсказка для content-сигналов. Без данных сверх
+# заголовка/причины сигнала это не может быть уникальным фактом про источник —
+# это подсказка по подаче, а не утверждение о содержании источника.
+_CONTENT_ANGLE_HINT = (
+    "Свяжите тему с вашим направлением и добавьте личный пример или мнение."
+)
 
 
 def category_label(category: str) -> str:
@@ -465,22 +460,38 @@ def category_label(category: str) -> str:
     return _CATEGORY_LABELS.get(key, _CATEGORY_FALLBACK)
 
 
+def _why_text(signal: LeadSignal) -> str:
+    """«Почему стоит обратить внимание» — человеческая формулировка без
+    технического score/source_type. action_reason уже приходит человекочитаемым
+    от action_recommender; пустой action_reason не заменяется выдуманной
+    статистикой, только нейтральным fallback по типу действия."""
+    reason = (signal.action_reason or "").strip()
+    if reason:
+        return reason
+    return _WHY_FALLBACK.get(signal.recommended_action, _WHY_DEFAULT_FALLBACK)
+
+
 def _format_signal_block(signal: LeadSignal, index: int) -> str:
     header = category_label(signal.category)
     title = _truncate(signal.title or "(без заголовка)", 110)
-    meta = (
-        f"{_format_source(signal.source_type)} · score "
-        f"{_format_score(signal.score)} · {_format_date(signal.created_at)}"
-    )
-    reason = _truncate(signal.action_reason or "—", 140)
-    url = signal.url or "—"
-    return (
-        f"{index}. {header}\n"
-        f"{title}\n"
-        f"{meta}\n"
-        f"Почему: {reason}\n"
-        f"{url}"
-    )
+    why = _truncate(_why_text(signal), 160)
+    lines = [
+        f"{index}. {header}",
+        "",
+        "Тема:",
+        title,
+        "",
+        "Почему стоит обратить внимание:",
+        why,
+    ]
+    if signal.recommended_action == "content":
+        lines.extend([
+            "",
+            "Как можно подать:",
+            _truncate(_CONTENT_ANGLE_HINT, 160),
+        ])
+    lines.extend(["", signal.url or "—"])
+    return "\n".join(lines)
 
 
 def build_summary(signals: list[LeadSignal]) -> str:

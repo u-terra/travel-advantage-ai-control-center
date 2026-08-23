@@ -89,6 +89,59 @@ def test_lead_signal_label():
     assert category_label("lead_signal") == "🎯 Вопрос клиента"
 
 
+# --- Radar UX: карточка сигнала без технической кухни ------------------------
+
+def test_summary_does_not_show_numeric_score():
+    summary = build_summary([_signal(score=45.0)])
+    assert "score" not in summary.lower()
+    assert "45" not in summary
+
+
+def test_summary_does_not_show_telegram_source_type_label():
+    summary = build_summary([_signal(source_type="telegram")])
+    assert "telegram" not in summary.lower()
+
+
+def test_summary_does_not_show_rss_source_type_label():
+    summary = build_summary([_signal(source_type="rss")])
+    assert "rss" not in summary.lower()
+
+
+def test_summary_shows_human_readable_why_label():
+    summary = build_summary([_signal(action_reason="Активно обсуждают в чате клуба")])
+    assert "Почему стоит обратить внимание:" in summary
+    assert "Активно обсуждают в чате клуба" in summary
+
+
+def test_summary_uses_neutral_fallback_when_action_reason_is_empty():
+    # Не придумываем факты/статистику — только нейтральная формулировка,
+    # если action_reason от action_recommender пуст.
+    summary = build_summary([_signal(action_reason="", recommended_action="observe")])
+    assert "Почему стоит обратить внимание:" in summary
+    assert "активно обсуждается на рынке" in summary
+
+
+def test_content_idea_card_has_editorial_angle():
+    summary = build_summary([_signal(
+        category="content_signal", recommended_action="content",
+    )])
+    assert "Как можно подать:" in summary
+
+
+def test_observe_signal_card_has_no_forced_content_angle():
+    summary = build_summary([_signal(
+        category="market_signal", recommended_action="observe",
+    )])
+    assert "Как можно подать:" not in summary
+
+
+def test_careful_reply_signal_card_has_no_forced_content_angle():
+    summary = build_summary([_signal(
+        category="lead_signal", recommended_action="careful_reply",
+    )])
+    assert "Как можно подать:" not in summary
+
+
 # --- build_workspace_signals: freshness по смыслу категории + квоты 3/1/1 ---
 # ai_score сюда намеренно не подмешиваем: он константа на категорию в
 # продакшен-данных (lead=70/market=45/content=32) и не различает качество

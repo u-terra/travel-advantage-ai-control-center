@@ -605,6 +605,62 @@ def test_radar_constraints_are_unchanged_by_ux_polish():
     assert "могу..." in joined  # уже существующее radar-правило, не новое
 
 
+# --- Radar UX / Content Quality: hook + фокус на конкретном сигнале ---
+
+def test_radar_spec_constraints_require_hook_from_the_specific_signal():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "hook" in joined or "зацепк" in joined
+    assert "source facts" in joined
+
+
+def test_radar_spec_constraints_forbid_generic_overview_article():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "обзорную статью" in joined
+    assert "именно про этот сигнал" in joined or "конкретный сигнал" in joined
+
+
+def test_radar_spec_constraints_give_example_posts_stronger_priority():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints)
+    assert "example_posts" in joined and "более сильный ориентир" in joined
+
+
+def test_radar_provider_request_includes_personal_style_avoid_phrases_and_examples():
+    from app.services.generation_request_builder import build_provider_generation_request
+
+    spec = MaterialOrchestrationService().build_radar_generation_spec(
+        10, profile(), title="Radar title", summary="Radar summary",
+        source_type="telegram", origin_type="publisher_post",
+        url="https://example.org/radar", category="content_signal", reason="reason",
+        user_preferences=user_preferences(),
+    )
+    request = build_provider_generation_request(spec)
+    assert "[PERSONAL STYLE - DATA]" in request.source_text
+    assert "Пишу с юмором" in request.source_text
+    assert "Пример поста" in request.source_text
+    assert "лучший тур" in request.source_text
+
+
+def test_radar_provider_request_preserves_signal_context():
+    from app.services.generation_request_builder import build_provider_generation_request
+
+    spec = radar_spec(profile(), text="Конкретное описание сигнала")
+    request = build_provider_generation_request(spec)
+    assert "Radar title" in request.source_text
+    assert "Конкретное описание сигнала" in request.source_text
+
+
+def test_radar_spec_unverified_claim_cannot_be_promoted_to_verified():
+    spec = radar_spec(profile())
+    with pytest.raises(GenerationSpecValidationError):
+        replace(spec, verified_claims_allowed=({
+            "text": "Unverified", "verification_status": "unverified",
+            "evidence_reference": None,
+        },))
+
+
 def test_personal_style_appears_in_provider_request_text():
     from app.services.generation_request_builder import build_provider_generation_request
 
