@@ -1032,6 +1032,31 @@ def test_free_text_general_content_task_generates_and_preserves_task_structure()
     assert "Персональный черновик" in message.answers[-1][0]
 
 
+def test_free_text_general_task_prompt_forbids_deferral_pattern_from_live_bug():
+    """Regression на живой prod-баг: на запрос с позиционированием, рубриками,
+    частотой публикаций, идеями вовлечения и контент-планом на 2 недели
+    модель ответила общими рассуждениями и фразой «Если нужен контент-план
+    на 2 недели...» вместо самого плана. Prompt должен явно запрещать такую
+    подмену и требовать вывести сам план целиком."""
+    text = (
+        "Разработай стратегию ведения моей туристической группы ВКонтакте "
+        "«Путешествуй выгодно». Нужны позиционирование, рубрики, частота "
+        "публикаций, идеи вовлечения и пример контент-плана на 2 недели."
+    )
+    message, provider, _, _ = run_regular_post(business_profile(), text=text)
+    provider.generate_draft.assert_called_once()
+    kwargs = provider.generate_draft.call_args.kwargs
+    request = kwargs["source_text"]
+    assert text in request
+    assert "если нужен план" in request.lower()
+    assert "вывести сам план" in request.lower()
+    # Явный запрос "контент-плана на 2 недели" уходит через уже
+    # существующий у Content Factory output_format="weekly_plan" (свой
+    # system prompt + удвоенный max_output_tokens), а не через "telegram".
+    assert kwargs["output_format"] == "weekly_plan"
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
 def test_partner_packaging_branch_looks_up_profile_for_tenant_scoping():
     """Partner Packaging обязан смотреть Business Profile workspace, чтобы
 

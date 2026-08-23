@@ -16,6 +16,10 @@ class GenerationAction(StrEnum):
 class OutputFormat(StrEnum):
     TELEGRAM = "telegram"
     VK = "vk"
+    # Content Factory уже поддерживает этот формат отдельно от "telegram":
+    # свой system prompt (weekly_content_plan_prompt.md) и удвоенный
+    # max_output_tokens — специально для многодневных/многонедельных планов.
+    WEEKLY_PLAN = "weekly_plan"
 
 
 class GenerationSpecValidationError(ValueError):

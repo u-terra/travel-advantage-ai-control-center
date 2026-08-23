@@ -567,6 +567,53 @@ def test_free_text_objective_lets_task_own_format_override_default_post():
     assert "по умолчанию" in joined and "обычного поста" in joined
 
 
+# --- Fix: task fulfillment — модель не должна подменять запрошенный пункт
+# (например, сам контент-план) фразой "если нужен план..." ---
+
+def test_free_text_objective_forbids_deferral_and_requires_full_plan_output():
+    from app.services.material_orchestration import _FREE_TEXT_OBJECTIVE
+
+    joined = _FREE_TEXT_OBJECTIVE.lower()
+    assert "если нужен план" in joined
+    assert "запрещено" in joined
+    assert "вывести сам план" in joined
+
+
+# --- Fix: используем уже существующий Content Factory output_format
+# "weekly_plan" (свой system prompt + удвоенный max_output_tokens) вместо
+# попытки компенсировать бюджет только prompt'ом ---
+
+def test_free_text_regular_post_uses_telegram_output_format():
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, "Нужен пост о путешествиях", profile(),
+    )
+    assert spec.output_format.value == "telegram"
+
+
+def test_free_text_general_task_without_plan_request_uses_telegram_output_format():
+    text = (
+        "Разработай стратегию ведения группы ВКонтакте. Нужны позиционирование, "
+        "рубрики и частота публикаций."
+    )
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, text, profile(),
+    )
+    assert spec.output_format.value == "telegram"
+
+
+def test_free_text_content_plan_request_uses_weekly_plan_output_format():
+    text = (
+        "Разработай стратегию ведения группы ВКонтакте. Нужны позиционирование, "
+        "рубрики, частота публикаций, идеи вовлечения и контент-план на 2 недели."
+    )
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, text, profile(),
+    )
+    assert spec.output_format.value == "weekly_plan"
+    # Полный исходный task_text сохраняется независимо от выбранного формата.
+    assert spec.untrusted_source_content == text
+
+
 def test_free_text_spec_untrusted_content_carries_full_task_text_unchanged():
     text = (
         "Разработай стратегию ведения группы ВКонтакте. Нужны позиционирование, "
