@@ -10,6 +10,7 @@ from app.services.business_profile_context import (
     build_content_context,
     build_limited_content_context,
 )
+from app.services.llm.models import SourceAnalysisPayload
 
 
 _OBJECTIVE = "Создать черновик материала по выбранному и разобранному источнику."
@@ -87,6 +88,31 @@ _CLIENT_REPLY_SAFETY_CONSTRAINT = (
     "конкретные условия нужно сверить вручную."
 )
 
+# Тот же базовый constraint + правила стиля именно для Radar-черновика: черновик
+# уходит пользователю как самостоятельный готовый пост, а не как ответ
+# ассистента, поэтому внутренние пометки о проверке и ассистентские концовки
+# в нём недопустимы. Не переиспользуется другими flow — только build_radar_generation_spec.
+_RADAR_CONSTRAINTS = (
+    "Черновик требует ручной проверки перед использованием.",
+    "Результат — самостоятельный готовый пост для соцсети, а не ответ ассистента пользователю.",
+    "Не включай в текст поста внутренние заметки о процессе: «нужно проверить», "
+    "«лучше перепроверить», «по исходному посту» и подобные формулировки.",
+    "Если конкретный факт из источника не подтверждён, не используй его или "
+    "сформулируй мысль без этого факта — без пометок о проверке внутри текста поста.",
+    "Не заканчивай пост фразами от имени ассистента: «могу...», «если хотите...», "
+    "«могу помочь...». Если в посте есть призыв к действию, он должен быть "
+    "органичной частью текста, а не отдельным предложением от ассистента.",
+    "Не придумывай факты, которых нет в источнике или в бизнес-контексте.",
+    "Утверждения, перечисленные в [SOURCE FACTS - DATA].disputed_claims, не "
+    "подтверждены — не подавай их как факт. Если нет уверенности, что "
+    "утверждение верно, не включай его в текст вообще, а не проси читателя "
+    "проверить это самому.",
+    "Если задан раздел [PERSONAL STYLE - DATA], учитывай style_description и "
+    "example_posts как ориентир тона и манеры речи, а avoid_phrases — как "
+    "прямой запрет на эти слова/обороты в тексте. Личный стиль не должен "
+    "противоречить бизнес-контексту, фактам источника и другим правилам выше.",
+)
+
 
 class MaterialOrchestrationService:
     """Build a provider-neutral spec from inputs authorized by the caller."""
@@ -100,6 +126,7 @@ class MaterialOrchestrationService:
         *,
         artifact_type: str,
         output_format: str,
+        user_preferences: WorkspaceUserPreferences | None = None,
     ) -> GenerationSpec:
         if source.workspace_id != workspace_id or analysis.workspace_id != workspace_id:
             raise PermissionError("Source и SourceAnalysis не принадлежат workspace")
@@ -129,6 +156,7 @@ class MaterialOrchestrationService:
             trusted_business_context=trusted_context,
             untrusted_source_content=source.original_text or "",
             tone_preferences=tone_preferences,
+            personal_style=_personal_style_values(user_preferences),
             verified_claims_allowed=tuple(verified),
             unverified_claims_requiring_caution=tuple(unverified),
             constraints=_CONSTRAINTS,
@@ -177,10 +205,20 @@ class MaterialOrchestrationService:
         url: str,
         category: str,
         reason: str,
+        analysis: SourceAnalysisPayload | None = None,
+        user_preferences: WorkspaceUserPreferences | None = None,
     ) -> GenerationSpec:
         trusted_context, tone_preferences, verified, unverified, revision = (
             _profile_generation_values(workspace_id, profile)
         )
+        # Тот же Source Analysis, что и в обычном Content Factory flow
+        # (llm_provider.analyze_source): disputed_claims/warnings идут в
+        # source_facts как DATA, а не как отдельный parallel-механизм анализа.
+        # analysis отсутствует (анализ недоступен/не выполнен) — fail-safe:
+        # просто нет структурированного списка спорных утверждений, а не
+        # пустые списки выдаются за "ничего спорного не найдено".
+        disputed_claims = analysis.disputed_claims if analysis is not None else ()
+        analysis_warnings = analysis.warnings if analysis is not None else ()
         return GenerationSpec(
             action_type=GenerationAction.CREATE_ARTIFACT,
             artifact_type="post",
@@ -195,15 +233,18 @@ class MaterialOrchestrationService:
                 "url": url,
                 "category": category,
                 "reason": reason,
+                "disputed_claims": disputed_claims,
+                "warnings": analysis_warnings,
             },
             trusted_business_context=trusted_context,
             untrusted_source_content="\n".join(
                 value for value in (title, summary) if value
             ),
             tone_preferences=tone_preferences,
+            personal_style=_personal_style_values(user_preferences),
             verified_claims_allowed=verified,
             unverified_claims_requiring_caution=unverified,
-            constraints=_CONSTRAINTS,
+            constraints=_RADAR_CONSTRAINTS,
             profile_revision_used=revision,
         )
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.services.lead_radar import (
     LeadSignal,
     build_summary,
+    build_workspace_signals,
     category_label,
 )
 from app.services.lead_radar import _is_allowed_row
@@ -78,3 +81,126 @@ def test_market_signal_label_in_summary():
 def test_unknown_category_uses_neutral_fallback():
     assert category_label("something_else") == "🔹 Сигнал интереса"
     assert category_label("") == "🔹 Сигнал интереса"
+
+
+# --- подпись lead_signal ---
+
+def test_lead_signal_label():
+    assert category_label("lead_signal") == "🎯 Вопрос клиента"
+
+
+# --- build_workspace_signals: freshness по смыслу категории + квоты 3/1/1 ---
+# ai_score сюда намеренно не подмешиваем: он константа на категорию в
+# продакшен-данных (lead=70/market=45/content=32) и не различает качество
+# внутри категории — единственный осмысленный критерий сейчас — свежесть.
+
+_ACTION_BY_CATEGORY = {
+    "lead_signal": "careful_reply",
+    "market_signal": "observe",
+    "content_signal": "content",
+}
+
+
+def _fake_recommender():
+    return SimpleNamespace(
+        recommend_action=lambda row: {
+            "recommended_action": _ACTION_BY_CATEGORY.get(row.get("ai_category"), "skip"),
+            "action_reason": "reason",
+        },
+        action_label=lambda action: action,
+    )
+
+
+def _ts(hours_ago: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+
+
+def _fake_record(category: str, hours_ago: float, interpretation_id: int = 1, **overrides):
+    base = dict(
+        interpretation_id=interpretation_id,
+        raw_created_at=_ts(hours_ago),
+        source_type="rss",
+        origin_type="publisher_post",
+        ai_score=50.0,
+        ai_category=category,
+        ai_reason="reason",
+        item_title=f"title {interpretation_id}",
+        item_summary="summary",
+        item_url=f"https://example.org/{interpretation_id}",
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _build(records, *, limit=5):
+    with patch(
+        "app.services.lead_radar._load_recommender", return_value=_fake_recommender()
+    ):
+        return build_workspace_signals(SimpleNamespace(), records, limit=limit)
+
+
+def test_lead_signal_older_than_72h_is_excluded():
+    records = [_fake_record("lead_signal", hours_ago=73)]
+    assert _build(records) == []
+
+
+def test_lead_signal_within_72h_is_included():
+    records = [_fake_record("lead_signal", hours_ago=71)]
+    assert [s.id for s in _build(records)] == [1]
+
+
+def test_market_signal_older_than_7_days_is_excluded():
+    records = [_fake_record("market_signal", hours_ago=24 * 7 + 1)]
+    assert _build(records) == []
+
+
+def test_market_signal_within_7_days_is_included():
+    records = [_fake_record("market_signal", hours_ago=24 * 7 - 1)]
+    assert [s.id for s in _build(records)] == [1]
+
+
+def test_content_signal_older_than_14_days_is_excluded():
+    records = [_fake_record("content_signal", hours_ago=24 * 14 + 1)]
+    assert _build(records) == []
+
+
+def test_content_signal_within_14_days_is_included():
+    records = [_fake_record("content_signal", hours_ago=24 * 14 - 1)]
+    assert [s.id for s in _build(records)] == [1]
+
+
+def test_quota_keeps_up_to_three_newest_lead_signals():
+    records = [
+        _fake_record("lead_signal", hours_ago=h, interpretation_id=i)
+        for i, h in enumerate([1, 2, 3, 4], start=1)
+    ]
+    result = _build(records)
+    # квота — 3, из четырёх свежих lead_signal остаются три самых новых
+    assert [s.id for s in result] == [1, 2, 3]
+
+
+def test_quota_is_three_one_one_across_categories():
+    records = (
+        [_fake_record("lead_signal", hours_ago=h, interpretation_id=i)
+         for i, h in enumerate([1, 2, 3, 4], start=1)]
+        + [_fake_record("market_signal", hours_ago=h, interpretation_id=i)
+           for i, h in enumerate([1, 2], start=10)]
+        + [_fake_record("content_signal", hours_ago=h, interpretation_id=i)
+           for i, h in enumerate([1, 2], start=20)]
+    )
+    result = _build(records)
+    assert [s.id for s in result] == [1, 2, 3, 10, 20]
+
+
+def test_missing_category_is_not_backfilled_by_another():
+    records = [_fake_record("market_signal", hours_ago=1, interpretation_id=10)]
+    result = _build(records)
+    assert [s.id for s in result] == [10]
+
+
+def test_result_can_be_shorter_than_five_signals():
+    records = [
+        _fake_record("lead_signal", hours_ago=1, interpretation_id=1),
+        _fake_record("lead_signal", hours_ago=2, interpretation_id=2),
+    ]
+    assert len(_build(records)) == 2

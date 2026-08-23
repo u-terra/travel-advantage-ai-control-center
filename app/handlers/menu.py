@@ -58,9 +58,11 @@ from app.services.lead_radar import (
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
+from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.user_style import UserStyleService
 from app.storage import Journal
 
 router = Router(name="menu")
@@ -72,6 +74,14 @@ _DRAFT_MODE = "ai"
 _RADAR_ARTIFACT_FAILURE = (
     "⚠️ Материал создан, но сохранить его в «Мои материалы» не удалось. "
     "Скопируйте текст ниже, чтобы не потерять его."
+)
+# Fail-closed (не fail-open): без Source Analysis нет disputed_claims и Stage 1
+# Content Quality Gate не может дать никаких гарантий про черновик — значит
+# черновик вообще не генерируется, а не генерируется непроверенным.
+_RADAR_ANALYSIS_UNAVAILABLE = (
+    "⚠️ Сейчас не удалось проверить исходный материал.\n"
+    "Черновик не создан, чтобы не передавать вам непроверенные сведения.\n"
+    "Попробуйте ещё раз позже."
 )
 
 
@@ -453,6 +463,30 @@ async def on_radar_content_selected(
     profile = await partner_repository.get_business_profile(
         workspace_context.workspace_id
     )
+    # Stage 3B1: личный стиль ТЕКУЩЕГО пользователя (не workspace) — читает
+    # свою же запись по (workspace_id, telegram_user_id) из workspace_context.
+    user_preferences = await UserStyleService(partner_repository).get(workspace_context)
+
+    # Stage 1 Content Quality Gate: переиспользуем существующий Source
+    # Analysis (тот же llm_provider.analyze_source(), что и в обычном
+    # Content Factory flow) до генерации черновика, а не отдельный
+    # параллельный механизм.
+    radar_source_text = "\n".join(
+        value for value in (record.item_title, record.item_summary) if value
+    )
+    analysis = await asyncio.to_thread(
+        llm_provider.analyze_source, source_text=radar_source_text
+    )
+    if analysis is None:
+        # Fail-closed: сеть/таймаут/ошибка анализа — генерация не запускается
+        # вообще (generate_draft() ниже не вызывается), Artifact не создаётся.
+        # Пользователю — короткое сообщение без технических деталей.
+        await callback.answer("Готовлю черновик…")
+        if callback.message is not None:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(_RADAR_ANALYSIS_UNAVAILABLE)
+        return
+
     spec = MaterialOrchestrationService().build_radar_generation_spec(
         workspace_context.workspace_id,
         profile,
@@ -463,6 +497,8 @@ async def on_radar_content_selected(
         url=record.item_url,
         category=record.ai_category or "",
         reason=record.ai_reason or signal.action_reason,
+        analysis=analysis,
+        user_preferences=user_preferences,
     )
     request = build_provider_generation_request(spec)
     task_text = f"Radar draft: {signal.title}"
@@ -470,10 +506,6 @@ async def on_radar_content_selected(
     await callback.answer("Готовлю черновик…")
     if callback.message is not None:
         await callback.message.edit_reply_markup(reply_markup=None)
-        await callback.message.answer(
-            "🧩 Маршрут: Travel Lead Radar → Travel Content Factory → "
-            "ручная проверка."
-        )
 
     await journal.add(
         workspace_context.workspace_id,
@@ -501,10 +533,25 @@ async def on_radar_content_selected(
         )
         return
 
+    # Stage 1 Content Quality Gate: детерминированная зачистка ДО показа и ДО
+    # сохранения Artifact — не warning постфактум, а реальное удаление
+    # ассистентских концовок, мета-фраз о процессе и предложений, дословно
+    # пересказывающих disputed_claims (см. app/services/draft_sanitizer.py).
+    sanitized_text = sanitize_draft_text(
+        draft.text,
+        disputed_claims=analysis.disputed_claims if analysis is not None else (),
+    )
+    if not sanitized_text:
+        await callback.message.answer(
+            "Не удалось получить черновик автоматически. "
+            "Можно открыть Travel Content Factory вручную."
+        )
+        return
+
     lines: list[str] = [
         "📝 Черновик по идее из Radar — для ручной проверки",
         "",
-        draft.text,
+        sanitized_text,
     ]
     if draft.warnings:
         lines.append("")
@@ -520,7 +567,7 @@ async def on_radar_content_selected(
             workspace_context.workspace_id,
             artifact_type=spec.artifact_type,
             title=f"Telegram: {signal.title}",
-            content=draft.text,
+            content=sanitized_text,
             generation_note=f"Lead Radar: {request.material_type}/{request.output_format}",
         )
     except Exception:

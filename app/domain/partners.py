@@ -52,3 +52,21 @@ class UserConsent:
     telegram_user_id: int
     consent_version: str
     accepted_at: str
+
+
+@dataclass(frozen=True)
+class WorkspaceUserPreferences:
+    """Stage 3B1: личный стиль КОНКРЕТНОГО пользователя внутри workspace —
+
+    отдельно от BusinessProfile (стиль компании). Ключ — (workspace_id,
+    telegram_user_id): один и тот же Telegram-пользователь в разных
+    workspace получает независимые записи, и разные пользователи одного
+    workspace не видят чужой стиль/примеры.
+    """
+    workspace_id: int
+    telegram_user_id: int
+    style_description: str
+    example_posts: tuple[str, ...]
+    avoid_phrases: tuple[str, ...]
+    created_at: str
+    updated_at: str

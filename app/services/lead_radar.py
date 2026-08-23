@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -51,12 +51,31 @@ _ACTION_PRIORITY: dict[str, int] = {
     "content": 2,
 }
 
+# Свежесть по смыслу типа сигнала — вопрос клиента "протухает" за часы,
+# рыночная новость остаётся релевантной дольше, контентная тема — ещё дольше.
+# ai_score здесь не участвует: это константа на категорию (lead=70/market=45/
+# content=32 у всей продакшен-истории), а не оценка качества конкретной записи.
+_ACTION_FRESHNESS_HOURS: dict[str, float] = {
+    "careful_reply": 72.0,
+    "observe": 24.0 * 7,
+    "content": 24.0 * 14,
+}
+
+# Квота итоговой выдачи по типу сигнала. Отсутствующая категория НЕ
+# добивается другой — итог может быть короче суммы квот.
+_ACTION_QUOTA: dict[str, int] = {
+    "careful_reply": 3,
+    "observe": 1,
+    "content": 1,
+}
+
 # Категория из Lead Radar (`ai_category`), которую вообще не показываем.
 _NOISE_CATEGORY = "noise"
 
 # Человекочитаемый тип сигнала по его категории. Для незнакомых категорий
 # остаётся нейтральный fallback — без агрессивных формулировок.
 _CATEGORY_LABELS: dict[str, str] = {
+    "lead_signal": "🎯 Вопрос клиента",
     "content_signal": "💡 Тема для контента",
     "market_signal": "👀 Наблюдать рынок",
 }
@@ -157,6 +176,32 @@ def _is_fresh(created_at: object) -> bool:
         return False
 
     return created_date >= date.today() - timedelta(days=_FRESH_DAYS)
+
+
+def _hours_old(created_at: object) -> Optional[float]:
+    """Сколько часов прошло с created_at, или None если дату не разобрать."""
+    raw = str(created_at or "").strip()
+    if not raw:
+        return None
+    normalized = raw.replace(" ", "T", 1) if "T" not in raw else raw
+    try:
+        created = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - created).total_seconds() / 3600.0
+
+
+def _is_within_action_freshness(action: str, created_at: object) -> bool:
+    """Свежесть по смыслу типа сигнала (см. _ACTION_FRESHNESS_HOURS)."""
+    limit_hours = _ACTION_FRESHNESS_HOURS.get(action)
+    if limit_hours is None:
+        return True
+    hours = _hours_old(created_at)
+    if hours is None:
+        return False
+    return hours <= limit_hours
 
 
 def _row_text(row: dict[str, object]) -> str:
@@ -316,7 +361,7 @@ def build_workspace_signals(
     if not callable(recommend_action) or not callable(action_label_fn):
         return None
 
-    signals: list[LeadSignal] = []
+    by_action: dict[str, list[LeadSignal]] = {action: [] for action in _ACTION_PRIORITY}
     for record in records:
         row = {
             "created_at": record.raw_created_at,
@@ -338,11 +383,13 @@ def build_workspace_signals(
         action = (info or {}).get("recommended_action") or ""
         if action not in _ACTION_PRIORITY:
             continue
+        if not _is_within_action_freshness(action, record.raw_created_at):
+            continue
         try:
             label = action_label_fn(action) or action
         except Exception:
             label = action
-        signals.append(LeadSignal(
+        by_action[action].append(LeadSignal(
             id=record.interpretation_id,
             created_at=record.raw_created_at,
             source_type=record.source_type,
@@ -354,8 +401,14 @@ def build_workspace_signals(
             action_label=str(label),
             action_reason=str((info or {}).get("action_reason") or "").strip(),
         ))
-    signals.sort(key=lambda signal: signal.created_at, reverse=True)
-    signals.sort(key=lambda signal: _ACTION_PRIORITY[signal.recommended_action])
+
+    # Квота на bucket, без добивки отсутствующей категории другой. ai_score
+    # здесь намеренно не участвует (см. _ACTION_FRESHNESS_HOURS выше) — внутри
+    # bucket'а единственный осмысленный критерий сейчас — свежесть.
+    signals: list[LeadSignal] = []
+    for action in sorted(_ACTION_PRIORITY, key=_ACTION_PRIORITY.get):
+        bucket = sorted(by_action[action], key=lambda signal: signal.created_at, reverse=True)
+        signals.extend(bucket[: _ACTION_QUOTA.get(action, limit)])
     return signals[: max(1, min(limit, _MAX_LIMIT))]
 
 

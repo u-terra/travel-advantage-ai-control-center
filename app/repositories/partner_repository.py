@@ -415,6 +415,147 @@ class PartnerRepository:
             )).fetchone()
         return row is not None
 
+    # ── Stage 3B1: личный стиль пользователя (workspace_id, telegram_user_id) ──
+
+    async def get_user_preferences(
+        self, workspace_id: int, telegram_user_id: int
+    ) -> WorkspaceUserPreferences | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await self._user_preferences_row(db, workspace_id, telegram_user_id)
+        return _user_preferences_from_row(row) if row is not None else None
+
+    async def set_user_style_description(
+        self, workspace_id: int, telegram_user_id: int, style_description: str
+    ) -> WorkspaceUserPreferences:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                current = await self._user_preferences_row(db, workspace_id, telegram_user_id)
+                row = await self._save_user_preferences(
+                    db, workspace_id, telegram_user_id,
+                    style_description=style_description.strip(),
+                    example_posts=_current_list(current, "example_posts"),
+                    avoid_phrases=_current_list(current, "avoid_phrases"),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _user_preferences_from_row(row)
+
+    async def add_user_example_post(
+        self, workspace_id: int, telegram_user_id: int, text: str
+    ) -> WorkspaceUserPreferences:
+        cleaned = text.strip()
+        if not cleaned:
+            raise ValueError("Пример текста не должен быть пустым")
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                current = await self._user_preferences_row(db, workspace_id, telegram_user_id)
+                examples = _current_list(current, "example_posts")
+                if len(examples) >= MAX_USER_EXAMPLE_POSTS:
+                    raise TooManyUserExamplesError(
+                        f"Уже сохранено максимум {MAX_USER_EXAMPLE_POSTS} примеров"
+                    )
+                examples.append(cleaned)
+                row = await self._save_user_preferences(
+                    db, workspace_id, telegram_user_id,
+                    style_description=_current_style(current),
+                    example_posts=examples,
+                    avoid_phrases=_current_list(current, "avoid_phrases"),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _user_preferences_from_row(row)
+
+    async def clear_user_example_posts(
+        self, workspace_id: int, telegram_user_id: int
+    ) -> WorkspaceUserPreferences:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                current = await self._user_preferences_row(db, workspace_id, telegram_user_id)
+                row = await self._save_user_preferences(
+                    db, workspace_id, telegram_user_id,
+                    style_description=_current_style(current),
+                    example_posts=[],
+                    avoid_phrases=_current_list(current, "avoid_phrases"),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _user_preferences_from_row(row)
+
+    async def set_user_avoid_phrases(
+        self, workspace_id: int, telegram_user_id: int, phrases: list[str]
+    ) -> WorkspaceUserPreferences:
+        cleaned = [phrase.strip() for phrase in phrases if phrase.strip()]
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                current = await self._user_preferences_row(db, workspace_id, telegram_user_id)
+                row = await self._save_user_preferences(
+                    db, workspace_id, telegram_user_id,
+                    style_description=_current_style(current),
+                    example_posts=_current_list(current, "example_posts"),
+                    avoid_phrases=cleaned,
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _user_preferences_from_row(row)
+
+    @staticmethod
+    async def _user_preferences_row(
+        db: aiosqlite.Connection, workspace_id: int, telegram_user_id: int
+    ) -> aiosqlite.Row | None:
+        cursor = await db.execute(
+            "SELECT * FROM workspace_user_preferences "
+            "WHERE workspace_id = ? AND telegram_user_id = ?",
+            (workspace_id, telegram_user_id),
+        )
+        return await cursor.fetchone()
+
+    @staticmethod
+    async def _save_user_preferences(
+        db: aiosqlite.Connection, workspace_id: int, telegram_user_id: int,
+        *, style_description: str, example_posts: list[str], avoid_phrases: list[str],
+    ) -> aiosqlite.Row:
+        now = _now()
+        await db.execute(
+            "INSERT INTO workspace_user_preferences "
+            "(workspace_id, telegram_user_id, style_description, example_posts, "
+            "avoid_phrases, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(workspace_id, telegram_user_id) DO UPDATE SET "
+            "style_description = excluded.style_description, "
+            "example_posts = excluded.example_posts, "
+            "avoid_phrases = excluded.avoid_phrases, "
+            "updated_at = excluded.updated_at",
+            (
+                workspace_id, telegram_user_id, style_description,
+                json.dumps(example_posts, ensure_ascii=False),
+                json.dumps(avoid_phrases, ensure_ascii=False), now, now,
+            ),
+        )
+        row = await PartnerRepository._user_preferences_row(db, workspace_id, telegram_user_id)
+        if row is None:
+            raise RuntimeError("Не удалось сохранить предпочтения пользователя")
+        return row
+
     async def provision_partner(
         self,
         telegram_user_id: int,
@@ -1358,6 +1499,26 @@ def _consent_from_row(row: aiosqlite.Row) -> UserConsent:
         telegram_user_id=row["telegram_user_id"],
         consent_version=row["consent_version"], accepted_at=row["accepted_at"],
     )
+
+
+def _user_preferences_from_row(row: aiosqlite.Row) -> WorkspaceUserPreferences:
+    return WorkspaceUserPreferences(
+        workspace_id=row["workspace_id"], telegram_user_id=row["telegram_user_id"],
+        style_description=row["style_description"] or "",
+        example_posts=tuple(json.loads(row["example_posts"])),
+        avoid_phrases=tuple(json.loads(row["avoid_phrases"])),
+        created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def _current_list(row: aiosqlite.Row | None, field: str) -> list[str]:
+    if row is None:
+        return []
+    return list(json.loads(row[field]))
+
+
+def _current_style(row: aiosqlite.Row | None) -> str:
+    return "" if row is None else str(row["style_description"] or "")
 
 
 def _validate_consent_values(

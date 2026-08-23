@@ -16,7 +16,7 @@ from app.keyboards import ARTIFACT_CHECK_PREFIX, BTN_V2_MAIN_MENU, active_main_m
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.routing.modules import Module
-from app.services.llm.models import ContentDraft
+from app.services.llm.models import ContentDraft, SourceAnalysisPayload
 from app.storage import JournalEntry
 from tests.llm_fakes import FakeLLMProvider
 
@@ -253,7 +253,7 @@ def test_foreign_interpretation_callback_fails_closed() -> None:
 def test_radar_handler_passes_workspace_id_without_changing_flow() -> None:
     current_journal = journal()
     state = State({"radar_content_ideas": [{"title": "Тема"}]})
-    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()), analysis=analysis_payload())
     callback = Callback()
     record = SimpleNamespace(
         interpretation_id=7, raw_created_at=date.today().isoformat(), source_type="rss",
@@ -299,6 +299,41 @@ def test_radar_handler_passes_workspace_id_without_changing_flow() -> None:
     assert check_button.callback_data == f"{ARTIFACT_CHECK_PREFIX}501"
 
 
+def test_radar_content_selected_does_not_show_technical_route_card() -> None:
+    """UX: карточка "🧩 Маршрут: Travel Lead Radar → Travel Content Factory →
+    ручная проверка" — внутренняя техническая информация, пользователю после
+    выбора идеи её показывать не нужно (в отличие от on_find_signals, где
+    route_card() показывается сразу после нажатия "Найти сигналы")."""
+    current_journal = journal()
+    state = State({"radar_content_ideas": [{"title": "Тема"}]})
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()), analysis=analysis_payload())
+    callback = Callback()
+    record = SimpleNamespace(
+        interpretation_id=7, raw_created_at=date.today().isoformat(), source_type="rss",
+        origin_type="publisher_post", ai_score=72.0,
+        ai_category="market_signal", ai_reason="релевантно",
+        item_title="Тема", item_summary="Описание", item_url="https://example.org/1",
+    )
+    repository = signal_repository(record)
+    artifacts = artifact_repository(artifact_id=501)
+
+    with patch("app.services.lead_radar._load_recommender") as load:
+        load.return_value = SimpleNamespace(
+            recommend_action=lambda row: {
+                "recommended_action": "content",
+                "action_reason": "Подходит",
+            },
+            action_label=lambda action: "Создать контент",
+        )
+        run(on_radar_content_selected(
+            callback, state, current_journal, provider, context(31),
+            repository, radar_config(), profile_repository(), artifacts,
+        ))
+
+    all_texts = [text for text, _ in callback.message.answers]
+    assert not any("Маршрут" in (text or "") for text in all_texts)
+
+
 def radar_record(*, summary="Описание", title="Тема"):
     return SimpleNamespace(
         interpretation_id=7, raw_created_at=date.today().isoformat(), source_type="rss",
@@ -308,15 +343,33 @@ def radar_record(*, summary="Описание", title="Тема"):
     )
 
 
+def analysis_payload(*, disputed_claims=(), warnings=()):
+    return SourceAnalysisPayload(
+        summary="summary", key_facts=(), disputed_claims=disputed_claims,
+        audience_value="value", target_audiences=(), content_angles=(),
+        recommended_formats=(), warnings=warnings,
+    )
+
+
+# Sentinel: run_radar(...) без явного analysis=... эмулирует УСПЕШНЫЙ Source
+# Analysis (обычный путь). Чтобы протестировать fail-closed на analysis=None,
+# нужно передать analysis=None явно — это не то же самое, что "не указано".
+_ANALYSIS_DEFAULT = object()
+
+
 def run_radar(
     profile=None, *, workspace_id=42, record=None, draft="Radar draft",
-    artifact_repo=None,
+    artifact_repo=None, analysis=_ANALYSIS_DEFAULT, user_preferences=None,
 ):
+    if analysis is _ANALYSIS_DEFAULT:
+        analysis = analysis_payload()
     callback = Callback()
     provider = FakeLLMProvider(
-        draft=None if draft is None else ContentDraft(draft, ())
+        draft=None if draft is None else ContentDraft(draft, ()),
+        analysis=analysis,
     )
     profiles = profile_repository(profile)
+    profiles.get_user_preferences = AsyncMock(return_value=user_preferences)
     repository = signal_repository(record or radar_record())
     current_journal = journal()
     artifacts = artifact_repo if artifact_repo is not None else artifact_repository()
@@ -334,6 +387,196 @@ def run_radar(
     return callback, provider, profiles, repository, current_journal
 
 
+# --- Stage 1 Content Quality Gate: Source Analysis + disputed_claims ---
+
+def test_radar_calls_source_analysis_before_generation():
+    events = []
+    payload = analysis_payload()
+    callback = Callback()
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()), analysis=payload)
+    provider.analyze_source.side_effect = lambda **kw: events.append("analyze") or payload
+    provider.generate_draft.side_effect = (
+        lambda **kw: events.append("generate") or ContentDraft("Черновик", ())
+    )
+    repository = signal_repository(radar_record(title="Тема", summary="Описание источника"))
+    artifacts = artifact_repository()
+    with patch("app.services.lead_radar._load_recommender") as load:
+        load.return_value = SimpleNamespace(
+            recommend_action=lambda row: {
+                "recommended_action": "content", "action_reason": "Подходит",
+            },
+            action_label=lambda action: "Создать контент",
+        )
+        run(on_radar_content_selected(
+            callback, State(), journal(), provider, context(42),
+            repository, radar_config(), profile_repository(), artifacts,
+        ))
+    assert events == ["analyze", "generate"]
+    provider.analyze_source.assert_called_once_with(source_text="Тема\nОписание источника")
+
+
+def test_radar_disputed_claims_reach_generation_spec():
+    payload = analysis_payload(disputed_claims=("Спорное утверждение из источника",))
+    _, provider, _, _, _ = run_radar(analysis=payload)
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    assert "Спорное утверждение из источника" in request
+    assert '"disputed_claims"' in request
+
+
+# --- Stage 1 Content Quality Gate: детерминированная зачистка draft.text ---
+
+def test_radar_assistant_style_ending_is_removed_before_user_sees_it():
+    draft_text = (
+        "Петроглифы в Карелии — уникальный памятник наскального искусства.\n"
+        "Могу сравнить варианты поездки в Карелию."
+    )
+    callback, _, _, _, _ = run_radar(draft=draft_text)
+    shown = callback.message.answers[-1][0]
+    assert "Могу сравнить" not in shown
+    assert "уникальный памятник наскального искусства" in shown
+
+
+def test_radar_meta_process_phrase_is_removed_before_user_sees_it():
+    draft_text = (
+        "Цены на туры выросли в этом сезоне.\n"
+        "Эту деталь лучше перепроверить отдельно.\n"
+        "Планируйте бюджет заранее."
+    )
+    callback, _, _, _, _ = run_radar(draft=draft_text)
+    shown = callback.message.answers[-1][0]
+    assert "перепроверить" not in shown
+    assert "Цены на туры выросли в этом сезоне." in shown
+    assert "Планируйте бюджет заранее." in shown
+
+
+def test_radar_natural_cta_is_not_damaged():
+    draft_text = (
+        "Съездить в Карелию можно уже этим летом.\n"
+        "Бронируйте билеты заранее, пока цены не выросли."
+    )
+    callback, _, _, _, _ = run_radar(draft=draft_text)
+    shown = callback.message.answers[-1][0]
+    assert "Съездить в Карелию можно уже этим летом." in shown
+    assert "Бронируйте билеты заранее, пока цены не выросли." in shown
+
+
+def test_radar_disputed_claim_does_not_reach_final_text():
+    draft_text = (
+        "Петроглифы старше египетских пирамид.\n"
+        "Добраться можно поездом Арктика из Москвы."
+    )
+    payload = analysis_payload(disputed_claims=("Петроглифы старше египетских пирамид",))
+    callback, _, _, _, _ = run_radar(draft=draft_text, analysis=payload)
+    shown = callback.message.answers[-1][0]
+    assert "пирамид" not in shown
+    assert "Добраться можно поездом Арктика из Москвы." in shown
+
+
+def test_radar_artifact_stores_sanitized_text_not_raw_draft():
+    draft_text = (
+        "Петроглифы старше египетских пирамид.\n"
+        "Добраться можно поездом Арктика из Москвы.\n"
+        "Могу сравнить варианты поездки."
+    )
+    payload = analysis_payload(disputed_claims=("Петроглифы старше египетских пирамид",))
+    artifacts = artifact_repository(artifact_id=777)
+    run_radar(draft=draft_text, analysis=payload, artifact_repo=artifacts)
+    saved_content = artifacts.create_artifact_with_initial_version.call_args.kwargs["content"]
+    assert "пирамид" not in saved_content
+    assert "Могу сравнить" not in saved_content
+    assert "Добраться можно поездом Арктика из Москвы." in saved_content
+    assert saved_content != draft_text
+
+
+def test_radar_sanitized_to_empty_draft_fails_safe_like_missing_draft():
+    # Весь черновик — одна ассистентская концовка: после зачистки текста не
+    # остаётся, и это должно обрабатываться как "не удалось получить
+    # черновик", а не показываться пользователю пустым/сохраняться в Artifact.
+    artifacts = artifact_repository(artifact_id=999)
+    callback, _, _, _, _ = run_radar(
+        draft="Могу помочь с этим.", artifact_repo=artifacts,
+    )
+    assert "Не удалось получить черновик автоматически" in callback.message.answers[-1][0]
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+
+
+# --- Stage 3B1: Radar draft использует личный стиль пользователя -----------
+
+def test_16_radar_draft_uses_personal_style():
+    from app.domain.partners import WorkspaceUserPreferences
+
+    prefs = WorkspaceUserPreferences(
+        workspace_id=42, telegram_user_id=100, style_description="Пишу с юмором",
+        example_posts=("Мой пример поста",), avoid_phrases=("лучший тур",),
+        created_at="now", updated_at="now",
+    )
+    _, provider, _, _, _ = run_radar(user_preferences=prefs)
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    assert "[PERSONAL STYLE - DATA]" in request
+    assert "Пишу с юмором" in request
+    assert "Мой пример поста" in request
+    assert "лучший тур" in request
+
+
+def test_radar_draft_without_personal_style_record_still_works():
+    """Существующий пользователь без personal-style записи — не регрессирует."""
+    _, provider, _, _, _ = run_radar(user_preferences=None)
+    provider.generate_draft.assert_called_once()
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    assert '[PERSONAL STYLE - DATA]\n{}' in request
+
+
+# --- Stage 1: analyze_source() -> None должен быть fail-closed, не fail-open ---
+
+def test_radar_missing_analysis_does_not_call_generate_draft():
+    _, provider, _, _, _ = run_radar(analysis=None)
+    provider.analyze_source.assert_called_once()
+    provider.generate_draft.assert_not_called()
+
+
+def test_radar_missing_analysis_does_not_create_artifact():
+    artifacts = artifact_repository(artifact_id=555)
+    run_radar(analysis=None, artifact_repo=artifacts)
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+
+
+def test_radar_missing_analysis_shows_clear_user_message_without_technical_details():
+    callback, _, _, _, _ = run_radar(analysis=None)
+    shown = callback.message.answers[-1][0]
+    assert "не удалось проверить исходный материал" in shown.lower()
+    assert "черновик не создан" in shown.lower()
+    for forbidden in ("None", "Exception", "Traceback", "openai", "content_factory", "timeout"):
+        assert forbidden not in shown
+
+
+def test_radar_missing_analysis_does_not_write_technical_route_or_progress_leftovers():
+    # Убеждаемся, что при fail-closed пользователю не остаётся ничего, кроме
+    # понятного сообщения — ни черновика, ни служебных карточек маршрута.
+    callback, _, _, _, _ = run_radar(analysis=None)
+    all_texts = [text for text, _ in callback.message.answers]
+    assert not any("Черновик по идее из Radar" in (text or "") for text in all_texts)
+    assert not any("Маршрут" in (text or "") for text in all_texts)
+
+
+def test_radar_successful_analysis_still_generates_draft_as_before():
+    # Регрессия: явный успешный analysis (как и default в run_radar) обязан
+    # продолжать обычный pipeline — fail-closed не должен зацепить happy path.
+    callback, provider, _, _, _ = run_radar(analysis=analysis_payload())
+    provider.generate_draft.assert_called_once()
+    assert "Radar draft" in callback.message.answers[-1][0]
+
+
+def test_other_flows_are_not_affected_by_radar_fail_closed_gate():
+    # analyze_source вообще не подключён к free-text/client-reply flow — эти
+    # тесты уже покрывают их отдельно (test_free_text_*, test_client_reply_*),
+    # здесь дополнительно фиксируем: FakeLLMProvider без analysis по умолчанию
+    # (analysis=None) не мешает другим хендлерам, которые analyze_source не
+    # вызывают вовсе.
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    assert provider.analyze_source(source_text="x") is None
+    provider.generate_draft.assert_not_called()
+
+
 def test_radar_usable_profile_personalizes_provider_request_after_authorization():
     events = []
     record = radar_record()
@@ -343,7 +586,7 @@ def test_radar_usable_profile_personalizes_provider_request_after_authorization(
     profiles.get_business_profile.side_effect = (
         lambda *args: events.append("profile") or business_profile()
     )
-    provider = FakeLLMProvider(draft=ContentDraft("Draft", ()))
+    provider = FakeLLMProvider(draft=ContentDraft("Draft", ()), analysis=analysis_payload())
     with patch("app.services.lead_radar._load_recommender") as load:
         load.return_value = SimpleNamespace(
             recommend_action=lambda row: {"recommended_action": "content", "action_reason": "Подходит"},
@@ -440,11 +683,11 @@ def test_radar_artifact_persistence_failure_shows_no_false_success():
         artifact_repo=artifacts, draft="Уникальный черновик радара",
     )
     provider.generate_draft.assert_called_once()
-    # answers[0] — уже существующая карточка маршрута ("🧩 Маршрут: ..."),
-    # отправляемая до генерации черновика и не относящаяся к Stage 2D.
-    assert len(callback.message.answers) == 3
-    warning_text, _ = callback.message.answers[1]
-    draft_text, draft_kwargs = callback.message.answers[2]
+    # Техническая карточка маршрута ("🧩 Маршрут: ...") в этом flow не
+    # показывается пользователю — остаются только предупреждение и черновик.
+    assert len(callback.message.answers) == 2
+    warning_text, _ = callback.message.answers[0]
+    draft_text, draft_kwargs = callback.message.answers[1]
 
     # Stage 2D: сгенерированный текст не теряется — пользователь получает его
     # вместе с честным предупреждением, что сохранить материал не удалось.
@@ -475,9 +718,9 @@ def test_radar_persistence_failure_does_not_grow_draft_message_beyond_success_pa
     artifacts.create_artifact_with_initial_version.side_effect = RuntimeError("private")
     callback, _, _, _, _ = run_radar(artifact_repo=artifacts, draft=near_limit_draft)
 
-    assert len(callback.message.answers) == 3
-    warning_text, _ = callback.message.answers[1]
-    draft_text, _ = callback.message.answers[2]
+    assert len(callback.message.answers) == 2
+    warning_text, _ = callback.message.answers[0]
+    draft_text, _ = callback.message.answers[1]
 
     expected_draft_text = "\n".join([
         "📝 Черновик по идее из Radar — для ручной проверки", "", near_limit_draft,
