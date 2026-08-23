@@ -975,6 +975,42 @@ def test_non_regular_post_branches_do_not_lookup_profile_or_personalize(text):
     provider.generate_draft.assert_not_called()
 
 
+# --- Fix: CONTENT_FACTORY free-text больше не требует буквального слова
+# "пост" (см. app/handlers/tasks.py::_maybe_send_draft) — раньше корректно
+# классифицированные задачи вроде "разработай стратегию..." молча
+# отбрасывались без единого ответа пользователю. ---
+
+def test_free_text_post_keyword_still_generates_draft():
+    """1) Регрессия: явное «...пост...» по-прежнему генерирует черновик."""
+    message, provider, _, _ = run_regular_post(
+        business_profile(), text="Нужен пост о путешествиях",
+    )
+    provider.generate_draft.assert_called_once()
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+def test_free_text_content_factory_task_without_post_keyword_now_generates_draft():
+    """2) Fix: CONTENT_FACTORY-задача без слова "пост" ("стратегия",
+    "контент-план") теперь тоже генерирует черновик и получает ответ."""
+    text = (
+        "Разработай стратегию ведения группы ВКонтакте: контент-план на две "
+        "недели, рубрики и частота публикаций."
+    )
+    message, provider, _, _ = run_regular_post(business_profile(), text=text)
+    provider.generate_draft.assert_called_once()
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+def test_free_text_safety_gated_content_task_still_does_not_bypass_safety():
+    """3) Safety не ослаблена: CONTENT_FACTORY-текст с safety_level выше
+    NOT_REQUIRED (здесь — MANDATORY через "тариф") по-прежнему не уходит в
+    автогенерацию обычного free-text черновика."""
+    message, provider, _, _ = run_regular_post(
+        business_profile(), text="Нужен пост о тарифах Travel Advantage",
+    )
+    provider.generate_draft.assert_not_called()
+
+
 def test_partner_packaging_branch_looks_up_profile_for_tenant_scoping():
     """Partner Packaging обязан смотреть Business Profile workspace, чтобы
 

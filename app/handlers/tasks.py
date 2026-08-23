@@ -30,14 +30,6 @@ router = Router(name="tasks")
 
 _DRAFT_MODE = "ai"
 
-_NON_POST_FORMAT_MARKERS: tuple[str, ...] = (
-    "reels", "рилс", "рилз",
-    "stories", "сторис",
-    "сценар",
-    "контент-план", "контент план",
-)
-_POST_MARKERS: tuple[str, ...] = ("пост",)
-
 _DRAFT_FAILURE_MESSAGE = (
     "Не удалось получить черновик автоматически. "
     "Можно открыть Travel Content Factory вручную."
@@ -493,12 +485,6 @@ async def _send_text_check(
 
 
 
-def _is_regular_post(text_lower: str) -> bool:
-    if any(marker in text_lower for marker in _NON_POST_FORMAT_MARKERS):
-        return False
-    return any(marker in text_lower for marker in _POST_MARKERS)
-
-
 _CLIENT_REPLY_HEADING = "💬 Черновик ответа клиенту — для ручной проверки"
 
 
@@ -514,10 +500,14 @@ async def _maybe_send_draft(
     reply_context: ReplyBridgeContext | None = None,
 ) -> None:
     workspace_id = workspace_context.workspace_id
+    # Radar UX / free-text fix: раньше сюда дополнительно требовалось буквальное
+    # слово "пост" (_is_regular_post) — из-за этого корректно
+    # классифицированные CONTENT_FACTORY-задачи без слова "пост" ("разработай
+    # стратегию...", "сделай контент-план...") молча отбрасывались без ответа
+    # пользователю. Теперь единственный gate — сам primary_module и Safety.
     is_regular_post = (
         decision.primary_module is Module.CONTENT_FACTORY
         and decision.safety_level is SafetyLevel.NOT_REQUIRED
-        and _is_regular_post(decision.task_text.lower())
     )
     is_client_reply = decision.primary_module is Module.TRAVEL_ASSISTANT
     if not is_regular_post and not is_client_reply:
