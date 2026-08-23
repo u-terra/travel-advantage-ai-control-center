@@ -6,11 +6,20 @@ from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 
 from app.domain.business_profiles import BusinessClaim, BusinessContext, BusinessProfile
 from app.domain.partners import WorkspaceContext, WorkspaceUserPreferences
 from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected
-from app.handlers.tasks import _looks_like_client_message, on_free_text, on_task_after_button
+from app.handlers.tasks import (
+    _DRAFT_FAILURE_MESSAGE,
+    _DRAFT_SEND_FAILURE_MESSAGE,
+    _LONG_TASK_ACK_MESSAGE,
+    _looks_like_client_message,
+    _send_chunked,
+    on_free_text,
+    on_task_after_button,
+)
 from app.handlers.text_review import review_artifact
 from app.keyboards import ARTIFACT_CHECK_PREFIX, BTN_V2_MAIN_MENU, active_main_menu
 from app.repositories.artifact_repository import ArtifactRepository
@@ -1548,3 +1557,122 @@ def test_looks_like_client_message_long_text_without_question_mark_is_a_message(
         "Подскажите, пожалуйста, есть ли варианты на эти даты.",
     ):
         assert _looks_like_client_message(text) is True
+
+
+# --- Fix: free-text Content Factory drafts silently died on
+# TelegramBadRequest("message is too long") for weekly_plan/multi-item
+# results (>4096 символов). _send_chunked разбивает на несколько сообщений
+# (тот же механизм, что app/handlers/materials.py:chunk_text); ack перед
+# долгим вызовом отдельно защищает от "бот завис". ---
+
+def test_send_chunked_splits_long_text_without_losing_or_shortening_it():
+    long_text = "".join(f"Пункт {i}. " for i in range(500))
+    assert len(long_text) > 4096
+
+    message = Message()
+    run(_send_chunked(message, long_text))
+
+    assert len(message.answers) > 1
+    for text, _ in message.answers:
+        assert len(text) <= 4096
+    # Конкатенация чанков в порядке отправки == исходный текст, без потерь.
+    assert "".join(text for text, _ in message.answers) == long_text
+
+
+def test_send_chunked_attaches_reply_markup_only_to_last_chunk():
+    long_text = "x" * 8000
+    keyboard = object()
+    message = Message()
+
+    run(_send_chunked(message, long_text, reply_markup=keyboard))
+
+    assert len(message.answers) > 1
+    for _, kwargs in message.answers[:-1]:
+        assert kwargs.get("reply_markup") is None
+    assert message.answers[-1][1].get("reply_markup") is keyboard
+
+
+def test_send_chunked_short_text_stays_a_single_message_with_keyboard():
+    keyboard = object()
+    message = Message()
+
+    run(_send_chunked(message, "короткий текст", reply_markup=keyboard))
+
+    assert len(message.answers) == 1
+    assert message.answers[0][1].get("reply_markup") is keyboard
+
+
+def test_send_chunked_send_failure_does_not_leave_user_in_silence():
+    class FailingOnceMessage(Message):
+        def __init__(self) -> None:
+            super().__init__()
+            self._first_call = True
+
+        async def answer(self, text, **kwargs):
+            if self._first_call:
+                self._first_call = False
+                raise TelegramBadRequest(
+                    method=SimpleNamespace(),
+                    message="Bad Request: message is too long",
+                )
+            await super().answer(text, **kwargs)
+
+    message = FailingOnceMessage()
+
+    run(_send_chunked(message, "любой результат"))
+
+    assert message.answers, "пользователь обязан получить хоть какое-то сообщение"
+    assert message.answers[-1][0] == _DRAFT_SEND_FAILURE_MESSAGE
+
+
+def test_weekly_plan_long_draft_gets_ack_then_full_result_in_several_messages():
+    parts: list[str] = []
+    day = 1
+    while sum(len(p) + 2 for p in parts) < 5000:
+        parts.append(
+            f"День {day}: тема, идея и текст поста номер {day} для контент-плана."
+        )
+        day += 1
+    long_plan = "\n\n".join(parts)
+    assert len(long_plan) > 4096
+
+    message = Message("Составь контент-план на 2 недели")
+    provider = FakeLLMProvider(draft=ContentDraft(long_plan, ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+    ))
+
+    # Acknowledgement уходит первым, до результата долгого вызова.
+    assert message.answers[0][0] == _LONG_TASK_ACK_MESSAGE
+
+    result_texts = [text for text, _ in message.answers[1:]]
+    assert len(result_texts) > 1, "длинный weekly_plan должен уйти несколькими сообщениями"
+    for text in result_texts:
+        assert len(text) <= 4096
+
+    combined = "".join(result_texts)
+    assert "📝 Черновик для ручной проверки" in combined
+    assert long_plan in combined  # весь текст плана сохранён, ничего не сокращено
+
+
+def test_single_post_free_text_does_not_get_long_task_acknowledgement():
+    message, provider, _, _ = run_regular_post(
+        business_profile(), text="Напиши пост про Travel Advantage",
+    )
+    assert provider.generate_draft.call_args.kwargs["output_format"] == "telegram"
+    texts = [text for text, _ in message.answers]
+    assert _LONG_TASK_ACK_MESSAGE not in texts
+
+
+def test_weekly_plan_generation_failure_after_ack_still_gets_error_message():
+    message = Message("Составь контент-план на 2 недели")
+    provider = FakeLLMProvider(draft=None)
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+    ))
+
+    texts = [text for text, _ in message.answers]
+    assert texts[0] == _LONG_TASK_ACK_MESSAGE
+    assert texts[-1] == _DRAFT_FAILURE_MESSAGE

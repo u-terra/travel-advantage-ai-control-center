@@ -32,6 +32,10 @@ def build_provider_generation_request(
         _section("AUDIENCE - DATA", spec.audience),
         _section("TRUSTED BUSINESS CONTEXT - DATA", spec.trusted_business_context),
         _section("TONE AND PREFERENCES - DATA", spec.tone_preferences),
+        # Stage 3B1: личный стиль КОНКРЕТНОГО пользователя — секция ниже по
+        # приоритету, чем workspace-стиль выше (TONE AND PREFERENCES), и
+        # явно вторична к CONSTRAINTS/фактам (см. текст constraints).
+        _section("PERSONAL STYLE - DATA", spec.personal_style),
         _section("VERIFIED CLAIMS - ALLOWED FACTS", spec.verified_claims_allowed),
         _section(
             "UNVERIFIED CLAIMS - CAUTION, NEVER VERIFIED",

@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import MagicData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.cards import build_card
+from app.domain.orchestration import OutputFormat
 from app.domain.partners import WorkspaceContext
 from app.domain.work import WorkSubjectValidationError, work_item_revision
 from app.handlers.menu import AwaitReplySubject, AwaitTask, BUTTON_HINTS
@@ -25,6 +27,7 @@ from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
 from app.services.user_style import UserStyleService
 from app.storage import Journal
+from app.telegram_chunks import chunk_text
 
 router = Router(name="tasks")
 
@@ -33,6 +36,16 @@ _DRAFT_MODE = "ai"
 _DRAFT_FAILURE_MESSAGE = (
     "Не удалось получить черновик автоматически. "
     "Можно открыть Travel Content Factory вручную."
+)
+
+_DRAFT_SEND_FAILURE_MESSAGE = (
+    "Черновик сгенерирован, но не удалось отправить его в Telegram. "
+    "Попробуйте ещё раз или откройте Travel Content Factory вручную."
+)
+
+_LONG_TASK_ACK_MESSAGE = (
+    "⏳ Готовлю материал. Для большого объёма ответ может занять немного "
+    "больше времени."
 )
 
 _TEXT_CHECK_FAILURE_MESSAGE = (
@@ -505,6 +518,28 @@ async def _send_text_check(
 _CLIENT_REPLY_HEADING = "💬 Черновик ответа клиенту — для ручной проверки"
 
 
+async def _send_chunked(
+    message: Message, text: str, *, reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    """Отправляет длинный результат несколькими Telegram-сообщениями.
+
+    Telegram отклоняет одно сообщение длиннее ~4096 символов
+    (``TelegramBadRequest: message is too long``); текст режется тем же
+    механизмом, что и app/handlers/materials.py (chunk_text), без потери и
+    без сокращения содержимого. reply_markup прикрепляется только к
+    последнему чанку, чтобы не дублироваться после каждой части. Если сама
+    отправка в Telegram падает (после успешной генерации), пользователь
+    получает явное сообщение об ошибке вместо тишины.
+    """
+    chunks = chunk_text(text)
+    try:
+        for index, chunk in enumerate(chunks):
+            is_last = index == len(chunks) - 1
+            await message.answer(chunk, reply_markup=reply_markup if is_last else None)
+    except TelegramAPIError:
+        await message.answer(_DRAFT_SEND_FAILURE_MESSAGE)
+
+
 async def _maybe_send_draft(
     message: Message,
     decision: RouteDecision,
@@ -542,6 +577,15 @@ async def _maybe_send_draft(
             user_preferences=user_preferences,
         )
         heading = "📝 Черновик для ручной проверки"
+        # UX: multi-item/weekly_plan запросы (несколько дней/постов сразу)
+        # реально занимают больше времени в Content Factory (удвоенный
+        # max_output_tokens) — пользователь не должен решить, что бот завис,
+        # пока идёт единственный долгий вызов ниже. Обычный одиночный пост
+        # (output_format == "telegram") такого подтверждения не получает —
+        # переиспользуем уже вычисленный spec.output_format, отдельного
+        # regex/intent для "multi-item" не заводим.
+        if spec.output_format is OutputFormat.WEEKLY_PLAN:
+            await message.answer(_LONG_TASK_ACK_MESSAGE)
     else:
         spec = MaterialOrchestrationService().build_client_reply_generation_spec(
             workspace_id, decision.task_text, profile,
@@ -609,4 +653,4 @@ async def _maybe_send_draft(
                 updated_item.id, work_item_revision(updated_item),
             )
 
-    await message.answer("\n".join(lines), reply_markup=reply_keyboard)
+    await _send_chunked(message, "\n".join(lines), reply_markup=reply_keyboard)

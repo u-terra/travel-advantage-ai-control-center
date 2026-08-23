@@ -23,11 +23,11 @@ from app.keyboards import (
     v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
+from app.telegram_chunks import chunk_text
 
 router = Router(name="materials")
 
 _LIST_LIMIT = 10
-_CHUNK_SIZE = 3500
 
 _UNAVAILABLE = "Рабочее пространство недоступно."
 _EMPTY = "Сохранённых материалов пока нет."
@@ -73,10 +73,6 @@ def _list_label(artifact: Artifact) -> str:
 def _positive_id(data: str, prefix: str) -> int | None:
     raw = data.removeprefix(prefix)
     return int(raw) if raw.isdigit() and int(raw) > 0 else None
-
-
-def _chunks(text: str, size: int = _CHUNK_SIZE) -> list[str]:
-    return [text[index:index + size] for index in range(0, len(text), size)] or [""]
 
 
 @router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_MATERIALS)
@@ -132,7 +128,7 @@ async def open_material(
 
     await callback.answer()
     heading = f"{_type_label(artifact.artifact_type)}: {artifact.title}\n\n"
-    messages = _chunks(heading + version.content)
+    messages = chunk_text(heading + version.content)
     for index, text in enumerate(messages):
         reply_markup = (
             material_result_keyboard(artifact.id)
