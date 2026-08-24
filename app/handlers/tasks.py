@@ -659,11 +659,19 @@ async def _maybe_send_draft(
     # слово "пост" (_is_regular_post) — из-за этого корректно
     # классифицированные CONTENT_FACTORY-задачи без слова "пост" ("разработай
     # стратегию...", "сделай контент-план...") молча отбрасывались без ответа
-    # пользователю. Теперь единственный gate — сам primary_module и Safety.
-    is_regular_post = (
-        decision.primary_module is Module.CONTENT_FACTORY
-        and decision.safety_level is SafetyLevel.NOT_REQUIRED
-    )
+    # пользователю. Теперь единственный gate — сам primary_module.
+    #
+    # Fix: safety_level больше НЕ входит в этот gate. Раньше
+    # primary=CONTENT_FACTORY + safety_level != NOT_REQUIRED (например,
+    # «Перепиши этот пост: <текст с упоминанием тарифа>») делал is_regular_post
+    # False, а is_client_reply тоже False (primary не TRAVEL_ASSISTANT) — и
+    # функция тихо возвращалась ДО любого generate_draft/check_text вызова:
+    # пользователь не получал вообще ничего, ни черновика, ни проверки.
+    # Content Factory должна выполнить основную задачу (rewrite/generate)
+    # первой; если safety_level требует проверки — Safety валидирует уже
+    # готовый черновик ниже (см. content_safety_result), а не заменяет собой
+    # генерацию.
+    is_regular_post = decision.primary_module is Module.CONTENT_FACTORY
     is_client_reply = decision.primary_module is Module.TRAVEL_ASSISTANT
     if not is_regular_post and not is_client_reply:
         return
@@ -717,6 +725,20 @@ async def _maybe_send_draft(
     # (см. app/services/assistant_tail_cleanup.py).
     draft_text = strip_assistant_tail(draft.text)
 
+    # Content Factory всегда выполняет rewrite/generate первой (см. gate выше).
+    # Если тема черновика требует Safety (RECOMMENDED/MANDATORY), Safety Layer
+    # проверяет уже ГОТОВЫЙ результат — не подменяет собой генерацию и не
+    # блокирует её. TRAVEL_ASSISTANT ниже сохраняет прежнее поведение
+    # (статическая памятка без вызова check_text).
+    content_safety_result = None
+    needs_content_safety_check = (
+        is_regular_post and decision.safety_level is not SafetyLevel.NOT_REQUIRED
+    )
+    if needs_content_safety_check:
+        content_safety_result = await asyncio.to_thread(
+            provider.check_text, source_text=draft_text,
+        )
+
     lines: list[str] = [heading, "", draft_text]
 
     if (
@@ -738,6 +760,28 @@ async def _maybe_send_draft(
             lines.append(f"— {warning}")
         lines.append("")
         lines.append("Текст требует ручной проверки перед отправкой.")
+
+    if needs_content_safety_check:
+        lines.append("")
+        if content_safety_result is None:
+            lines.append(
+                "⚠️ Не удалось автоматически проверить черновик через Safety "
+                "Layer. Проверьте вручную перед публикацией."
+            )
+        elif content_safety_result.warnings:
+            lines.append("🛡 Safety Layer нашёл рискованные формулировки в черновике:")
+            for finding in content_safety_result.warnings:
+                lines.append(f"— «{finding.phrase}»: {finding.warning}")
+            lines.append("")
+        else:
+            lines.append(
+                "🛡 Safety Layer: рискованных формулировок по текущим правилам "
+                "не найдено."
+            )
+        lines.append(
+            "Перед публикацией вручную сверить факты, условия, цены, тарифы, "
+            "доступность, оплату, бронирование и возможные риски."
+        )
 
     reply_keyboard: InlineKeyboardMarkup | None = None
     if (

@@ -103,6 +103,22 @@ _SOURCE_ANALYSIS_LOW_PRIORITY_SOURCE_FACT_KEYS = (
 SOURCE_ANALYSIS_REQUEST_LIMIT = 5_800
 
 
+class SourceAnalysisRequestTooLargeError(RuntimeError):
+    """Protected-секции (key_facts, disputed_claims, verified/unverified
+    claims, trusted_business_context, constraints) сами по себе — даже без
+    единого символа пользовательского текста и после удаления
+    низкоприоритетных SOURCE FACTS-полей — не помещаются в лимит Content
+    Factory.
+
+    Fail-closed по конструкции: build_provider_generation_request() ниже, не
+    видя разницы между "обычным" и "уже урезанным" spec, в overflow-сценарии
+    откатывается к сырому [:limit] срезу ПО ВСЕЙ строке — это может разорвать
+    JSON и обрезать любую секцию, включая CONSTRAINTS с attribution/scope-
+    правилами. Явная ошибка здесь — единственный способ гарантировать, что
+    наружу никогда не уйдёт структурно повреждённый source_text.
+    """
+
+
 def build_source_analysis_provider_request(
     spec: GenerationSpec, *, limit: int = SOURCE_ANALYSIS_REQUEST_LIMIT,
 ) -> ProviderGenerationRequest:
@@ -112,6 +128,16 @@ def build_source_analysis_provider_request(
             if key not in _SOURCE_ANALYSIS_LOW_PRIORITY_SOURCE_FACT_KEYS
         }
         spec = replace(spec, source_facts=reduced_source_facts)
+    # Даже пустой untrusted_source_content занимает 2 символа как JSON-строка
+    # (""). Если протected-часть prefix не оставляет места даже под них,
+    # generic builder ниже неизбежно откатится к сырому [:limit] срезу по
+    # всей строке — см. docstring SourceAnalysisRequestTooLargeError.
+    if len(_build_prefix(spec)) + len(_MARKER) + 2 > limit:
+        raise SourceAnalysisRequestTooLargeError(
+            "Source analysis request превышает лимит Content Factory даже "
+            "после удаления низкоприоритетных SOURCE FACTS-полей; "
+            "защищённые секции не могут быть безопасно урезаны дальше."
+        )
     return build_provider_generation_request(spec, limit=limit)
 
 

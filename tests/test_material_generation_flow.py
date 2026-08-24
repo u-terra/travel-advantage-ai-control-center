@@ -89,7 +89,10 @@ def dependencies(
     *, workspace=True, source=True, analyzed=True, workspace_id=10,
     profile_value=None,
 ):
-    partner = SimpleNamespace(workspace_id=workspace_id) if workspace else None
+    partner = SimpleNamespace(
+        workspace_id=workspace_id, telegram_user_id=999, role="owner",
+        workspace_status="active",
+    ) if workspace else None
     source_value = SimpleNamespace(
         id=20, workspace_id=workspace_id, original_text="Исходный текст", title="Источник"
     ) if source else None
@@ -104,6 +107,7 @@ def dependencies(
     ))
     profiles = SimpleNamespace(
         get_business_profile=AsyncMock(return_value=profile_value),
+        get_user_preferences=AsyncMock(return_value=None),
         api_key="must-not-leak", telegram_user_id=999, member_id=888,
     )
     return partner, artifacts, analyses, profiles
@@ -226,6 +230,34 @@ def test_ai_failure_creates_no_artifact_and_hides_details():
     assert "secret-token" not in callback.message.answers[-1][0]
 
 
+def test_oversized_analysis_fails_closed_instead_of_corrupting_request():
+    """Targeted review before 2a681a8 deploy: if key_facts/disputed_claims
+    alone are so large that build_source_analysis_provider_request can't fit
+    them under its limit even after dropping low-priority SOURCE FACTS
+    fields, the handler must fail closed with the existing user-facing
+    failure message — never call the LLM provider with a structurally
+    corrupted (raw-sliced) source_text."""
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies()
+    huge_key_facts = tuple(
+        f"Факт номер {i}: важная деталь кейса. " * 5 for i in range(150)
+    )
+    analyses.get_by_source_id = AsyncMock(return_value=SimpleNamespace(
+        source_id=20, workspace_id=10, summary="Итог",
+        key_facts=huge_key_facts, disputed_claims=("Спорное",),
+        audience_value="Польза", target_audiences=("Туристы",),
+        content_angles=("Обзор",), warnings=("Проверить цену",),
+        recommended_formats=("post",),
+    ))
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    run(generate_source_material(
+        callback, partner, artifacts, analyses, provider, profiles
+    ))
+    provider.generate_draft.assert_not_called()
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+    assert "Исходный разбор сохранён" in callback.message.answers[-1][0]
+
+
 def test_persistence_failure_does_not_show_false_success():
     callback = Callback("source_material_format:20:telegram")
     partner, artifacts, analyses, profiles = dependencies()
@@ -322,6 +354,27 @@ def test_usable_profile_is_loaded_after_owned_source_and_personalizes_request():
     assert "[UNVERIFIED CLAIMS - CAUTION, NEVER VERIFIED]" in request
     assert "Unverified profile claim" in request
     artifacts.create_artifact_with_initial_version.assert_awaited_once()
+
+
+def test_17_regular_material_creation_uses_personal_style():
+    from app.domain.partners import WorkspaceUserPreferences
+
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies(profile_value=business_profile())
+    profiles.get_user_preferences = AsyncMock(return_value=WorkspaceUserPreferences(
+        workspace_id=10, telegram_user_id=999, style_description="Пишу с юмором",
+        example_posts=("Пример поста",), avoid_phrases=("лучший тур",),
+        created_at="now", updated_at="now",
+    ))
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    run(generate_source_material(
+        callback, partner, artifacts, analyses, provider, profiles,
+    ))
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    assert "[PERSONAL STYLE - DATA]" in request
+    assert "Пишу с юмором" in request
+    assert "Пример поста" in request
+    assert "лучший тур" in request
 
 
 def test_incomplete_profile_uses_limited_projection_and_still_generates():

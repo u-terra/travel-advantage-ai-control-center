@@ -972,15 +972,20 @@ def test_foreign_profile_fails_closed_before_provider_call():
     provider.generate_draft.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Сделай сценарий Reels о путешествиях",
-        "Нужен пост о тарифах Travel Advantage",
-    ],
-)
-def test_non_regular_post_branches_do_not_lookup_profile_or_personalize(text):
-    message = Message(text)
+def test_non_generating_module_does_not_lookup_profile_or_personalize():
+    """Lead Radar text reaching free-text routing has its own dedicated
+    button-driven flow, not this path — _maybe_send_draft's gate (primary is
+    CONTENT_FACTORY or TRAVEL_ASSISTANT) must still skip profile lookup and
+    generation for unrelated modules.
+
+    Fix note: this used to also parametrize CONTENT_FACTORY texts with
+    safety_level RECOMMENDED/MANDATORY ("Сделай сценарий Reels...", "Нужен
+    пост о тарифах...") as "non-generating" — that was the exact silent-drop
+    bug fixed in _maybe_send_draft (see
+    test_free_text_safety_gated_content_task_generates_then_checks_draft):
+    CONTENT_FACTORY must always generate regardless of safety_level, with
+    Safety validating the result afterwards instead of blocking generation."""
+    message = Message("Покажи свежие сигналы людей, которые ищут поездку")
     provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
     profiles = profile_repository(business_profile())
     run(on_free_text(message, journal(), provider, context(), profiles))
@@ -1014,14 +1019,90 @@ def test_free_text_content_factory_task_without_post_keyword_now_generates_draft
     assert "Персональный черновик" in message.answers[-1][0]
 
 
-def test_free_text_safety_gated_content_task_still_does_not_bypass_safety():
-    """3) Safety не ослаблена: CONTENT_FACTORY-текст с safety_level выше
-    NOT_REQUIRED (здесь — MANDATORY через "тариф") по-прежнему не уходит в
-    автогенерацию обычного free-text черновика."""
+def test_free_text_safety_gated_content_task_generates_then_checks_draft():
+    """3) Fix (targeted review before 2a681a8 deploy): CONTENT_FACTORY-текст с
+    safety_level выше NOT_REQUIRED (здесь — MANDATORY через "тариф") раньше
+    молча ничего не отвечал — is_regular_post требовал NOT_REQUIRED, а
+    is_client_reply тоже был False (primary не TRAVEL_ASSISTANT), так что
+    _maybe_send_draft выходил ДО generate_draft/check_text. Content Factory
+    должна выполнить rewrite/generate первой; Safety затем проверяет готовый
+    черновик, а не заменяет собой генерацию."""
     message, provider, _, _ = run_regular_post(
         business_profile(), text="Нужен пост о тарифах Travel Advantage",
     )
+    provider.generate_draft.assert_called_once()
+    provider.check_text.assert_called_once_with(source_text="Персональный черновик")
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+def test_free_text_rewrite_of_sensitive_pasted_post_generates_then_checks_draft():
+    """Real-world class from the router fix in 2a681a8: "Перепиши этот пост
+    своими словами: <текст, где упоминается тариф>" routes to
+    primary=CONTENT_FACTORY/secondary=() with safety_level=MANDATORY (the
+    pasted content, not the leading instruction, trips MANDATORY_SAFETY_KEYWORDS).
+    Content Factory must still run the rewrite; Safety must validate the
+    resulting draft rather than the request vanishing silently."""
+    from app.services.llm.models import TextCheckResult, TextSafetyFinding
+
+    text = (
+        "Перепиши этот пост своими словами: Наш тариф на перелёт дешевле на "
+        "20%, бронируйте прямо сейчас, доход гарантирован."
+    )
+    message = Message(text)
+    provider = FakeLLMProvider(
+        draft=ContentDraft("Переписанный черновик", ()),
+        check=TextCheckResult(
+            warnings=(TextSafetyFinding("доход гарантирован", "Нельзя обещать доход"),),
+            rewritten_text=None, rewrite_warnings=(),
+            generation_mode="ai", ai_note=None,
+        ),
+    )
+    profiles = profile_repository(business_profile())
+    run(on_free_text(message, journal(), provider, context(), profiles, v2_menu_enabled=True))
+
+    provider.generate_draft.assert_called_once()
+    provider.check_text.assert_called_once_with(source_text="Переписанный черновик")
+    texts = [t for t, _ in message.answers]
+    assert any("Переписанный черновик" in t for t in texts)
+    assert any("доход гарантирован" in t for t in texts)
+
+
+def test_free_text_safety_check_failure_still_shows_generated_draft():
+    """If the post-generation Safety check itself fails (check_text returns
+    None), the already-generated draft must still reach the user with an
+    explicit manual-review note — not vanish, and not be silently treated as
+    "safe"."""
+    message, provider, _, _ = run_regular_post(
+        business_profile(), text="Нужен пост о тарифах Travel Advantage",
+    )
+    provider.check_text.assert_called_once()
+    text = message.answers[-1][0]
+    assert "Персональный черновик" in text
+    assert "не удалось автоматически проверить" in text.lower()
+
+
+def test_free_text_explicit_risk_check_stays_safety_flow_without_generation():
+    """Explicit check requests ("Проверь этот пост на риски") must keep
+    routing straight to Safety Layer's own check_text flow, without Content
+    Factory generating anything — the rewrite fix must not blur this case."""
+    from app.services.llm.models import TextCheckResult
+
+    text = (
+        "Проверь этот пост на риски: Наш тариф на перелёт дешевле на 20%, "
+        "бронируйте прямо сейчас."
+    )
+    message = Message(text)
+    provider = FakeLLMProvider(check=TextCheckResult(
+        warnings=(), rewritten_text=None, rewrite_warnings=(),
+        generation_mode="ai", ai_note=None,
+    ))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(message, journal(), provider, context(), profiles, v2_menu_enabled=True))
+
     provider.generate_draft.assert_not_called()
+    provider.check_text.assert_called_once_with(source_text=text)
+    texts = [t for t, _ in message.answers]
+    assert any("🛡 Проверка текста" in t for t in texts)
 
 
 # --- BUG 1 fix: general Content Factory задача ("стратегия", "план",

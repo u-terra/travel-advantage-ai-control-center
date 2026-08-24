@@ -7,6 +7,7 @@ import pytest
 from app.domain.orchestration import GenerationAction, GenerationSpec, OutputFormat
 from app.services.generation_request_builder import (
     SOURCE_ANALYSIS_REQUEST_LIMIT,
+    SourceAnalysisRequestTooLargeError,
     build_provider_generation_request,
     build_source_analysis_provider_request,
 )
@@ -134,6 +135,69 @@ def test_overflow_case_drops_only_low_priority_source_facts_and_stays_under_limi
     assert "формат-0" not in request.source_text
     assert "аудитория-0" not in request.source_text
     assert "предупреждение-0" not in request.source_text
+
+
+# --- Targeted review before 2a681a8 deploy: overflow that survives the
+# low-priority-field drop. Fix 1 only handles "prefix overflows, dropping
+# content_angles/recommended_formats/target_audiences/warnings brings it back
+# under limit". If the PROTECTED part of prefix alone (key_facts,
+# disputed_claims, verified/unverified claims, trusted_business_context,
+# constraints) is still too large after that drop, the function used to fall
+# straight through to build_provider_generation_request(), which — same as
+# test_generic_builder_can_corrupt_structure_when_prefix_alone_overflows above
+# — silently returns a raw [:limit] slice that can cut any protected section
+# (including CONSTRAINTS) mid-string and break the JSON structure. ---
+
+def test_overflow_surviving_low_priority_drop_fails_closed_not_corrupted():
+    """When even the protected prefix (here: huge key_facts) doesn't fit
+    under the limit after dropping low-priority SOURCE FACTS fields, the
+    function must fail closed with a clear error instead of silently
+    returning a structurally corrupted (raw-sliced) source_text."""
+    huge_key_facts = tuple(
+        f"Факт номер {i}: важная деталь кейса, которая не должна теряться. " * 5
+        for i in range(120)
+    )
+    source_facts = {
+        "summary": "Кейс клиента",
+        "key_facts": huge_key_facts,
+        "disputed_claims": ("Без партнёрства и взносов",),
+        "content_angles": ("Идея",),
+        "recommended_formats": ("формат",),
+        "warnings": ("предупреждение",),
+    }
+    spec = _spec(
+        source_facts=source_facts,
+        constraints=("Атрибуция кейса.",),
+        untrusted_source_content="Оригинальный текст публикации автора.",
+    )
+    # Контрастная проверка: без fail-closed защиты обычный builder на этом же
+    # лимите молча вернул бы сырой обрубок, разрывающий JSON/секции.
+    plain = build_provider_generation_request(spec, limit=SOURCE_ANALYSIS_REQUEST_LIMIT)
+    assert len(plain.source_text) == SOURCE_ANALYSIS_REQUEST_LIMIT
+    with pytest.raises(SourceAnalysisRequestTooLargeError):
+        build_source_analysis_provider_request(spec)
+
+
+def test_overflow_surviving_low_priority_drop_fails_closed_via_huge_constraints():
+    """Same overflow class as above, driven by huge constraints instead of
+    huge key_facts — constraints are never dropped/reduced by this function,
+    so an oversized constraints section alone must also fail closed rather
+    than fall through to the corrupting raw-slice path."""
+    source_facts = {
+        "summary": "Кейс клиента",
+        "key_facts": ("Факт про 47 тыс. вместо 113 тыс.",),
+        "disputed_claims": ("Без партнёрства и взносов",),
+        "content_angles": ("Идея",),
+        "recommended_formats": ("формат",),
+        "warnings": ("предупреждение",),
+    }
+    spec = _spec(
+        source_facts=source_facts,
+        constraints=("Атрибуция кейса." * 500,),
+        untrusted_source_content="Оригинальный текст публикации автора.",
+    )
+    with pytest.raises(SourceAnalysisRequestTooLargeError):
+        build_source_analysis_provider_request(spec)
 
 
 def test_other_flows_are_not_affected_by_the_new_limit():
