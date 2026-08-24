@@ -6,7 +6,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import MagicData
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.cards import build_card
 from app.domain.orchestration import OutputFormat
@@ -14,7 +14,13 @@ from app.domain.partners import WorkspaceContext
 from app.domain.work import WorkSubjectValidationError, work_item_revision
 from app.handlers.menu import AwaitReplySubject, AwaitTask, BUTTON_HINTS
 from app.handlers.source_analysis import run_source_analysis
-from app.keyboards import BTN_V2_CLIENT_REPLY, active_main_menu, reply_confirm_keyboard
+from app.keyboards import (
+    BTN_V2_CLIENT_REPLY,
+    TASK_CONFIRM_PUBLICATION_ANALYSIS,
+    active_main_menu,
+    reply_confirm_keyboard,
+    uncertain_route_publication_keyboard,
+)
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
@@ -68,11 +74,25 @@ _UNCERTAIN_ROUTE_MESSAGE = (
 # нераспознанная команда») — длина, а не список ключевых слов: короткие
 # неразобранные фразы («что-то непонятное») по-прежнему получают обычное
 # предупреждение и не перехватываются.
+#
+# Review fix: длина одна НЕ отличает публикацию от длинного техзадания,
+# письма или вопроса в поддержку — все они одинаково не содержат routing
+# keywords и одинаково длинные (проверено на реальных примерах). Поэтому
+# больше НЕ вызываем run_source_analysis автоматически: только предлагаем
+# кнопкой, а исходный текст ждёт подтверждения в FSM state. Если фактически
+# это было письмо/вопрос — пользователь просто не нажимает кнопку и жмёт
+# «Выбрать другую задачу», вместо того чтобы бот тихо создал в БД ложный
+# Source и потратил вызов analyze_source впустую.
 _PUBLICATION_LOOKALIKE_MIN_CHARS = 400
 
-_PUBLICATION_FALLBACK_NOTICE = (
-    "Похоже, это текст публикации или поста — разбираю его как источник. "
-    "Если нужна другая задача, выберите категорию кнопкой главного меню."
+_PENDING_SOURCE_TEXT_KEY = "pending_source_analysis_text"
+
+_PUBLICATION_CONFIRM_PROMPT = (
+    "Похоже, вы прислали большой фрагмент текста. Разобрать его как публикацию?"
+)
+
+_PENDING_TEXT_LOST_MESSAGE = (
+    "Не удалось найти сохранённый текст. Пришлите его ещё раз."
 )
 
 
@@ -122,7 +142,6 @@ async def on_reply_subject_received(
     workspace_context: WorkspaceContext | None,
     partner_repository: PartnerRepository,
     artifact_repository: ArtifactRepository | None = None,
-    source_analysis_repository: SourceAnalysisRepository | None = None,
 ) -> None:
     """Первый шаг «Ответить клиенту» (v2): «Кому отвечаем?» -> WorkSubject.
 
@@ -149,7 +168,6 @@ async def on_reply_subject_received(
             text, forced_module=Module.TRAVEL_ASSISTANT, skip_route_card=True,
             reply_subject_data=(None, None, None),
             work_repository=work_repository, artifact_repository=artifact_repository,
-            source_analysis_repository=source_analysis_repository,
         )
         return
 
@@ -181,7 +199,6 @@ async def on_task_after_button(
     partner_repository: PartnerRepository,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
-    source_analysis_repository: SourceAnalysisRepository | None = None,
     v2_menu_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
@@ -216,7 +233,6 @@ async def on_task_after_button(
         task_text, forced_module=forced_module, skip_route_card=skip_route_card,
         reply_subject_data=(reply_work_item_id, reply_subject_id, reply_subject_name),
         work_repository=work_repository, artifact_repository=artifact_repository,
-        source_analysis_repository=source_analysis_repository,
         v2_menu_enabled=v2_menu_enabled,
     )
 
@@ -230,8 +246,6 @@ async def on_free_text(
     partner_repository: PartnerRepository,
     v2_menu_enabled: bool = False,
     state: FSMContext | None = None,
-    artifact_repository: ArtifactRepository | None = None,
-    source_analysis_repository: SourceAnalysisRepository | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -266,9 +280,45 @@ async def on_free_text(
     await _maybe_send_module_result(
         message, decision, llm_provider,
         workspace_context, partner_repository,
-        state=state, artifact_repository=artifact_repository,
-        source_analysis_repository=source_analysis_repository,
-        v2_menu_enabled=v2_menu_enabled,
+        state=state, v2_menu_enabled=v2_menu_enabled,
+    )
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data == TASK_CONFIRM_PUBLICATION_ANALYSIS)
+async def on_confirm_publication_analysis(
+    callback: CallbackQuery,
+    state: FSMContext,
+    workspace_context: WorkspaceContext | None,
+    artifact_repository: ArtifactRepository | None,
+    source_analysis_repository: SourceAnalysisRepository | None,
+    llm_provider: LLMProvider,
+) -> None:
+    """Подтверждение из uncertain-route fallback: реальный разбор источника
+    запускается только здесь, по явному нажатию, а не автоматически по
+    длине текста (см. _looks_like_pasted_publication выше и review-отчёт).
+    """
+    data = await state.get_data()
+    text = data.get(_PENDING_SOURCE_TEXT_KEY)
+    await callback.answer()
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    if (
+        not text
+        or workspace_context is None
+        or artifact_repository is None
+        or source_analysis_repository is None
+    ):
+        await state.clear()
+        if callback.message is not None:
+            await callback.message.answer(
+                _PENDING_TEXT_LOST_MESSAGE, reply_markup=active_main_menu(True),
+            )
+        return
+    if callback.message is None:
+        return
+    await run_source_analysis(
+        callback.message, state, workspace_context, artifact_repository,
+        source_analysis_repository, llm_provider, text,
     )
 
 
@@ -286,7 +336,6 @@ async def _route_and_dispatch(
     reply_subject_data: tuple[int | None, int | None, str | None],
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
-    source_analysis_repository: SourceAnalysisRepository | None = None,
     v2_menu_enabled: bool = False,
 ) -> None:
     """Общий хвост on_task_after_button и «сообщение вместо имени» в
@@ -322,7 +371,6 @@ async def _route_and_dispatch(
         message, decision, llm_provider,
         workspace_context, partner_repository,
         work_repository=work_repository, artifact_repository=artifact_repository,
-        source_analysis_repository=source_analysis_repository,
         reply_context=reply_context, state=state, v2_menu_enabled=v2_menu_enabled,
     )
 
@@ -336,7 +384,6 @@ async def _maybe_send_module_result(
     *,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
-    source_analysis_repository: SourceAnalysisRepository | None = None,
     reply_context: ReplyBridgeContext | None = None,
     state: FSMContext | None = None,
     v2_menu_enabled: bool = False,
@@ -360,22 +407,22 @@ async def _maybe_send_module_result(
     # конкретной формулировки: любой запрос, который router не смог уверенно
     # классифицировать, должен получить явный ответ, а не тишину.
     if decision.is_uncertain:
-        # Fix: не тупиковое сообщение, а разбор источника, если сам текст
-        # структурно похож на вставленную публикацию/пост (см.
-        # _looks_like_pasted_publication) и доступны зависимости сценария
-        # «Разобрать публикацию» — тот же сценарий, что и по кнопке меню,
-        # просто без ручного клика. Ограничено v2 UI: в v1 этого сценария нет.
+        # Review fix: раньше здесь автоматически запускался разбор источника
+        # для любого длинного текста — но длина одна не отличает публикацию
+        # от техзадания/письма/вопроса в поддержку (см. review отчёт).
+        # Теперь — только предложение с подтверждением: исходный текст ждёт
+        # в FSM state, реальный разбор происходит только по нажатию кнопки
+        # (см. on_confirm_publication_analysis ниже). Ограничено v2 UI: в v1
+        # этого сценария нет.
         if (
             v2_menu_enabled
             and state is not None
-            and artifact_repository is not None
-            and source_analysis_repository is not None
             and _looks_like_pasted_publication(decision.task_text)
         ):
-            await message.answer(_PUBLICATION_FALLBACK_NOTICE)
-            await run_source_analysis(
-                message, state, workspace_context, artifact_repository,
-                source_analysis_repository, provider, decision.task_text,
+            await state.update_data(**{_PENDING_SOURCE_TEXT_KEY: decision.task_text})
+            await message.answer(
+                _PUBLICATION_CONFIRM_PROMPT,
+                reply_markup=uncertain_route_publication_keyboard(),
             )
             return
         await message.answer(_UNCERTAIN_ROUTE_MESSAGE)

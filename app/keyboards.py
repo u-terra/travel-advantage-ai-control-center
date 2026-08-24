@@ -43,6 +43,15 @@ SOURCE_MATERIAL_PREFIX = "source_material:"
 SOURCE_MATERIAL_FORMAT_PREFIX = "source_material_format:"
 SOURCE_ACTION_ANALYZE_MORE = "source_action:analyze_more"
 SOURCE_ACTION_MAIN_MENU = "source_action:main_menu"
+
+# Uncertain-route fallback (review fix): подтверждение перед разбором
+# длинного текста как публикации — см. on_confirm_publication_analysis в
+# app/handlers/tasks.py. "Выбрать другую задачу" переиспользует
+# SOURCE_ACTION_MAIN_MENU/source_main_menu — тот же хендлер уже делает
+# state.clear() и показывает главное меню.
+TASK_CONFIRM_PUBLICATION_ANALYSIS = "task_action:confirm_publication_analysis"
+BTN_V2_CONFIRM_PUBLICATION_ANALYSIS = "🔎 Разобрать публикацию"
+BTN_V2_CHOOSE_ANOTHER_TASK = "⬅️ Выбрать другую задачу"
 ARTIFACT_CHECK_PREFIX = "artifact_check:"
 ARTIFACT_REVIEW_SAVE_PREFIX = "artifact_review_save:"
 ARTIFACT_REVIEW_KEEP = "artifact_review_keep"
@@ -189,6 +198,18 @@ def analyzed_source_keyboard(source_id: int) -> InlineKeyboardMarkup:
         )],
         [InlineKeyboardButton(
             text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )],
+    ])
+
+
+def uncertain_route_publication_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=BTN_V2_CONFIRM_PUBLICATION_ANALYSIS,
+            callback_data=TASK_CONFIRM_PUBLICATION_ANALYSIS,
+        )],
+        [InlineKeyboardButton(
+            text=BTN_V2_CHOOSE_ANOTHER_TASK, callback_data=SOURCE_ACTION_MAIN_MENU
         )],
     ])
 

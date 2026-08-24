@@ -1131,44 +1131,153 @@ def test_uncertain_route_always_gets_a_reply_in_v2_ui():
     provider.generate_draft.assert_not_called()
 
 
-def test_pasted_publication_from_main_menu_is_analyzed_instead_of_dead_end():
-    """Regression (Проблема 2): длинный текст публикации, вставленный прямо в
-    главное меню (без нажатия кнопки), обычно не содержит routing keywords —
-    route_text() честно возвращает is_uncertain. Раньше пользователь получал
-    тупиковое «Не удалось уверенно определить маршрут». Теперь, если текст
-    структурно похож на вставленную публикацию (длинный) и доступны
-    зависимости сценария «Разобрать публикацию», бот использует этот сценарий
-    вместо тупикового ответа."""
-    text = (
-        "Хотим поделиться свежим кейсом клиента. Семья из Москвы слетала в "
-        "Анталию на десять дней и нашла отель через наш сервис. "
-        "Итоговая стоимость проживания оказалась заметно меньше, чем на "
-        "популярных туристических сайтах, а трансфер получилось согласовать "
-        "отдельно и тоже дешевле обычного. Делимся деталями, чтобы показать, "
-        "как сравнение предложений помогает сэкономить при планировании "
-        "поездки заранее и без лишних сложностей для всей семьи в дороге."
-    )
-    assert len(text) >= 400
+# --- Проблема 2 / review fix: длинный неразобранный текст больше НЕ
+# анализируется автоматически. Вместо этого бот предлагает кнопку и ждёт
+# подтверждения через on_confirm_publication_analysis; исходный текст живёт
+# в FSM state (_PENDING_SOURCE_TEXT_KEY) между двумя шагами. ---
+
+_PASTED_PUBLICATION_TEXT = (
+    "Хотим поделиться свежим кейсом клиента. Семья из Москвы слетала в "
+    "Анталию на десять дней и нашла отель через наш сервис. "
+    "Итоговая стоимость проживания оказалась заметно меньше, чем на "
+    "популярных туристических сайтах, а трансфер получилось согласовать "
+    "отдельно и тоже дешевле обычного. Делимся деталями, чтобы показать, "
+    "как сравнение предложений помогает сэкономить при планировании "
+    "поездки заранее и без лишних сложностей для всей семьи в дороге."
+)
+
+_LONG_TECH_BRIEF_TEXT = (
+    "Нужно разработать внутренний модуль синхронизации данных между двумя "
+    "системами учёта клиентов. Модуль должен раз в сутки забирать выгрузку "
+    "из первой системы, преобразовывать поля в формат второй системы и "
+    "загружать результат через REST API. Обязательно логирование ошибок и "
+    "повторные попытки при сбое сети. Отдельно нужна страница статуса "
+    "последней синхронизации для администратора и уведомление в почту при "
+    "критической ошибке дольше часа. Срок — две недели, приоритет высокий."
+)
+
+_LONG_LETTER_TEXT = (
+    "Добрый день! Пишу по поводу нашего сотрудничества в прошлом месяце. "
+    "Хотела уточнить несколько моментов по итогам совместной работы: "
+    "во-первых, когда планируется закрытие документов за предыдущий период, "
+    "во-вторых, будет ли продолжение сотрудничества в следующем квартале на "
+    "тех же условиях, и в-третьих, куда можно обращаться по вопросам "
+    "взаиморасчётов, если бухгалтер в отпуске. Буду благодарна за ответ на "
+    "этой неделе, чтобы успеть спланировать дальнейшие шаги с командой."
+)
+
+_LONG_SUPPORT_QUESTION_TEXT = (
+    "Здравствуйте, у меня возникла проблема при входе в личный кабинет уже "
+    "третий день подряд. Ввожу логин и пароль, всё верно, но система пишет "
+    "ошибку соединения и выкидывает на главную страницу. Пробовала с "
+    "разных устройств и браузеров, чистила кэш и куки, переустанавливала "
+    "приложение на телефоне — ничего не помогло. Раньше всё работало без "
+    "нареканий. Подскажите, пожалуйста, что можно сделать, чтобы восстановить "
+    "доступ, и с чем вообще может быть связана такая проблема на вашей стороне."
+)
+
+for _t in (
+    _PASTED_PUBLICATION_TEXT, _LONG_TECH_BRIEF_TEXT,
+    _LONG_LETTER_TEXT, _LONG_SUPPORT_QUESTION_TEXT,
+):
+    assert len(_t) >= 400
+
+
+def test_pasted_publication_from_main_menu_gets_confirm_offer_not_dead_end():
+    """Regression (Проблема 2): длинный текст без routing keywords больше не
+    тупиковый ответ — бот предлагает разобрать его как публикацию, но НЕ
+    анализирует автоматически (см. следующие тесты на false positives)."""
+    message = Message(_PASTED_PUBLICATION_TEXT)
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        "Итог", (), (), "Польза", (), (), (), (),
+    ))
+    profiles = profile_repository()
+    state = State()
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+        state=state,
+    ))
+    assert not any("Не удалось уверенно определить маршрут" in t for t, _ in message.answers)
+    assert any("Разобрать его как публикацию?" in t for t, _ in message.answers)
+    provider.analyze_source.assert_not_called()
+    assert state.data.get("pending_source_analysis_text") == _PASTED_PUBLICATION_TEXT
+
+
+@pytest.mark.parametrize("text", [
+    _LONG_TECH_BRIEF_TEXT, _LONG_LETTER_TEXT, _LONG_SUPPORT_QUESTION_TEXT,
+])
+def test_long_non_publication_text_is_not_auto_analyzed(text):
+    """Regression (review fix): длинное ТЗ / письмо / вопрос в поддержку —
+    ни один не должен автоматически вызывать analyze_source или создавать
+    Source. Порог длины по-прежнему предлагает кнопку (это ок — пользователь
+    просто её не нажмёт), но НЕ выполняет анализ без подтверждения."""
     message = Message(text)
     provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
         "Итог", (), (), "Польза", (), (), (), (),
     ))
     profiles = profile_repository()
+    state = State()
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+        state=state,
+    ))
+    provider.analyze_source.assert_not_called()
+    assert not any("🔎 Анализ источника" in t for t, _ in message.answers)
+
+
+def test_confirming_publication_offer_analyzes_the_saved_original_text():
+    """После нажатия «Разобрать публикацию» анализируется именно тот текст,
+    который был сохранён в FSM state на шаге предложения — не текст самого
+    callback (в нём текста и не может быть) и не что-то другое."""
+    from app.handlers.tasks import on_confirm_publication_analysis
+
+    message = Message(_PASTED_PUBLICATION_TEXT)
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        "Итог", (), (), "Польза", (), (), (), (),
+    ))
+    profiles = profile_repository()
+    state = State()
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+        state=state,
+    ))
+    assert state.data["pending_source_analysis_text"] == _PASTED_PUBLICATION_TEXT
+    provider.analyze_source.assert_not_called()
+
     source = SimpleNamespace(id=77)
     artifacts = SimpleNamespace(create_source=AsyncMock(return_value=source))
     analyses = SimpleNamespace(save_successful_analysis=AsyncMock(return_value=SimpleNamespace(
         summary="Итог", key_facts=(), disputed_claims=(), audience_value="Польза",
         target_audiences=(), content_angles=(), recommended_formats=(), warnings=(),
     )))
-    state = State()
-    run(on_free_text(
-        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
-        state=state, artifact_repository=artifacts, source_analysis_repository=analyses,
+    callback = Callback()
+    callback.data = "task_action:confirm_publication_analysis"
+    run(on_confirm_publication_analysis(
+        callback, state, context(), artifacts, analyses, provider,
     ))
-    assert not any("Не удалось уверенно определить маршрут" in t for t, _ in message.answers)
-    provider.analyze_source.assert_called_once()
+    provider.analyze_source.assert_called_once_with(source_text=_PASTED_PUBLICATION_TEXT)
     artifacts.create_source.assert_awaited_once()
-    assert "🔎 Анализ источника" in message.answers[-1][0]
+    assert artifacts.create_source.call_args.kwargs["original_text"] == _PASTED_PUBLICATION_TEXT
+    assert "🔎 Анализ источника" in callback.message.answers[-1][0]
+
+
+def test_confirm_without_pending_text_fails_closed():
+    """Если пользователь нажал кнопку, но в state ничего не сохранено
+    (например, состояние истекло/было очищено) — не пытаемся анализировать
+    пустоту, а просим прислать текст заново."""
+    from app.handlers.tasks import on_confirm_publication_analysis
+
+    callback = Callback()
+    callback.data = "task_action:confirm_publication_analysis"
+    state = State()
+    artifacts = SimpleNamespace(create_source=AsyncMock())
+    analyses = SimpleNamespace(save_successful_analysis=AsyncMock())
+    provider = FakeLLMProvider()
+    run(on_confirm_publication_analysis(
+        callback, state, context(), artifacts, analyses, provider,
+    ))
+    artifacts.create_source.assert_not_called()
+    assert any("Пришлите его ещё раз" in t for t, _ in callback.message.answers)
 
 
 def test_short_unrecognized_text_still_gets_uncertain_route_message():
@@ -1178,14 +1287,13 @@ def test_short_unrecognized_text_still_gets_uncertain_route_message():
     message = Message(text)
     provider = FakeLLMProvider(draft=ContentDraft("Персональный черновик", ()))
     profiles = profile_repository(business_profile())
-    artifacts = SimpleNamespace(create_source=AsyncMock())
-    analyses = SimpleNamespace(save_successful_analysis=AsyncMock())
+    state = State()
     run(on_free_text(
         message, journal(), provider, context(), profiles, v2_menu_enabled=True,
-        state=State(), artifact_repository=artifacts, source_analysis_repository=analyses,
+        state=state,
     ))
     assert any("Не удалось уверенно определить маршрут" in t for t, _ in message.answers)
-    artifacts.create_source.assert_not_called()
+    assert not any("Разобрать его как публикацию?" in t for t, _ in message.answers)
 
 
 def test_smoke_3_weekly_content_plan_without_explicit_number_uses_weekly_plan_format():

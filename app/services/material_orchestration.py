@@ -169,31 +169,46 @@ _SOURCE_ANALYSIS_CONSTRAINTS = _CONSTRAINTS + (
 # ниже. Подтверждённое контекстом утверждение перестаёт быть спорным и
 # переходит в verified_claims_allowed; остальное остаётся в disputed_claims и
 # помечается по правилам _SOURCE_CASE_ATTRIBUTION_CONSTRAINT выше, а не сразу
-# как «требует внешней проверки». Однословные/общие claims (например,
-# тестовые "Verified"/"Unverified") намеренно не участвуют в сверке — короткий
-# claim слишком легко случайно "совпадёт" по отдельному слову с чем угодно,
-# включая враждебный текст источника, который специально пытается это
-# спровоцировать.
-_CLAIM_RECONCILIATION_OVERLAP_THRESHOLD = 0.6
-_CLAIM_RECONCILIATION_MIN_WORDS = 3
-_CLAIM_WORD_RE = re.compile(r"\w+", re.UNICODE)
-_CLAIM_STEM_LEN = 6
+# как «требует внешней проверки».
+#
+# Review fix: первая версия сверки считала claim подтверждённым по
+# пересечению стеммированных слов (bag-of-words overlap). Проверка на
+# adversarial-примерах показала, что это небезопасно — overlap не видит
+# смысла, только буквы: «можно» и «нельзя» пересекаются по всем остальным
+# словам предложения и совпадение считалось подтверждением своей же
+# противоположности; то же самое с разными числами (10% vs 47%) и разными
+# тарифами («Стандарт» vs «Премиум») — оба случая ошибочно промоутились в
+# verified. Одновременно тот же overlap иногда НЕ находил реально
+# подтверждённый claim, если у verified-claim было немного больше слов, чем
+# порог позволял. Underlying проблема не лечится точечными патчами overlap
+# (ещё эвристика поверх эвристики) — precision здесь важнее recall: лучше
+# оставить связанный claim disputed (и он всё равно попадёт в generation
+# request с attribution — см. _SOURCE_CASE_ATTRIBUTION_CONSTRAINT), чем
+# ошибочно объявить verified утверждение, которое источник не подтверждает
+# или прямо опровергает.
+#
+# Поэтому promotion теперь строго детерминированный: только точное
+# совпадение текста claim после БЕЗОПАСНОЙ нормализации (регистр, пунктуация,
+# пробелы). Числа, отрицания («не», «нельзя»), модальные слова («можно»,
+# «нужно»), названия тарифов и любые другие смысловые токены нормализация не
+# трогает — значит "можно" и "нельзя", "10%" и "47%", "Стандарт" и "Премиум"
+# всегда дают разные нормализованные строки и никогда не совпадут случайно.
+_CLAIM_NORMALIZE_PUNCTUATION_RE = re.compile(r"[^\w\s]", re.UNICODE)
+_CLAIM_NORMALIZE_WHITESPACE_RE = re.compile(r"\s+", re.UNICODE)
 
 
-def _claim_word_stems(text: str) -> set[str]:
-    words = _CLAIM_WORD_RE.findall(text.lower())
-    return {w if len(w) <= _CLAIM_STEM_LEN else w[:_CLAIM_STEM_LEN] for w in words}
+def _normalize_claim_text(text: str) -> str:
+    lowered = text.strip().lower()
+    without_punctuation = _CLAIM_NORMALIZE_PUNCTUATION_RE.sub(" ", lowered)
+    return _CLAIM_NORMALIZE_WHITESPACE_RE.sub(" ", without_punctuation).strip()
 
 
 def _confirmed_by_trusted_claim(disputed_claim: str, verified_claim_text: str) -> bool:
-    verified_words = _claim_word_stems(verified_claim_text)
-    if len(verified_words) < _CLAIM_RECONCILIATION_MIN_WORDS:
+    normalized_disputed = _normalize_claim_text(disputed_claim)
+    normalized_verified = _normalize_claim_text(verified_claim_text)
+    if not normalized_disputed or not normalized_verified:
         return False
-    disputed_words = _claim_word_stems(disputed_claim)
-    if not disputed_words:
-        return False
-    overlap = verified_words & disputed_words
-    return len(overlap) / len(verified_words) >= _CLAIM_RECONCILIATION_OVERLAP_THRESHOLD
+    return normalized_disputed == normalized_verified
 
 
 def _reconcile_disputed_claims_with_trusted_context(

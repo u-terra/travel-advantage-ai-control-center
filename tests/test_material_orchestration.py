@@ -803,9 +803,13 @@ def test_source_analysis_constraints_do_not_leak_into_radar_free_text_or_client_
         assert _SOURCE_CASE_SCOPE_CONSTRAINT not in other
 
 
-def test_disputed_claim_confirmed_by_trusted_context_is_promoted_to_verified():
+def test_disputed_claim_normalized_identical_to_trusted_claim_is_promoted_to_verified():
     """Regression: trusted Business/Knowledge Context имеет приоритет перед
-    маркировкой факта как «требует внешней проверки» (Проблема 4)."""
+    маркировкой факта как «требует внешней проверки» (Проблема 4) — но
+    только для claim, который совпадает с trusted context ПОСЛЕ безопасной
+    нормализации (регистр/пунктуация/пробелы). Здесь disputed claim
+    отличается от verified claim только регистром, лишними пробелами,
+    запятой и точкой — ни один смысловой токен не меняется."""
     trusted_profile = profile(unverified_claim="Гостей можно регистрировать как пассажиров бронирования")
     trusted_profile = BusinessProfile(
         trusted_profile.id, trusted_profile.workspace_id, trusted_profile.business_name,
@@ -830,18 +834,14 @@ def test_disputed_claim_confirmed_by_trusted_context_is_promoted_to_verified():
         ),
         trusted_profile.created_at, trusted_profile.updated_at,
     )
+    disputed_text = "  гостей   МОЖНО регистрировать, как пассажиров бронирования.  "
     spec = MaterialOrchestrationService().build_generation_spec(
         10, source(10),
-        analysis(10, disputed_claims=(
-            "Автор кейса зарегистрировал гостей как пассажиров бронирования",
-        )),
+        analysis(10, disputed_claims=(disputed_text,)),
         trusted_profile, artifact_type="post", output_format="telegram",
     )
     assert spec.source_facts["disputed_claims"] == ()
-    promoted = [
-        c for c in spec.verified_claims_allowed
-        if c["text"] == "Автор кейса зарегистрировал гостей как пассажиров бронирования"
-    ]
+    promoted = [c for c in spec.verified_claims_allowed if c["text"] == disputed_text]
     assert len(promoted) == 1
     assert promoted[0]["verification_status"] == "verified"
     assert promoted[0]["evidence_reference"] == "business_rules_doc"
@@ -850,6 +850,45 @@ def test_disputed_claim_confirmed_by_trusted_context_is_promoted_to_verified():
         c["text"] == "Гостей можно регистрировать как пассажиров бронирования"
         for c in spec.verified_claims_allowed
     )
+
+
+def test_disputed_claim_paraphrased_but_not_identical_stays_disputed():
+    """Regression: consервативный подход — claim, который лишь ПЕРЕСКАЗЫВАЕТ
+    trusted claim другими словами (не точное совпадение после нормализации),
+    остаётся disputed. Предыдущая bag-of-word-overlap версия промоутила такие
+    пересказы; это специально исправлено в пользу precision > recall."""
+    trusted_profile = profile(unverified_claim="Гостей можно регистрировать как пассажиров бронирования")
+    trusted_profile = BusinessProfile(
+        trusted_profile.id, trusted_profile.workspace_id, trusted_profile.business_name,
+        trusted_profile.business_type, trusted_profile.short_description,
+        trusted_profile.profile_status, trusted_profile.revision, trusted_profile.revision + 2,
+        BusinessContext(
+            specializations=trusted_profile.context.specializations,
+            destinations=trusted_profile.context.destinations,
+            audiences=trusted_profile.context.audiences,
+            markets=trusted_profile.context.markets,
+            positioning=trusted_profile.context.positioning,
+            communication=trusted_profile.context.communication,
+            goals=trusted_profile.context.goals,
+            content_preferences=trusted_profile.context.content_preferences,
+            public_contacts=trusted_profile.context.public_contacts,
+            claims=(
+                BusinessClaim(
+                    "Гостей можно регистрировать как пассажиров бронирования",
+                    "verified", "business_rules_doc", "now", "now",
+                ),
+            ),
+        ),
+        trusted_profile.created_at, trusted_profile.updated_at,
+    )
+    disputed_text = "Автор кейса зарегистрировал гостей как пассажиров бронирования"
+    spec = MaterialOrchestrationService().build_generation_spec(
+        10, source(10),
+        analysis(10, disputed_claims=(disputed_text,)),
+        trusted_profile, artifact_type="post", output_format="telegram",
+    )
+    assert spec.source_facts["disputed_claims"] == (disputed_text,)
+    assert not any(c["text"] == disputed_text for c in spec.verified_claims_allowed)
 
 
 def test_disputed_claim_unknown_to_trusted_context_stays_unverified():
@@ -869,3 +908,84 @@ def test_disputed_claim_unknown_to_trusted_context_stays_unverified():
     assert not any(
         "47 тыс" in c["text"] for c in spec.verified_claims_allowed
     )
+
+
+# --- Pre-deploy review of commit 8dd83ee: adversarial cases for
+# _reconcile_disputed_claims_with_trusted_context(). The original bag-of-word
+# overlap matcher had no concept of negation, differing numbers, or claim
+# specificity and false-positived on all five cases below (captured as
+# xfail(strict=True) during the review). The matcher was replaced with exact
+# normalized-text matching (see _confirmed_by_trusted_claim /
+# _normalize_claim_text) specifically to make these five cases safe — they
+# are now plain regression tests and are expected to PASS.
+
+def test_adversarial_negation_is_not_confirmed_by_its_opposite():
+    """«можно» vs «нельзя»: a disputed claim that is the literal negation of
+    a verified claim must NOT be promoted to verified — it should stay
+    disputed (or be flagged as a contradiction), never silently confirmed."""
+    from app.services.material_orchestration import _reconcile_disputed_claims_with_trusted_context
+
+    verified_text = "Гостей можно регистрировать как пассажиров бронирования"
+    disputed = "Гостей нельзя регистрировать как пассажиров бронирования"
+    remaining, promoted = _reconcile_disputed_claims_with_trusted_context(
+        (disputed,), ({"text": verified_text, "evidence_reference": "policy"},)
+    )
+    assert remaining == (disputed,)
+    assert promoted == ()
+
+
+def test_adversarial_payment_negation_is_not_confirmed():
+    from app.services.material_orchestration import _reconcile_disputed_claims_with_trusted_context
+
+    verified_text = "Оплатить бронирование можно картой иностранного банка"
+    disputed = "Оплатить бронирование нельзя картой иностранного банка"
+    remaining, promoted = _reconcile_disputed_claims_with_trusted_context(
+        (disputed,), ({"text": verified_text, "evidence_reference": "faq"},)
+    )
+    assert remaining == (disputed,)
+    assert promoted == ()
+
+
+def test_adversarial_different_number_is_not_confirmed_by_same_topic_claim():
+    """Same topic, different figure: a verified 10% discount claim must not
+    confirm a disputed claim about a 47% discount — the number IS the fact
+    in dispute."""
+    from app.services.material_orchestration import _reconcile_disputed_claims_with_trusted_context
+
+    verified_text = "Скидка партнёра составляет 10 процентов от суммы бронирования"
+    disputed = "Автор пишет, что скидка партнёра составила 47 процентов от суммы бронирования"
+    remaining, promoted = _reconcile_disputed_claims_with_trusted_context(
+        (disputed,), ({"text": verified_text, "evidence_reference": "price_list"},)
+    )
+    assert remaining == (disputed,)
+    assert promoted == ()
+
+
+def test_adversarial_different_tariff_is_not_confirmed_by_another_tariffs_claim():
+    """Same object shape, different tariff name: a verified claim about
+    tariff "Стандарт" must not confirm a disputed claim about tariff
+    "Премиум" — they are different products."""
+    from app.services.material_orchestration import _reconcile_disputed_claims_with_trusted_context
+
+    verified_text = "Тариф Стандарт даёт доступ к базовым турам без взносов"
+    disputed = "Тариф Премиум даёт доступ к базовым турам без взносов"
+    remaining, promoted = _reconcile_disputed_claims_with_trusted_context(
+        (disputed,), ({"text": verified_text, "evidence_reference": "tariff_page"},)
+    )
+    assert remaining == (disputed,)
+    assert promoted == ()
+
+
+def test_adversarial_lexically_similar_unrelated_claim_is_not_confirmed():
+    """Similar wording, no actual factual overlap: a verified claim about
+    guests booking via the PARTNER's own cabinet must not confirm a disputed
+    claim about guests booking via a THIRD PARTY agency's cabinet."""
+    from app.services.material_orchestration import _reconcile_disputed_claims_with_trusted_context
+
+    verified_text = "Гости могут бронировать туры через личный кабинет партнёра"
+    disputed = "Гости бронировали туры через личный кабинет чужого агентства"
+    remaining, promoted = _reconcile_disputed_claims_with_trusted_context(
+        (disputed,), ({"text": verified_text, "evidence_reference": "onboarding_doc"},)
+    )
+    assert remaining == (disputed,)
+    assert promoted == ()
