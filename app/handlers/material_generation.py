@@ -21,7 +21,7 @@ from app.keyboards import (
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
-from app.services.generation_request_builder import build_provider_generation_request
+from app.services.generation_request_builder import build_source_analysis_provider_request
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.llm.base import LLMProvider
 from app.domain.partners import WorkspaceContext
@@ -172,7 +172,7 @@ async def generate_source_material(
         artifact_type=_ARTIFACT_TYPE,
         output_format=output_format,
     )
-    request = build_provider_generation_request(spec)
+    request = build_source_analysis_provider_request(spec)
     draft = await asyncio.to_thread(
         llm_provider.generate_draft,
         source_text=request.source_text,

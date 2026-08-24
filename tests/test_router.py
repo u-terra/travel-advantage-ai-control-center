@@ -158,3 +158,90 @@ def test_first_message_to_potential_client_is_mandatory_safety():
 def test_cold_message_is_mandatory_safety():
     d = route_text("Подготовь холодное сообщение для нового контакта")
     assert d.safety_level is SafetyLevel.MANDATORY
+
+
+# --- Fix: явное действие пользователя (rewrite/adapt/shorten) в начале
+# запроса не должно уступать Safety Layer только потому, что внутри
+# ВСТАВЛЕННОГО/цитируемого материала встретилось тематическое или
+# служебное слово вроде «проверить». Живой прод-баг: «Перепиши этот пост...:
+# <пост, где внутри есть "Проверить сведения можно на сайте...">» роутился в
+# Safety Layer и rewrite вообще не выполнялся. Принцип общий (не про
+# конкретную тему поста) — проверяется на нейтральном и на sensitive-тексте
+# одинаково. ---
+
+_NEUTRAL_QUOTED_POST = (
+    "Собрались в Грузию на пять дней. Забронировали отель в центре Тбилиси, "
+    "взяли машину в аренду и заранее купили билеты на канатную дорогу."
+)
+_SENSITIVE_QUOTED_POST = (
+    "Пришла повестка из военкомата. Юрист говорит, что запрет на выезд может "
+    "быть оформлен через электронный реестр даже без личного вручения бумаги. "
+    "Нужно проверить актуальные ограничения перед покупкой билетов."
+)
+
+
+def test_rewrite_neutral_quoted_post_routes_to_content_factory():
+    d = route_text(f"Перепиши этот пост своими словами: {_NEUTRAL_QUOTED_POST}")
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert d.secondary_modules == ()
+
+
+def test_rewrite_sensitive_quoted_post_still_routes_to_content_factory():
+    """Регрессия: слово «проверить» внутри цитаты не должно отбирать
+    приоритет у явной команды «Перепиши» в начале запроса."""
+    d = route_text(f"Перепиши этот пост своими словами: {_SENSITIVE_QUOTED_POST}")
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert d.secondary_modules == ()
+
+
+def test_adapt_for_vk_routes_to_content_factory():
+    d = route_text(f"Адаптируй этот пост для ВК: {_NEUTRAL_QUOTED_POST}")
+    assert d.primary_module is Module.CONTENT_FACTORY
+
+
+def test_shorten_sensitive_quoted_post_routes_to_content_factory():
+    d = route_text(f"Сократи этот пост: {_SENSITIVE_QUOTED_POST}")
+    assert d.primary_module is Module.CONTENT_FACTORY
+
+
+def test_explicit_risk_check_still_routes_to_safety_layer():
+    """Не регрессия: явная просьба проверить (без rewrite-глагола) по-прежнему
+    уходит в Safety Layer — это существующее корректное поведение."""
+    d = route_text(f"Проверь этот пост на риски: {_SENSITIVE_QUOTED_POST}")
+    assert d.primary_module is Module.SAFETY_LAYER
+    assert Module.CONTENT_FACTORY in d.secondary_modules
+
+
+def test_explicit_fact_check_still_routes_to_safety_layer():
+    d = route_text(f"Проверь факты в этом посте: {_SENSITIVE_QUOTED_POST}")
+    assert d.primary_module is Module.SAFETY_LAYER
+    assert Module.CONTENT_FACTORY in d.secondary_modules
+
+
+def test_check_and_rewrite_both_requested_keeps_safety_priority():
+    """Если ведущая инструкция сама содержит и rewrite-, и check-глагол —
+    поведение не должно измениться (fallback на полный текст, Safety не
+    подавляется)."""
+    d = route_text(f"Проверь и перепиши этот пост: {_SENSITIVE_QUOTED_POST}")
+    assert d.primary_module is Module.SAFETY_LAYER
+
+
+def test_real_production_defect2_case_now_routes_to_content_factory():
+    """Точный текст реального прод-инцидента (см. review): «Перепиши этот
+    пост так что бы в плагиате не обвинили: <пост про повестку, где внутри
+    встречается 'Проверить сведения...'>» — раньше уходил в Safety Layer и
+    rewrite не выполнялся."""
+    real_text = (
+        "Перепиши этот пост так что бы в плагиате не обвинили:🫡ПРИШЛА "
+        "ПОВЕСТКА — МОЖНО ЛИ ВЫЕХАТЬ ИЗ РОССИИ?\n\n"
+        "Проверить сведения можно на официальном сайте реестрповесток.рф"
+    )
+    d = route_text(real_text)
+    assert d.primary_module is Module.CONTENT_FACTORY
+
+
+def test_rewrite_keyword_alone_without_quoted_content_is_unaffected():
+    """Обычная короткая команда без вставленного материала — поведение не
+    меняется (rewrite-глаголы и раньше вели в Content Factory через «пост»)."""
+    d = route_text("Перепиши этот пост")
+    assert d.primary_module is Module.CONTENT_FACTORY

@@ -10,6 +10,7 @@ from app.routing.keywords import (
     CONTENT_PATTERNS,
     PACKAGING_KEYWORDS,
     RADAR_KEYWORDS,
+    REWRITE_ACTION_KEYWORDS,
     SAFETY_KEYWORDS,
 )
 from app.routing.modules import Module
@@ -49,6 +50,31 @@ def _count_pattern_matches(
     return sum(1 for pattern in patterns if pattern.search(text_lower))
 
 
+# Fix: живой прод-баг — «Перепиши этот пост так, чтобы в плагиате не
+# обвинили: <длинный вставленный пост>» роутился в Safety Layer, потому что
+# внутри ВСТАВЛЕННОГО поста (не в команде пользователя) встретилось слово
+# «Проверить...». SAFETY_KEYWORDS раньше считались по всему тексту сообщения
+# — команда пользователя и вставленный/цитируемый материал не различались.
+#
+# _LEADING_INSTRUCTION_WINDOW ограничивает, где вообще имеет смысл искать
+# «что попросил пользователь»: сама команда почти всегда — это первая
+# строка или текст до двоеточия перед вставкой; вставленный материал после
+# него не должен участвовать в определении ДЕЙСТВИЯ. 300 символов — щедрый
+# запас для любой реальной формулировки инструкции и заведомо меньше
+# типичного вставленного поста.
+_LEADING_INSTRUCTION_WINDOW = 300
+
+
+def _leading_instruction(task_text: str) -> str:
+    window = task_text[:_LEADING_INSTRUCTION_WINDOW]
+    boundary = len(window)
+    for separator in (":", "\n"):
+        index = window.find(separator)
+        if index != -1:
+            boundary = min(boundary, index)
+    return window[:boundary]
+
+
 def _sort_matched(scores: dict[Module, int]) -> tuple[Module, ...]:
     def key(m: Module) -> tuple[int, int]:
         priority_index = MODULE_PRIORITY.index(m) if m in MODULE_PRIORITY else 99
@@ -76,8 +102,23 @@ def route_text(task_text: str) -> RouteDecision:
     intent_score = _count_matches(text_lower, ASSISTANT_INTENT_KEYWORDS)
     topic_score = _count_matches(text_lower, ASSISTANT_TOPIC_KEYWORDS)
     radar_score = _count_matches(text_lower, RADAR_KEYWORDS)
-    safety_kw_score = _count_matches(text_lower, SAFETY_KEYWORDS)
     packaging_score = _count_matches(text_lower, PACKAGING_KEYWORDS)
+
+    # Явное действие пользователя (в начале запроса) важнее тематических/
+    # служебных слов внутри вставленного материала. Если ведущая инструкция
+    # явно просит переписать/адаптировать/сократить и сама НЕ содержит
+    # explicit-проверочного слова — Safety-ключи ищем только в этой ведущей
+    # части, а не по всему сообщению, чтобы слово вроде «проверить» из
+    # цитируемого поста не отбирало приоритет у команды пользователя. Если
+    # явного rewrite-действия нет (или сама команда тоже просит проверить —
+    # «Проверь и перепиши») — поведение прежнее, по всему тексту.
+    leading_lower = _leading_instruction(task_text).lower()
+    has_rewrite_action = _count_matches(leading_lower, REWRITE_ACTION_KEYWORDS) > 0
+    has_check_action = _count_matches(leading_lower, SAFETY_KEYWORDS) > 0
+    if has_rewrite_action and not has_check_action:
+        safety_kw_score = _count_matches(leading_lower, SAFETY_KEYWORDS)
+    else:
+        safety_kw_score = _count_matches(text_lower, SAFETY_KEYWORDS)
 
     # Детерминированное правило приоритета:
     # если есть явное намерение создать контент и нет явного клиентского сигнала,
