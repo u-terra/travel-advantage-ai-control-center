@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.routing.modules import Module
 from app.routing.router import route_for_button, route_text
 from app.routing.safety import SafetyLevel
@@ -216,6 +218,72 @@ def test_explicit_fact_check_still_routes_to_safety_layer():
     d = route_text(f"Проверь факты в этом посте: {_SENSITIVE_QUOTED_POST}")
     assert d.primary_module is Module.SAFETY_LAYER
     assert Module.CONTENT_FACTORY in d.secondary_modules
+
+
+# --- Fix: live prod bug found in the 2a681a8+5c0ebca smoke test. An explicit
+# leading rewrite action (перепиши/перефразируй/адаптируй/сократи) previously
+# only suppressed a false-positive Safety score inside REWRITE_ACTION_KEYWORDS
+# handling — it never contributed a score of its own. "Перепиши этот ТЕКСТ:
+# <кейс>" has no "пост" (CONTENT_KEYWORDS' "переписат" stem does not match the
+# imperative "перепиши") and, for many real pasted texts, no Safety/topic
+# keyword either — so every score stayed at zero and the router fell back to
+# Module.ORCHESTRATOR ("route not determined") instead of running the
+# rewrite. The fix makes the leading rewrite action a self-sufficient Content
+# Factory signal, independent of whether "текст"/"пост"/"публикация" or no
+# label at all follows it. ---
+
+_REAL_ANTALYA_REWRITE_CASE = (
+    "Перепиши этот текст так, что бы меня не обвинили в плагиате: Свежий "
+    "кейс! \nОтправили брата с женой в путешествие в Анталию, за отель "
+    "отдали 47 т.р. вместо 113 на Букинге, трансфер тоже в 3 раза дешевле. \n"
+    "В общем от начальной суммы путешествия сэкономили им почти 90 тысяч. \n"
+    "Они до сих пор не верят: А, что так можно было?\n\n"
+    "Хотя ни брат, ни его жена партнерами клуба не являются (но уже очень "
+    "хотят ими стать), они записаны в аккаунт, как гости-пассажиры! \n"
+    "Прилетели довольные, теперь всем рассказывают, что сказочно отдохнули "
+    "и уже планируют поездку снова!  \nИ, оказалось, что вот так тоже "
+    "можно! \nБез баллов, без парнерства, без взносов, без заморочек, со "
+    "скидками в 67%…просто папа решил сделать ребенку подарок и записал "
+    "его в свой аккаунт! \nЧудеса!"
+)
+
+
+def test_real_production_rewrite_of_bare_text_no_longer_uncertain():
+    """Regression: the exact real production text that previously routed to
+    Module.ORCHESTRATOR (is_uncertain=True) must now run as a rewrite task."""
+    d = route_text(_REAL_ANTALYA_REWRITE_CASE)
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert d.secondary_modules == ()
+    assert not d.is_uncertain
+
+
+@pytest.mark.parametrize("verb", ["Перепиши", "Перефразируй", "Адаптируй", "Сократи"])
+def test_rewrite_verb_on_bare_text_label_routes_to_content_factory(verb):
+    """None of "текст"/no-label bodies are in CONTENT_KEYWORDS - the rewrite
+    verb itself must be enough, not just when paired with "пост"."""
+    d = route_text(f"{verb} этот текст: {_NEUTRAL_QUOTED_POST}")
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert not d.is_uncertain
+
+
+def test_rephrase_bare_colon_routes_to_content_factory():
+    d = route_text(f"Перефразируй: {_NEUTRAL_QUOTED_POST}")
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert not d.is_uncertain
+
+
+def test_shorten_bare_text_label_routes_to_content_factory():
+    d = route_text(f"Сократи текст: {_NEUTRAL_QUOTED_POST}")
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert not d.is_uncertain
+
+
+def test_explicit_check_on_bare_text_label_still_routes_to_safety_layer():
+    """Not a regression: "Проверь" has no rewrite verb, so it must keep
+    routing to Safety Layer exactly as before - the new rewrite-action score
+    must not leak into check-only requests."""
+    d = route_text(f"Проверь этот текст: {_NEUTRAL_QUOTED_POST}")
+    assert d.primary_module is Module.SAFETY_LAYER
 
 
 def test_check_and_rewrite_both_requested_keeps_safety_priority():

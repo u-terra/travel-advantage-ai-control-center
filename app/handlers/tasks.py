@@ -86,6 +86,10 @@ _UNCERTAIN_ROUTE_MESSAGE = (
 _PUBLICATION_LOOKALIKE_MIN_CHARS = 400
 
 _PENDING_SOURCE_TEXT_KEY = "pending_source_analysis_text"
+# Chat/message id of the "Разобрать его как публикацию?" prompt itself, so a
+# later unrelated flow can strip its inline keyboard - see
+# invalidate_pending_publication_offer() below.
+_PENDING_SOURCE_OFFER_MESSAGE_KEY = "pending_source_analysis_offer_message"
 
 _PUBLICATION_CONFIRM_PROMPT = (
     "Похоже, вы прислали большой фрагмент текста. Разобрать его как публикацию?"
@@ -94,6 +98,35 @@ _PUBLICATION_CONFIRM_PROMPT = (
 _PENDING_TEXT_LOST_MESSAGE = (
     "Не удалось найти сохранённый текст. Пришлите его ещё раз."
 )
+
+
+async def invalidate_pending_publication_offer(state: FSMContext, bot) -> None:
+    """Strips the inline keyboard of an outstanding "Разобрать его как
+    публикацию?" offer, if any, before an unrelated flow takes over the FSM
+    state that offer's confirm button depends on.
+
+    Prod bug: a user could tap the "🛡 Проверить и улучшить текст" reply
+    button while that offer's inline keyboard was still visible from an
+    earlier message. start_free_text_review's state.clear() wiped
+    _PENDING_SOURCE_TEXT_KEY, so tapping the now-stale confirm button
+    afterwards produced "Не удалось найти сохранённый текст. Пришлите его
+    ещё раз." layered right on top of the Safety Layer flow's own "Пришли
+    текст..." prompt - two unrelated flows visibly mixed in one transcript.
+    Best-effort and silent on failure (message too old/already edited/gone):
+    the existing fail-closed message in on_confirm_publication_analysis
+    still covers whatever this race doesn't catch.
+    """
+    data = await state.get_data()
+    ref = data.get(_PENDING_SOURCE_OFFER_MESSAGE_KEY)
+    if not ref:
+        return
+    chat_id, message_id = ref
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=message_id, reply_markup=None,
+        )
+    except TelegramAPIError:
+        pass
 
 
 def _looks_like_pasted_publication(text: str) -> bool:
@@ -420,10 +453,16 @@ async def _maybe_send_module_result(
             and _looks_like_pasted_publication(decision.task_text)
         ):
             await state.update_data(**{_PENDING_SOURCE_TEXT_KEY: decision.task_text})
-            await message.answer(
+            offer_message = await message.answer(
                 _PUBLICATION_CONFIRM_PROMPT,
                 reply_markup=uncertain_route_publication_keyboard(),
             )
+            if offer_message is not None:
+                await state.update_data(**{
+                    _PENDING_SOURCE_OFFER_MESSAGE_KEY: (
+                        offer_message.chat.id, offer_message.message_id,
+                    ),
+                })
             return
         await message.answer(_UNCERTAIN_ROUTE_MESSAGE)
         return

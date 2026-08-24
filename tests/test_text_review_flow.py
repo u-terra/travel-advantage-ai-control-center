@@ -36,6 +36,7 @@ class Message:
     def __init__(self, text="Текст", user_id=1):
         self.text = text
         self.from_user = SimpleNamespace(id=user_id)
+        self.bot = SimpleNamespace(edit_message_reply_markup=AsyncMock())
         self.answers = []
     async def answer(self, text, **kwargs): self.answers.append((text, kwargs))
 

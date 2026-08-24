@@ -51,12 +51,19 @@ def user_preferences(
 
 
 class Message:
-    def __init__(self, text: str = "Создай FAQ для партнёра") -> None:
+    def __init__(self, text: str = "Создай FAQ для партнёра", chat_id: int = 555) -> None:
         self.text = text
         self.answers = []
+        self.chat = SimpleNamespace(id=chat_id)
+        self._next_message_id = 1000
 
     async def answer(self, text, **kwargs):
         self.answers.append((text, kwargs))
+        sent = SimpleNamespace(
+            chat=SimpleNamespace(id=self.chat.id), message_id=self._next_message_id,
+        )
+        self._next_message_id += 1
+        return sent
 
 
 class State:
@@ -1354,6 +1361,109 @@ def test_confirm_without_pending_text_fails_closed():
     artifacts = SimpleNamespace(create_source=AsyncMock())
     analyses = SimpleNamespace(save_successful_analysis=AsyncMock())
     provider = FakeLLMProvider()
+    run(on_confirm_publication_analysis(
+        callback, state, context(), artifacts, analyses, provider,
+    ))
+    artifacts.create_source.assert_not_called()
+    assert any("Пришлите его ещё раз" in t for t, _ in callback.message.answers)
+
+
+# --- Prod bug (smoke test after 2a681a8+5c0ebca): tapping "🛡 Проверить и
+# улучшить текст" while an unrelated "Разобрать его как публикацию?" offer
+# was still outstanding produced TWO mixed replies - the Safety Layer flow's
+# own "Пришли текст..." prompt, immediately followed by
+# on_confirm_publication_analysis's "Не удалось найти сохранённый текст..."
+# once the stale confirm button (still visible from the earlier offer) was
+# tapped, because start_free_text_review's state.clear() had already wiped
+# the state that stale button depended on. Fix: starting the text-review flow
+# now proactively strips that stale offer's inline keyboard first, so the two
+# flows can no longer visibly mix - see invalidate_pending_publication_offer
+# in app/handlers/tasks.py. ---
+
+def test_check_text_button_strips_stale_publication_offer_keyboard():
+    from app.handlers.text_review import TextReview, start_free_text_review
+
+    # Step 1: an uncertain-route text triggers the "Разобрать его как
+    # публикацию?" offer, saving both the pending text and (new) the offer
+    # message's chat/message id in FSM state.
+    offer_message = Message(_PASTED_PUBLICATION_TEXT)
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        "Итог", (), (), "Польза", (), (), (), (),
+    ))
+    profiles = profile_repository()
+    state = State()
+    run(on_free_text(
+        offer_message, journal(), provider, context(), profiles,
+        v2_menu_enabled=True, state=state,
+    ))
+    assert state.data.get("pending_source_analysis_text") == _PASTED_PUBLICATION_TEXT
+    offer_ref = state.data.get("pending_source_analysis_offer_message")
+    assert offer_ref is not None
+
+    # Step 2: instead of tapping that offer's inline button, the user taps
+    # the "🛡 Проверить и улучшить текст" reply-keyboard button.
+    check_button_message = Message("🛡 Проверить и улучшить текст")
+    check_button_message.bot = SimpleNamespace(edit_message_reply_markup=AsyncMock())
+    run(start_free_text_review(check_button_message, state))
+
+    # The stale offer's keyboard was proactively stripped with its own
+    # chat/message id...
+    check_button_message.bot.edit_message_reply_markup.assert_awaited_once_with(
+        chat_id=offer_ref[0], message_id=offer_ref[1], reply_markup=None,
+    )
+    # ...the FSM cleanly moved into the text-review flow...
+    assert state.state == TextReview.waiting_for_text
+    assert "pending_source_analysis_text" not in state.data
+    # ...and only ONE reply was sent for this one button tap - not the
+    # "Не удалось найти сохранённый текст" message layered on top of it.
+    texts = [t for t, _ in check_button_message.answers]
+    assert texts == ["Пришли текст, который нужно проверить и улучшить."]
+    assert not any("Не удалось найти сохранённый текст" in t for t in texts)
+
+
+def test_check_text_button_with_no_pending_offer_is_a_no_op():
+    """No outstanding offer -> nothing to strip, no crash, same prompt as
+    always (existing behaviour for the common case, unaffected by the fix)."""
+    from app.handlers.text_review import TextReview, start_free_text_review
+
+    message = Message("🛡 Проверить и улучшить текст")
+    message.bot = SimpleNamespace(edit_message_reply_markup=AsyncMock())
+    state = State()
+    run(start_free_text_review(message, state))
+    message.bot.edit_message_reply_markup.assert_not_awaited()
+    assert state.state == TextReview.waiting_for_text
+    assert [t for t, _ in message.answers] == [
+        "Пришли текст, который нужно проверить и улучшить.",
+    ]
+
+
+def test_stale_offer_button_after_check_text_started_still_fails_closed():
+    """Belt-and-suspenders: even if the stale button is somehow still tapped
+    after the keyboard-strip (e.g. a client-side race), the existing
+    fail-closed message in on_confirm_publication_analysis remains the
+    safety net - it must not crash or silently analyze nothing."""
+    from app.handlers.tasks import on_confirm_publication_analysis
+    from app.handlers.text_review import start_free_text_review
+
+    offer_message = Message(_PASTED_PUBLICATION_TEXT)
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        "Итог", (), (), "Польза", (), (), (), (),
+    ))
+    profiles = profile_repository()
+    state = State()
+    run(on_free_text(
+        offer_message, journal(), provider, context(), profiles,
+        v2_menu_enabled=True, state=state,
+    ))
+
+    check_button_message = Message("🛡 Проверить и улучшить текст")
+    check_button_message.bot = SimpleNamespace(edit_message_reply_markup=AsyncMock())
+    run(start_free_text_review(check_button_message, state))
+
+    callback = Callback()
+    callback.data = "task_action:confirm_publication_analysis"
+    artifacts = SimpleNamespace(create_source=AsyncMock())
+    analyses = SimpleNamespace(save_successful_analysis=AsyncMock())
     run(on_confirm_publication_analysis(
         callback, state, context(), artifacts, analyses, provider,
     ))

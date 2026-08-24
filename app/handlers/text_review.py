@@ -16,6 +16,7 @@ from app.keyboards import (
     artifact_review_keyboard, free_text_review_keyboard, material_result_keyboard,
     v2_back_keyboard,
 )
+from app.handlers.tasks import invalidate_pending_publication_offer
 from app.repositories.artifact_repository import ArtifactRepository
 from app.services.llm.base import LLMProvider
 from app.services.llm.models import TextCheckResult
@@ -62,6 +63,14 @@ def _card(result: TextCheckResult) -> str:
 
 @router.message(MagicData(F.v2_menu_enabled), F.text == BTN_V2_CHECK_TEXT)
 async def start_free_text_review(message: Message, state: FSMContext) -> None:
+    # Prod bug: an unrelated "Разобрать его как публикацию?" offer can still
+    # be outstanding (inline keyboard visible, its text saved in FSM state)
+    # when the user instead taps this button. state.clear() below wipes that
+    # offer's backing state, so tapping its now-stale button afterwards used
+    # to answer "Не удалось найти сохранённый текст..." right on top of this
+    # flow's own "Пришли текст..." prompt - two flows visibly mixed in one
+    # transcript. Strip that stale keyboard first so the two modes can't mix.
+    await invalidate_pending_publication_offer(state, message.bot)
     await state.clear()
     await state.set_state(TextReview.waiting_for_text)
     await message.answer(

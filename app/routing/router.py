@@ -120,6 +120,23 @@ def route_text(task_text: str) -> RouteDecision:
     else:
         safety_kw_score = _count_matches(text_lower, SAFETY_KEYWORDS)
 
+    # Live prod bug: «Перепиши этот текст так, что бы меня не обвинили в
+    # плагиате: <длинный кейс>» went to Module.ORCHESTRATOR (uncertain route).
+    # REWRITE_ACTION_KEYWORDS above only ever suppressed a false-positive
+    # Safety score - it never contributed a score of its own. Without the
+    # word "пост" (CONTENT_KEYWORDS has "переписат", which does not match the
+    # imperative "перепиши") and without any Safety/topic word in the pasted
+    # text, content_score/safety_kw_score/assistant_score/radar_score/
+    # packaging_score were ALL zero, scores stayed empty, and the router fell
+    # back to "route not determined". An explicit leading rewrite action
+    # (перепиши/адаптируй/сократи/перефразируй) is itself a self-sufficient
+    # Content Factory signal, independent of "текст" vs "пост" vs a bare
+    # pasted material with no label at all - so it must score on its own,
+    # not just gate Safety. Same has_check_action guard as above: "Проверь и
+    # перепиши" (explicit check verb leading) must not gain this bump.
+    if has_rewrite_action and not has_check_action:
+        content_score += 1
+
     # Детерминированное правило приоритета:
     # если есть явное намерение создать контент и нет явного клиентского сигнала,
     # предметные слова (тариф / travel advantage / life experiences / брониров / оплат)
