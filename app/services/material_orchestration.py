@@ -118,6 +118,115 @@ _CONSTRAINTS = (
     "противоречит бизнес-контексту, фактам источника и правилам выше.",
 )
 
+# Fix: разбор присланной пользователем публикации («Разобрать публикацию»)
+# слишком часто превращал живой кейс в стерильный текст — конкретные цифры и
+# детали из disputed_claims либо вырезались целиком, либо единичный случай
+# подавался как универсальное правило для всех. Три отдельных constraint'а
+# вместо изменения общих _CONSTRAINTS (используются только этим flow —
+# build_generation_spec, — чтобы не задеть обычную генерацию постов, Radar и
+# client reply):
+#   1) сначала свериться с уже доступным trusted-контекстом workspace, а не
+#      сразу требовать «внешней проверки»;
+#   2) факт, которого в trusted-контексте нет, — это не выдумка бота, а
+#      конкретика присланного кейса: сохранить её с атрибуцией автору
+#      источника, а не заменять обезличенной фразой без цифр;
+#   3) не превращать конкретный случай в обещание результата для всех.
+_SOURCE_CASE_ATTRIBUTION_CONSTRAINT = (
+    "Утверждения из [SOURCE FACTS - DATA].disputed_claims — это конкретные "
+    "детали присланного кейса, а не автоматически ложь и не повод для "
+    "удаления. Сначала сверь каждое такое утверждение с [VERIFIED CLAIMS - "
+    "ALLOWED FACTS] и [TRUSTED BUSINESS CONTEXT - DATA]: если там есть "
+    "подтверждение — используй утверждение как обычный факт, без оговорок. "
+    "Если [TRUSTED BUSINESS CONTEXT - DATA] или [VERIFIED CLAIMS - ALLOWED "
+    "FACTS] прямо противоречат утверждению — явно отметь это противоречие в "
+    "тексте, а не игнорируй его молча. Если ни один из этих разделов ничего "
+    "не говорит по теме утверждения — сохрани утверждение как конкретный "
+    "факт ИЗ ПРИСЛАННОЙ ПУБЛИКАЦИИ с явной атрибуцией автору источника "
+    "(например, «по словам автора», «в этом конкретном бронировании», «по "
+    "данным автора публикации», «на момент сравнения»), а не удаляй его и не "
+    "заменяй общей фразой без цифр и деталей. Конкретные числа, даты, "
+    "названия и суммы из disputed_claims можно и нужно сохранять как "
+    "атрибутированные данные конкретного случая."
+)
+_SOURCE_CASE_SCOPE_CONSTRAINT = (
+    "Не превращай единичный случай из источника в универсальное обещание "
+    "результата для всех читателей (например, «в этом кейсе получилось "
+    "около 67%» нельзя переписывать как «мы всегда даём скидку 67%»). Если "
+    "исходный текст описывает один конкретный случай, прямо покажи, что это "
+    "пример, а не гарантия: добавь короткую оговорку вида «это не значит, "
+    "что результат будет таким в каждом бронировании» рядом с фактом, а не "
+    "вместо него. Оговорка не должна вытеснять уже сохранённую конкретику "
+    "случая (цифры, даты, детали)."
+)
+_SOURCE_ANALYSIS_CONSTRAINTS = _CONSTRAINTS + (
+    _SOURCE_CASE_ATTRIBUTION_CONSTRAINT,
+    _SOURCE_CASE_SCOPE_CONSTRAINT,
+)
+
+# Fix: перед тем как отправить disputed_claims модели как «требует проверки»,
+# сверяем их с уже доступным trusted Business/Knowledge Context workspace
+# (verified claims профиля) — тем же источником, что и verified_claims_allowed
+# ниже. Подтверждённое контекстом утверждение перестаёт быть спорным и
+# переходит в verified_claims_allowed; остальное остаётся в disputed_claims и
+# помечается по правилам _SOURCE_CASE_ATTRIBUTION_CONSTRAINT выше, а не сразу
+# как «требует внешней проверки». Однословные/общие claims (например,
+# тестовые "Verified"/"Unverified") намеренно не участвуют в сверке — короткий
+# claim слишком легко случайно "совпадёт" по отдельному слову с чем угодно,
+# включая враждебный текст источника, который специально пытается это
+# спровоцировать.
+_CLAIM_RECONCILIATION_OVERLAP_THRESHOLD = 0.6
+_CLAIM_RECONCILIATION_MIN_WORDS = 3
+_CLAIM_WORD_RE = re.compile(r"\w+", re.UNICODE)
+_CLAIM_STEM_LEN = 6
+
+
+def _claim_word_stems(text: str) -> set[str]:
+    words = _CLAIM_WORD_RE.findall(text.lower())
+    return {w if len(w) <= _CLAIM_STEM_LEN else w[:_CLAIM_STEM_LEN] for w in words}
+
+
+def _confirmed_by_trusted_claim(disputed_claim: str, verified_claim_text: str) -> bool:
+    verified_words = _claim_word_stems(verified_claim_text)
+    if len(verified_words) < _CLAIM_RECONCILIATION_MIN_WORDS:
+        return False
+    disputed_words = _claim_word_stems(disputed_claim)
+    if not disputed_words:
+        return False
+    overlap = verified_words & disputed_words
+    return len(overlap) / len(verified_words) >= _CLAIM_RECONCILIATION_OVERLAP_THRESHOLD
+
+
+def _reconcile_disputed_claims_with_trusted_context(
+    disputed_claims: tuple[str, ...],
+    verified_claims: tuple[Mapping[str, Any], ...],
+) -> tuple[tuple[str, ...], tuple[Mapping[str, Any], ...]]:
+    """Проблема 4: сначала проверяем trusted Business/Knowledge Context, и
+    только если он ничего не знает — оставляем факт непроверенным.
+
+    Возвращает (оставшиеся disputed_claims, дополнительные verified claims,
+    подтверждённые контекстом).
+    """
+    remaining: list[str] = []
+    promoted: list[Mapping[str, Any]] = []
+    for claim in disputed_claims:
+        match = next(
+            (
+                verified for verified in verified_claims
+                if _confirmed_by_trusted_claim(claim, verified.get("text", ""))
+            ),
+            None,
+        )
+        if match is None:
+            remaining.append(claim)
+            continue
+        promoted.append({
+            "text": claim,
+            "verification_status": "verified",
+            "evidence_reference": match.get("evidence_reference") or "business_profile",
+        })
+    return tuple(remaining), tuple(promoted)
+
+
 # Free-text task fulfillment fix (та же категория багов, что и _FREE_TEXT_OBJECTIVE
 # выше, только для двух конкретных живых кейсов):
 #
@@ -257,6 +366,14 @@ class MaterialOrchestrationService:
         trusted_context, tone_preferences, verified, unverified, revision = (
             _profile_generation_values(workspace_id, profile)
         )
+        # Проблема 4: сначала сверяем disputed_claims источника с уже
+        # доступным trusted-контекстом workspace, а не сразу помечаем их как
+        # требующие внешней проверки.
+        remaining_disputed, promoted_verified = (
+            _reconcile_disputed_claims_with_trusted_context(
+                analysis.disputed_claims, verified,
+            )
+        )
 
         return GenerationSpec(
             action_type=GenerationAction.CREATE_ARTIFACT,
@@ -272,16 +389,16 @@ class MaterialOrchestrationService:
                 "audience_value": analysis.audience_value,
                 "content_angles": analysis.content_angles,
                 "recommended_formats": analysis.recommended_formats,
-                "disputed_claims": analysis.disputed_claims,
+                "disputed_claims": remaining_disputed,
                 "warnings": analysis.warnings,
             },
             trusted_business_context=trusted_context,
             untrusted_source_content=source.original_text or "",
             tone_preferences=tone_preferences,
             personal_style=_personal_style_values(user_preferences),
-            verified_claims_allowed=tuple(verified),
+            verified_claims_allowed=verified + promoted_verified,
             unverified_claims_requiring_caution=tuple(unverified),
-            constraints=_CONSTRAINTS,
+            constraints=_SOURCE_ANALYSIS_CONSTRAINTS,
             profile_revision_used=revision,
         )
 

@@ -25,8 +25,9 @@ class State:
 
 
 class Message:
-    def __init__(self, text, user_id=1):
+    def __init__(self, text, user_id=1, caption=None):
         self.text = text
+        self.caption = caption
         self.from_user = SimpleNamespace(id=user_id) if user_id is not None else None
         self.answers = []
     async def answer(self, text, **kwargs): self.answers.append((text, kwargs))
@@ -192,6 +193,37 @@ def test_card_formatting_exception_clears_state_and_reports_saved_analysis():
 def test_navigation_labels_are_not_received_as_source_during_processing():
     for text in (BTN_V2_ANALYZE_MORE, BTN_V2_MAIN_MENU):
         assert run(first_handler_for_state(text, AnalyzeSource.processing.state)) == "source_analysis_in_progress"
+
+
+def test_photo_with_caption_is_treated_as_source_text():
+    """Regression (Проблема 1): фото с непустой подписью — это тоже текст
+    публикации. message.text у фото пустой (None), весь текст поста лежит в
+    message.caption — раньше это читалось как пустой текст и просило прислать
+    текст повторно, хотя текст уже был отправлен."""
+    message, state = Message(None, caption="Текст поста из подписи к фото"), State()
+    partner, artifacts, analyses = dependencies()
+    payload = SourceAnalysisPayload("Итог", (), (), "Польза", (), (), (), ())
+    provider = FakeLLMProvider(analysis=payload)
+    run(receive_source_text(message, state, partner, artifacts, analyses, provider))
+    artifacts.create_source.assert_awaited_once()
+    assert artifacts.create_source.call_args.kwargs["original_text"] == (
+        "Текст поста из подписи к фото"
+    )
+    assert "🔎 Анализ источника" in message.answers[-1][0]
+    assert "Пришли непустой текст" not in message.answers[-1][0]
+    assert state.state is None
+
+
+def test_photo_without_caption_still_asks_for_text():
+    """Regression: фото без подписи (и без text) по-прежнему просит текст —
+    OCR фото не добавляется, это не в рамках этого фикса."""
+    message, state = Message(None, caption=None), State()
+    state.state = AnalyzeSource.waiting_for_text
+    partner, artifacts, analyses = dependencies()
+    run(receive_source_text(message, state, partner, artifacts, analyses, FakeLLMProvider()))
+    artifacts.create_source.assert_not_called()
+    assert "Пришли непустой текст для анализа." in message.answers[-1][0]
+    assert state.state == AnalyzeSource.waiting_for_text
 
 
 def test_api_error_leaves_persistence_to_new_source_only():

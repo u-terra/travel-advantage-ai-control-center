@@ -15,15 +15,21 @@ def analysis(**changes):
 def test_minimal_card_hides_empty_sections_and_is_plain_text():
     card = source_analysis_card(analysis(summary="<b>Итог</b>"))
     assert "<b>Итог</b>" in card
-    assert "Что важно:" not in card
-    assert "Ценность для аудитории:\nПольза" in card
+    assert "💎 Что здесь ценного" in card
+    # Пустые секции (нет key_facts/disputed_claims/warnings/content_angles) не
+    # должны появляться в компактной карточке (Проблема 6).
+    assert "Что нужно проверить" not in card
+    assert "Как лучше подать" not in card
+    # audience_value/target_audiences больше не дублируются в Telegram-карточке —
+    # они остаются в SourceAnalysis/БД, но не раздувают пользовательский вывод.
+    assert "Польза" not in card
 
 
-def test_card_stays_below_limit_truncates_items_and_keeps_warnings():
+def test_card_stays_below_limit_and_is_compact():
     card = source_analysis_card(analysis(
         summary="S" * 5000,
         key_facts=tuple("F" * 1000 for _ in range(20)),
-        disputed_claims=("Проверить",),
+        disputed_claims=("Проверить " + "D" * 1000,),
         audience_value="A" * 5000,
         target_audiences=tuple("T" * 1000 for _ in range(20)),
         content_angles=tuple("C" * 1000 for _ in range(20)),
@@ -32,6 +38,21 @@ def test_card_stays_below_limit_truncates_items_and_keeps_warnings():
     ))
     assert len(card) <= 3900
     assert card.startswith("🔎 Анализ источника")
-    assert "Предупреждения:" in card
-    assert "ВАЖНО" in card
-    assert "Что требует проверки:" in card
+    assert "🔍 Что нужно проверить / уточнить" in card
+    assert "Проверить" in card
+
+
+def test_card_sections_carry_disputed_claims_and_content_angles():
+    card = source_analysis_card(analysis(
+        key_facts=("Факт один",),
+        disputed_claims=("Спорное утверждение",),
+        content_angles=("Идея подачи",),
+        recommended_formats=("post", "reels"),
+    ))
+    assert "💎 Что здесь ценного" in card
+    assert "Факт один" in card
+    assert "🔍 Что нужно проверить / уточнить" in card
+    assert "Спорное утверждение" in card
+    assert "✍️ Как лучше подать" in card
+    assert "Идея подачи" in card
+    assert "post" in card and "reels" in card

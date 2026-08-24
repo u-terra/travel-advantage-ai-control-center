@@ -62,6 +62,7 @@ class Message:
 class State:
     def __init__(self, data=None) -> None:
         self.data = data or {}
+        self.state = None
 
     async def get_data(self):
         return self.data
@@ -71,6 +72,9 @@ class State:
 
     async def update_data(self, **kwargs):
         self.data.update(kwargs)
+
+    async def set_state(self, value):
+        self.state = value
 
 
 class Callback:
@@ -1125,6 +1129,63 @@ def test_uncertain_route_always_gets_a_reply_in_v2_ui():
     ))
     assert message.answers, "бот обязан ответить хоть что-то на любой free-text"
     provider.generate_draft.assert_not_called()
+
+
+def test_pasted_publication_from_main_menu_is_analyzed_instead_of_dead_end():
+    """Regression (Проблема 2): длинный текст публикации, вставленный прямо в
+    главное меню (без нажатия кнопки), обычно не содержит routing keywords —
+    route_text() честно возвращает is_uncertain. Раньше пользователь получал
+    тупиковое «Не удалось уверенно определить маршрут». Теперь, если текст
+    структурно похож на вставленную публикацию (длинный) и доступны
+    зависимости сценария «Разобрать публикацию», бот использует этот сценарий
+    вместо тупикового ответа."""
+    text = (
+        "Хотим поделиться свежим кейсом клиента. Семья из Москвы слетала в "
+        "Анталию на десять дней и нашла отель через наш сервис. "
+        "Итоговая стоимость проживания оказалась заметно меньше, чем на "
+        "популярных туристических сайтах, а трансфер получилось согласовать "
+        "отдельно и тоже дешевле обычного. Делимся деталями, чтобы показать, "
+        "как сравнение предложений помогает сэкономить при планировании "
+        "поездки заранее и без лишних сложностей для всей семьи в дороге."
+    )
+    assert len(text) >= 400
+    message = Message(text)
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        "Итог", (), (), "Польза", (), (), (), (),
+    ))
+    profiles = profile_repository()
+    source = SimpleNamespace(id=77)
+    artifacts = SimpleNamespace(create_source=AsyncMock(return_value=source))
+    analyses = SimpleNamespace(save_successful_analysis=AsyncMock(return_value=SimpleNamespace(
+        summary="Итог", key_facts=(), disputed_claims=(), audience_value="Польза",
+        target_audiences=(), content_angles=(), recommended_formats=(), warnings=(),
+    )))
+    state = State()
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+        state=state, artifact_repository=artifacts, source_analysis_repository=analyses,
+    ))
+    assert not any("Не удалось уверенно определить маршрут" in t for t, _ in message.answers)
+    provider.analyze_source.assert_called_once()
+    artifacts.create_source.assert_awaited_once()
+    assert "🔎 Анализ источника" in message.answers[-1][0]
+
+
+def test_short_unrecognized_text_still_gets_uncertain_route_message():
+    """Общая защита: короткая нераспознанная фраза не перехватывается новым
+    fallback'ом — тот же сценарий, что и до фикса Проблемы 2."""
+    text = "просто что-то непонятное про абстракцию"
+    message = Message(text)
+    provider = FakeLLMProvider(draft=ContentDraft("Персональный черновик", ()))
+    profiles = profile_repository(business_profile())
+    artifacts = SimpleNamespace(create_source=AsyncMock())
+    analyses = SimpleNamespace(save_successful_analysis=AsyncMock())
+    run(on_free_text(
+        message, journal(), provider, context(), profiles, v2_menu_enabled=True,
+        state=State(), artifact_repository=artifacts, source_analysis_repository=analyses,
+    ))
+    assert any("Не удалось уверенно определить маршрут" in t for t, _ in message.answers)
+    artifacts.create_source.assert_not_called()
 
 
 def test_smoke_3_weekly_content_plan_without_explicit_number_uses_weekly_plan_format():

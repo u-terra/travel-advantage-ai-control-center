@@ -13,9 +13,11 @@ from app.domain.orchestration import OutputFormat
 from app.domain.partners import WorkspaceContext
 from app.domain.work import WorkSubjectValidationError, work_item_revision
 from app.handlers.menu import AwaitReplySubject, AwaitTask, BUTTON_HINTS
+from app.handlers.source_analysis import run_source_analysis
 from app.keyboards import BTN_V2_CLIENT_REPLY, active_main_menu, reply_confirm_keyboard
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
+from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.work_repository import WorkRepository
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
@@ -57,6 +59,26 @@ _UNCERTAIN_ROUTE_MESSAGE = (
     "⚠️ Не удалось уверенно определить маршрут для этой задачи. "
     "Выберите категорию задачи кнопкой главного меню или переформулируйте запрос."
 )
+
+# Fix: длинный текст, вставленный из главного меню (например, целая
+# публикация или пост), обычно не содержит ни одного из routing keywords —
+# route_text() честно возвращает is_uncertain, и раньше пользователь
+# получал тупиковое предупреждение вместо реального разбора. Структурный
+# признак («это скорее вставленный текст публикации, а не короткая
+# нераспознанная команда») — длина, а не список ключевых слов: короткие
+# неразобранные фразы («что-то непонятное») по-прежнему получают обычное
+# предупреждение и не перехватываются.
+_PUBLICATION_LOOKALIKE_MIN_CHARS = 400
+
+_PUBLICATION_FALLBACK_NOTICE = (
+    "Похоже, это текст публикации или поста — разбираю его как источник. "
+    "Если нужна другая задача, выберите категорию кнопкой главного меню."
+)
+
+
+def _looks_like_pasted_publication(text: str) -> bool:
+    return len(text.strip()) >= _PUBLICATION_LOOKALIKE_MIN_CHARS
+
 
 _REPLY_SUBJECT_EMPTY = (
     "Сообщение не должно быть пустым. Пришлите вопрос клиента или короткое "
@@ -100,6 +122,7 @@ async def on_reply_subject_received(
     workspace_context: WorkspaceContext | None,
     partner_repository: PartnerRepository,
     artifact_repository: ArtifactRepository | None = None,
+    source_analysis_repository: SourceAnalysisRepository | None = None,
 ) -> None:
     """Первый шаг «Ответить клиенту» (v2): «Кому отвечаем?» -> WorkSubject.
 
@@ -122,10 +145,11 @@ async def on_reply_subject_received(
     if _looks_like_client_message(text):
         await state.clear()
         await _route_and_dispatch(
-            message, journal, llm_provider, workspace_context, partner_repository,
+            message, state, journal, llm_provider, workspace_context, partner_repository,
             text, forced_module=Module.TRAVEL_ASSISTANT, skip_route_card=True,
             reply_subject_data=(None, None, None),
             work_repository=work_repository, artifact_repository=artifact_repository,
+            source_analysis_repository=source_analysis_repository,
         )
         return
 
@@ -157,6 +181,7 @@ async def on_task_after_button(
     partner_repository: PartnerRepository,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
+    source_analysis_repository: SourceAnalysisRepository | None = None,
     v2_menu_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
@@ -187,10 +212,11 @@ async def on_task_after_button(
 
     forced_module = Module(forced_raw) if forced_raw else None
     await _route_and_dispatch(
-        message, journal, llm_provider, workspace_context, partner_repository,
+        message, state, journal, llm_provider, workspace_context, partner_repository,
         task_text, forced_module=forced_module, skip_route_card=skip_route_card,
         reply_subject_data=(reply_work_item_id, reply_subject_id, reply_subject_name),
         work_repository=work_repository, artifact_repository=artifact_repository,
+        source_analysis_repository=source_analysis_repository,
         v2_menu_enabled=v2_menu_enabled,
     )
 
@@ -203,6 +229,9 @@ async def on_free_text(
     workspace_context: WorkspaceContext | None,
     partner_repository: PartnerRepository,
     v2_menu_enabled: bool = False,
+    state: FSMContext | None = None,
+    artifact_repository: ArtifactRepository | None = None,
+    source_analysis_repository: SourceAnalysisRepository | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -237,11 +266,15 @@ async def on_free_text(
     await _maybe_send_module_result(
         message, decision, llm_provider,
         workspace_context, partner_repository,
+        state=state, artifact_repository=artifact_repository,
+        source_analysis_repository=source_analysis_repository,
+        v2_menu_enabled=v2_menu_enabled,
     )
 
 
 async def _route_and_dispatch(
     message: Message,
+    state: FSMContext,
     journal: Journal,
     llm_provider: LLMProvider,
     workspace_context: WorkspaceContext,
@@ -253,6 +286,7 @@ async def _route_and_dispatch(
     reply_subject_data: tuple[int | None, int | None, str | None],
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
+    source_analysis_repository: SourceAnalysisRepository | None = None,
     v2_menu_enabled: bool = False,
 ) -> None:
     """Общий хвост on_task_after_button и «сообщение вместо имени» в
@@ -288,7 +322,8 @@ async def _route_and_dispatch(
         message, decision, llm_provider,
         workspace_context, partner_repository,
         work_repository=work_repository, artifact_repository=artifact_repository,
-        reply_context=reply_context,
+        source_analysis_repository=source_analysis_repository,
+        reply_context=reply_context, state=state, v2_menu_enabled=v2_menu_enabled,
     )
 
 
@@ -301,7 +336,10 @@ async def _maybe_send_module_result(
     *,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
+    source_analysis_repository: SourceAnalysisRepository | None = None,
     reply_context: ReplyBridgeContext | None = None,
+    state: FSMContext | None = None,
+    v2_menu_enabled: bool = False,
 ) -> None:
     if decision.primary_module is Module.SAFETY_LAYER:
         await _send_text_check(message, decision, provider)
@@ -322,6 +360,24 @@ async def _maybe_send_module_result(
     # конкретной формулировки: любой запрос, который router не смог уверенно
     # классифицировать, должен получить явный ответ, а не тишину.
     if decision.is_uncertain:
+        # Fix: не тупиковое сообщение, а разбор источника, если сам текст
+        # структурно похож на вставленную публикацию/пост (см.
+        # _looks_like_pasted_publication) и доступны зависимости сценария
+        # «Разобрать публикацию» — тот же сценарий, что и по кнопке меню,
+        # просто без ручного клика. Ограничено v2 UI: в v1 этого сценария нет.
+        if (
+            v2_menu_enabled
+            and state is not None
+            and artifact_repository is not None
+            and source_analysis_repository is not None
+            and _looks_like_pasted_publication(decision.task_text)
+        ):
+            await message.answer(_PUBLICATION_FALLBACK_NOTICE)
+            await run_source_analysis(
+                message, state, workspace_context, artifact_repository,
+                source_analysis_repository, provider, decision.task_text,
+            )
+            return
         await message.answer(_UNCERTAIN_ROUTE_MESSAGE)
         return
 

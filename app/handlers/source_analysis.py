@@ -53,31 +53,20 @@ async def start_source_analysis(message: Message, state: FSMContext) -> None:
     await message.answer(_PROMPT, reply_markup=v2_back_keyboard())
 
 
-@router.message(
-    MagicData(F.v2_menu_enabled),
-    AnalyzeSource.waiting_for_text,
-)
-async def receive_source_text(
+async def run_source_analysis(
     message: Message,
     state: FSMContext,
-    workspace_context: WorkspaceContext | None,
+    workspace_context: WorkspaceContext,
     artifact_repository: ArtifactRepository,
     source_analysis_repository: SourceAnalysisRepository,
     llm_provider: LLMProvider,
+    text: str,
 ) -> None:
-    text = (message.text or "").strip()
-    if not text:
-        await message.answer("Пришли непустой текст для анализа.", reply_markup=v2_back_keyboard())
-        return
-    if len(text) > 12_000:
-        await message.answer("Текст слишком длинный. Максимум — 12 000 символов.", reply_markup=v2_back_keyboard())
-        return
-    if workspace_context is None:
-        await state.clear()
-        await message.answer(
-            "Рабочее пространство не найдено. Обратитесь к владельцу сервиса."
-        )
-        return
+    """Общее ядро разбора источника: используется и обычным вводом текста в
+    сценарии «Разобрать публикацию» (см. receive_source_text ниже), и
+    fallback-редиректом из свободного текста главного меню, когда router не
+    смог уверенно определить маршрут, а вставленный текст похож на
+    публикацию (см. app/handlers/tasks.py)."""
     await state.set_state(AnalyzeSource.processing)
     source = None
     analysis = None
@@ -116,3 +105,39 @@ async def receive_source_text(
         await message.answer(text_error, reply_markup=source_analysis_result_keyboard())
     finally:
         await state.clear()
+
+
+@router.message(
+    MagicData(F.v2_menu_enabled),
+    AnalyzeSource.waiting_for_text,
+)
+async def receive_source_text(
+    message: Message,
+    state: FSMContext,
+    workspace_context: WorkspaceContext | None,
+    artifact_repository: ArtifactRepository,
+    source_analysis_repository: SourceAnalysisRepository,
+    llm_provider: LLMProvider,
+) -> None:
+    # Fix: фото с непустой подписью — тоже полноценный текст публикации.
+    # Telegram кладёт текст поста либо в message.text (обычное сообщение),
+    # либо в message.caption (фото/видео с подписью) — раньше читался только
+    # message.text, поэтому пересланное фото с текстом поста в подписи
+    # считалось пустым и просило текст повторно.
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.answer("Пришли непустой текст для анализа.", reply_markup=v2_back_keyboard())
+        return
+    if len(text) > 12_000:
+        await message.answer("Текст слишком длинный. Максимум — 12 000 символов.", reply_markup=v2_back_keyboard())
+        return
+    if workspace_context is None:
+        await state.clear()
+        await message.answer(
+            "Рабочее пространство не найдено. Обратитесь к владельцу сервиса."
+        )
+        return
+    await run_source_analysis(
+        message, state, workspace_context, artifact_repository,
+        source_analysis_repository, llm_provider, text,
+    )

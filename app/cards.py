@@ -51,49 +51,51 @@ def source_analysis_card(
     *,
     classification: MaterialClassification | None = None,
 ) -> str:
-    sections: list[tuple[str, str | tuple[str, ...]]] = [
-        ("Кратко:", analysis.summary),
-        ("Что важно:", analysis.key_facts),
-        ("Что требует проверки:", analysis.disputed_claims),
-        ("Ценность для аудитории:", analysis.audience_value),
-        ("Кому может быть интересно:", analysis.target_audiences),
-        ("Идеи подачи:", analysis.content_angles),
-        ("Подходящие форматы:", analysis.recommended_formats),
-        ("Предупреждения:", analysis.warnings),
-    ]
+    """Компактная Telegram-карточка (Проблема 6): владелец видит только то,
+    что нужно для решения «что делать с этим материалом» — ценность, что
+    уточнить и как подать. Полный разбор (audience_value, target_audiences и
+    т.д.) никуда не пропадает — он остаётся в SourceAnalysis и в БД, просто
+    не дублируется в Telegram-сообщении.
+    """
     def clip(value: str, size: int) -> str:
         return value if len(value) <= size else value[: size - 1].rstrip() + "…"
 
-    blocks: list[tuple[str, bool]] = []
-    for heading, value in sections:
-        if isinstance(value, tuple):
-            if not value:
-                continue
-            body = "\n".join(f"• {clip(item, 220)}" for item in value[:6])
-        else:
-            if not value.strip():
-                continue
-            body = clip(value, 1000 if heading == "Кратко:" else 700)
-        blocks.append((f"{heading}\n{body}", heading == "Предупреждения:"))
+    value_lines: list[str] = []
+    if analysis.summary.strip():
+        value_lines.append(clip(analysis.summary, 500))
+    value_lines.extend(f"• {clip(fact, 200)}" for fact in analysis.key_facts[:4])
+    value_block = (
+        "💎 Что здесь ценного\n" + "\n".join(value_lines) if value_lines else None
+    )
 
-    warning = next((block for block, is_warning in blocks if is_warning), None)
+    check_lines = [f"• {clip(claim, 200)}" for claim in analysis.disputed_claims[:4]]
+    check_lines.extend(f"• {clip(warning, 200)}" for warning in analysis.warnings[:2])
+    check_block = (
+        "🔍 Что нужно проверить / уточнить\n" + "\n".join(check_lines)
+        if check_lines else None
+    )
+
+    angle_lines = [f"• {clip(angle, 200)}" for angle in analysis.content_angles[:3]]
+    if analysis.recommended_formats:
+        angle_lines.append(
+            "Форматы: " + ", ".join(clip(f, 40) for f in analysis.recommended_formats[:4])
+        )
+    angle_block = (
+        "✍️ Как лучше подать\n" + "\n".join(angle_lines) if angle_lines else None
+    )
+
     parts = ["🔎 Анализ источника"]
     # Сразу после заголовка и до текстового разбора: это ответ на вопрос «что
     # с этим делать», и он не должен пострадать от обрезки по лимиту.
     if classification is not None:
         parts.append(_classification_block(classification))
-    for block, is_warning in blocks:
-        if is_warning:
+    for block in (value_block, check_block, angle_block):
+        if block is None:
             continue
-        reserved = len(warning) + 2 if warning else 0
-        remaining = limit - len("\n\n".join(parts)) - reserved - 2
+        remaining = limit - len("\n\n".join(parts)) - 2
         if remaining <= 20:
             continue
         parts.append(clip(block, remaining))
-    if warning:
-        remaining = limit - len("\n\n".join(parts)) - 2
-        if remaining > 20:
-            parts.append(clip(warning, remaining))
     return "\n\n".join(parts)
 
 from app.routing.modules import MODULE_DESCRIPTION, Module
