@@ -8,9 +8,12 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.access import AllowlistMiddleware
+from app.access_state_gate import AccessStateMiddleware
 from app.config import load_settings
 from app.handlers import build_router
 from app.onboarding_gate import OnboardingGateMiddleware
+from app.orchestration.factory import create_orchestration_llm_provider
+from app.orchestration.provider import OrchestrationLLMProvider
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.partner_repository import PartnerRepository
@@ -41,6 +44,7 @@ def _build_dispatcher(
     competitor_repository: CompetitorRepository | None = None,
     work_repository: WorkRepository | None = None,
     onboarding_rollout_at: datetime | None = None,
+    orchestration_llm_provider: OrchestrationLLMProvider | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -55,7 +59,12 @@ def _build_dispatcher(
         dp.message.outer_middleware(workspace_context)
         dp.callback_query.outer_middleware(workspace_context)
         # Требует уже готовый workspace_context — регистрируется следом,
-        # тем же принципом, что и WorkspaceContextMiddleware.
+        # тем же принципом, что и WorkspaceContextMiddleware. Stage 3A:
+        # решает, доступен ли рабочий Оркестратор (workspace + active/
+        # trial_active) или нужно лобби — независимо от allowlist.
+        access_state_gate = AccessStateMiddleware(partner_repository)
+        dp.message.outer_middleware(access_state_gate)
+        dp.callback_query.outer_middleware(access_state_gate)
         onboarding_gate = OnboardingGateMiddleware(partner_repository, onboarding_rollout_at)
         dp.message.outer_middleware(onboarding_gate)
         dp.callback_query.outer_middleware(onboarding_gate)
@@ -73,6 +82,12 @@ def _build_dispatcher(
     dp["workspace_signal_repository"] = workspace_signal_repository
     dp["competitor_repository"] = competitor_repository
     dp["work_repository"] = work_repository
+    # Phase 1 LLM orchestration shadow mode - see app.orchestration. Defaults
+    # to the inert NullOrchestrationLLMProvider when not passed explicitly,
+    # same as every other optional dependency here.
+    dp["orchestration_llm_provider"] = (
+        orchestration_llm_provider or create_orchestration_llm_provider(None)
+    )
     return dp
 
 
@@ -143,6 +158,12 @@ async def _async_main() -> None:
         db_path=settings.lead_radar_db_path,
     )
 
+    # Phase 1 LLM orchestration shadow mode - defaults to "null" (fully
+    # inert) unless ORCHESTRATION_LLM_PROVIDER is set. See app.orchestration.
+    orchestration_llm_provider = create_orchestration_llm_provider(
+        settings.orchestration_llm_provider
+    )
+
     bot = Bot(settings.bot_token)
     dp = _build_dispatcher(
         settings.allowed_user_ids,
@@ -158,6 +179,7 @@ async def _async_main() -> None:
         competitor_repository,
         work_repository,
         settings.onboarding_rollout_at,
+        orchestration_llm_provider,
     )
 
     await dp.start_polling(bot)

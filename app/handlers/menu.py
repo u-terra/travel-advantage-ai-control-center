@@ -46,6 +46,7 @@ from app.keyboards import (
     web_resources_keyboard,
 )
 from app.handlers.source_analysis import start_source_analysis
+from app.orchestration.context import record_turn
 from app.routing.modules import Module
 from app.routing.safety import SafetyLevel
 from app.services.lead_radar import (
@@ -599,6 +600,18 @@ async def on_radar_content_selected(
         safety_block,
     ]
     draft_text = "\n".join(lines)
+
+    # Phase 1 LLM orchestration (shadow mode): records this as a PAST
+    # ASSISTANT RESULT so a follow-up free-text reaction ("зачем ты
+    # предлагаешь этот никчёмный повод...") can be recognized as feedback on
+    # THIS idea rather than a new content request. Does not touch the Radar
+    # quality gate above - purely additive bookkeeping. Best-effort/silent by
+    # construction - see app.orchestration.context.record_turn.
+    await record_turn(
+        state, role="assistant",
+        text=f"Radar предложил пост-идею: {signal.title}",
+        module=Module.LEAD_RADAR.value,
+    )
 
     try:
         artifact, _ = await artifact_repository.create_artifact_with_initial_version(

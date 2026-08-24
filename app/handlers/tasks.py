@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -21,6 +22,9 @@ from app.keyboards import (
     reply_confirm_keyboard,
     uncertain_route_publication_keyboard,
 )
+from app.orchestration.context import record_turn
+from app.orchestration.provider import OrchestrationLLMProvider
+from app.orchestration.shadow import run_shadow_orchestration
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
@@ -38,6 +42,7 @@ from app.storage import Journal
 from app.telegram_chunks import chunk_text
 
 router = Router(name="tasks")
+log = logging.getLogger(__name__)
 
 _DRAFT_MODE = "ai"
 
@@ -279,6 +284,7 @@ async def on_free_text(
     partner_repository: PartnerRepository,
     v2_menu_enabled: bool = False,
     state: FSMContext | None = None,
+    orchestration_llm_provider: OrchestrationLLMProvider | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -301,6 +307,7 @@ async def on_free_text(
         secondary_modules=tuple(m.value for m in decision.secondary_modules),
         safety_level=decision.safety_level.value,
     )
+    await record_turn(state, role="user", text=task_text)
     # UX polish: в v2 прямой свободный текст — самый частый вход в create
     # material/reply flow, и техническая «📌 Карточка маршрута» тут не нужна
     # (см. тот же принцип у skip_route_card в on_task_after_button/v2-кнопках)
@@ -315,6 +322,50 @@ async def on_free_text(
         workspace_context, partner_repository,
         state=state, v2_menu_enabled=v2_menu_enabled,
     )
+    await record_turn(
+        state, role="assistant",
+        text=f"[{decision.primary_module.value}] ответ отправлен",
+        module=decision.primary_module.value,
+    )
+    # LLM orchestration shadow mode (Phase 1): runs strictly AFTER the reply
+    # above, never before and never blocking it - see
+    # app.orchestration.shadow for the fail-closed contract. Defaults to the
+    # inert NullOrchestrationLLMProvider (is_configured=False) when not
+    # wired, so existing callers/tests are entirely unaffected.
+    if orchestration_llm_provider is not None:
+        await _run_orchestration_shadow(
+            task_text, decision, workspace_context, partner_repository,
+            state, orchestration_llm_provider,
+        )
+
+
+async def _run_orchestration_shadow(
+    task_text: str,
+    decision: RouteDecision,
+    workspace_context: WorkspaceContext,
+    partner_repository: PartnerRepository,
+    state: FSMContext | None,
+    orchestration_llm_provider: OrchestrationLLMProvider,
+) -> None:
+    """Defense-in-depth wrapper: run_shadow_orchestration already never
+    raises, but shadow mode affecting the user is exactly the one outcome
+    that must be structurally impossible, not just "usually fine"."""
+    if not orchestration_llm_provider.is_configured:
+        return
+    try:
+        profile = await partner_repository.get_business_profile(
+            workspace_context.workspace_id
+        )
+        await run_shadow_orchestration(
+            task_text=task_text,
+            old_decision=decision,
+            workspace_id=workspace_context.workspace_id,
+            provider=orchestration_llm_provider,
+            state=state,
+            business_profile=profile,
+        )
+    except Exception:
+        log.debug("orchestration_shadow: wrapper caught unexpected failure", exc_info=True)
 
 
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data == TASK_CONFIRM_PUBLICATION_ANALYSIS)

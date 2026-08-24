@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from app.access import parse_allowed_user_ids
+from app.orchestration.factory import normalize_orchestration_provider_name
 from app.services.llm.factory import normalize_provider_name
 from app.services.source_registry import runtime_registry_path
 
@@ -29,6 +30,11 @@ class Settings:
     # config/sources.json: деплой не должен затирать добавленные источники.
     sources_registry_path: Path
     v2_menu_enabled: bool
+    # Phase 1 LLM orchestration - shadow mode only (see app.orchestration).
+    # Default "null" -> NullOrchestrationLLMProvider, fully inert: the old
+    # keyword/regex router keeps driving every reply either way, this flag
+    # only controls whether a parallel comparison gets logged.
+    orchestration_llm_provider: str
     # Порог обязательного Business Onboarding: workspace, созданные ДО этого
     # момента, никогда не блокируются онбордингом, даже с incomplete-профилем
     # (legacy-совместимость). None (переменная не задана) — fail-safe в
@@ -76,6 +82,9 @@ def load_settings() -> Settings:
     v2_menu_enabled = _parse_bool(
         os.environ.get("TA_CONTROL_CENTER_V2_MENU_ENABLED")
     )
+    orchestration_llm_provider = normalize_orchestration_provider_name(
+        os.environ.get("ORCHESTRATION_LLM_PROVIDER")
+    )
     onboarding_rollout_at = _parse_datetime(os.environ.get("ONBOARDING_ROLLOUT_AT"))
 
     if not token:
@@ -117,5 +126,6 @@ def load_settings() -> Settings:
         # чтобы консольные скрипты видели тот же путь без сборки Settings.
         sources_registry_path=runtime_registry_path(),
         v2_menu_enabled=v2_menu_enabled,
+        orchestration_llm_provider=orchestration_llm_provider,
         onboarding_rollout_at=onboarding_rollout_at,
     )

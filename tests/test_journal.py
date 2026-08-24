@@ -252,6 +252,7 @@ def test_startup_does_not_require_owner_for_tenant_aware_journal(
         bot_token="token",
         allowed_user_ids=frozenset(),
         v2_menu_enabled=False,
+        orchestration_llm_provider="null",
         onboarding_rollout_at=None,
     )
     monkeypatch.setattr(main, "load_settings", lambda: settings)
