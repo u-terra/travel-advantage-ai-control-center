@@ -12,6 +12,8 @@ from app.services.business_profile_context import (
     build_limited_content_context,
 )
 from app.services.llm.models import SourceAnalysisPayload
+from app.services.knowledge_generation_context import build_knowledge_generation_context
+from app.services.knowledge_service import KnowledgeBundle
 
 
 _OBJECTIVE = "Создать черновик материала по выбранному и разобранному источнику."
@@ -513,6 +515,7 @@ class MaterialOrchestrationService:
         *,
         safety_required: bool,
         user_preferences: WorkspaceUserPreferences | None = None,
+        knowledge_bundle: KnowledgeBundle | None = None,
     ) -> GenerationSpec:
         """Stage 3B1: заменяет прежний прямой вызов provider.generate_draft()
         для TRAVEL_ASSISTANT (client reply) в app/handlers/tasks.py — тот путь
@@ -529,13 +532,19 @@ class MaterialOrchestrationService:
         constraints = _CLIENT_REPLY_CONSTRAINTS
         if safety_required:
             constraints = (*constraints, _CLIENT_REPLY_SAFETY_CONSTRAINT)
+        source_facts: dict[str, Any] = {}
+        if knowledge_bundle is not None:
+            knowledge = build_knowledge_generation_context(knowledge_bundle)
+            source_facts.update(knowledge.source_facts)
+            verified = (*verified, *knowledge.verified_claims)
+            constraints = (*constraints, *knowledge.constraints)
         return GenerationSpec(
             action_type=GenerationAction.CREATE_ARTIFACT,
             artifact_type="client_message",
             objective=_CLIENT_REPLY_OBJECTIVE,
             audience=tuple(trusted_context.get("audiences", ())),
             output_format="telegram",
-            source_facts={},
+            source_facts=source_facts,
             trusted_business_context=trusted_context,
             untrusted_source_content=client_question,
             tone_preferences=tone_preferences,

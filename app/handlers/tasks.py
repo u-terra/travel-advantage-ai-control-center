@@ -46,6 +46,7 @@ from app.services.conversation_state_service import ConversationStateService
 from app.services.daily_actions import DailyActionsService
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.lead_radar import LeadRadarConfig
+from app.services.knowledge_service import KnowledgeBundle
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.reference_resolver import ReferenceResolver, ResolvedActionContext
@@ -667,6 +668,7 @@ async def _maybe_send_module_result(
     # before any generation.  Known non-KB modules bypass even the resolver;
     # Planner is handled earlier in on_free_text and never reaches this point
     # when it accepts the request.
+    knowledge_bundle: KnowledgeBundle | None = None
     if (
         reference_resolver is not None
         and decision.primary_module in _KNOWLEDGE_ELIGIBLE_MODULES
@@ -691,6 +693,8 @@ async def _maybe_send_module_result(
         if resolved.requires_current_source:
             await message.answer(_CURRENT_SOURCE_REQUIRED_MESSAGE)
             return True
+        if resolved.need_knowledge:
+            knowledge_bundle = resolved.knowledge_bundle
 
     if decision.primary_module is Module.SAFETY_LAYER:
         await _send_text_check(message, decision, provider)
@@ -743,6 +747,7 @@ async def _maybe_send_module_result(
         work_repository=work_repository, artifact_repository=artifact_repository,
         conversation_state_repository=conversation_state_repository,
         reply_context=reply_context,
+        knowledge_bundle=knowledge_bundle,
     )
     return False
 
@@ -993,6 +998,7 @@ async def _maybe_send_draft(
     artifact_repository: ArtifactRepository | None = None,
     conversation_state_repository: ConversationStateRepository | None = None,
     reply_context: ReplyBridgeContext | None = None,
+    knowledge_bundle: KnowledgeBundle | None = None,
 ) -> None:
     workspace_id = workspace_context.workspace_id
     # Radar UX / free-text fix: раньше сюда дополнительно требовалось буквальное
@@ -1042,6 +1048,7 @@ async def _maybe_send_draft(
             workspace_id, decision.task_text, profile,
             safety_required=decision.safety_level is not SafetyLevel.NOT_REQUIRED,
             user_preferences=user_preferences,
+            knowledge_bundle=knowledge_bundle,
         )
         heading = _CLIENT_REPLY_HEADING
 
