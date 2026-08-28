@@ -1,0 +1,28 @@
+{
+  "id": "scn_10_competitor_strengths",
+  "description": "Пользователь спрашивает про сильные стороны сохранённого конкурента.",
+  "initial_state": {
+    "current_subject_ref_type": "competitor",
+    "current_subject_ref_id": 5
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Конкурент ТурКлуб → что у него сильнее?"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "analyze_competitor",
+      "action": "fetch_public_source",
+      "subject_ref_type": "competitor",
+      "subject_ref_id": 5
+    }
+  ],
+  "expected_state": {
+    "current_subject_ref_type": "competitor",
+    "current_subject_ref_id": 5
+  },
+  "notes": "competitor flow сегодня - чистое CRUD без анализа (см. F1 report B/C); этот executor не существует до отдельного этапа.",
+  "status": "foundation_pending"
+}

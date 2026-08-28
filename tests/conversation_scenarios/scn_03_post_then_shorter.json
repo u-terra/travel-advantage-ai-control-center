@@ -1,0 +1,39 @@
+{
+  "id": "scn_03_post_then_shorter",
+  "description": "Пользователь просит написать пост, затем просит сделать его короче.",
+  "initial_state": {
+    "current_artifact_id": null
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Напиши пост про весенний тур"
+    },
+    {
+      "role": "assistant",
+      "text": "<черновик поста>",
+      "artifact_id": 101,
+      "artifact_version": 1
+    },
+    {
+      "role": "user",
+      "text": "Покороче"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "revise_artifact",
+      "action": "generate_content",
+      "subject_ref_type": "artifact",
+      "slots": {
+        "style": "shorter"
+      }
+    }
+  ],
+  "expected_state": {
+    "current_artifact_id": 101,
+    "previous_artifact_version_via_repository": 1
+  },
+  "notes": "Требует revise-path в generate_draft/GenerationSpec (F3) - сейчас интерфейс только fresh-generation.",
+  "status": "foundation_pending"
+}

@@ -1,0 +1,38 @@
+{
+  "id": "scn_04_post_then_livelier",
+  "description": "Пользователь просит написать пост, затем просит сделать его живее.",
+  "initial_state": {
+    "current_artifact_id": null
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Напиши пост про весенний тур"
+    },
+    {
+      "role": "assistant",
+      "text": "<черновик поста>",
+      "artifact_id": 102,
+      "artifact_version": 1
+    },
+    {
+      "role": "user",
+      "text": "Живее"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "revise_artifact",
+      "action": "generate_content",
+      "subject_ref_type": "artifact",
+      "slots": {
+        "style": "livelier"
+      }
+    }
+  ],
+  "expected_state": {
+    "current_artifact_id": 102
+  },
+  "notes": "Тот же revise-path (F3), другой стилевой слот.",
+  "status": "foundation_pending"
+}

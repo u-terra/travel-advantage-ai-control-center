@@ -1,0 +1,28 @@
+{
+  "id": "scn_07_make_second_variant_shorter",
+  "description": "Пользователь просит сделать вторую версию артефакта короче.",
+  "initial_state": {
+    "current_artifact_id": 105
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Сделай второй вариант короче"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "revise_artifact",
+      "subject_ref_type": "artifact_version",
+      "slots": {
+        "version": 2,
+        "style": "shorter"
+      }
+    }
+  ],
+  "expected_state": {
+    "current_artifact_id": 105
+  },
+  "notes": "Явная ссылка на номер версии, не на 'текущую'.",
+  "status": "foundation_pending"
+}

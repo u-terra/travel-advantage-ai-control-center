@@ -24,6 +24,8 @@ from app.services.classification_contract import (
 )
 from app.services.llm.models import (
     ContentDraft,
+    ContentTopic,
+    ContentTopicsResult,
     SourceAnalysisPayload,
     TextCheckResult,
     TextSafetyFinding,
@@ -36,12 +38,15 @@ log = logging.getLogger(__name__)
 __all__ = [
     "ContentDraft",
     "ContentFactoryConfig",
+    "ContentTopic",
+    "ContentTopicsResult",
     "SourceAnalysisPayload",
     "TextCheckResult",
     "TextSafetyFinding",
     "analyze_source_sync",
     "check_text_sync",
     "generate_draft_sync",
+    "propose_topics_sync",
 ]
 
 
@@ -51,6 +56,11 @@ class ContentFactoryConfig:
     token: str
     timeout_seconds: float
     source_analysis_url: str = ""
+    # F2D: explicit override for the propose-topics endpoint, same optional-
+    # override convention as source_analysis_url above. Empty by default -
+    # auto-derived from `url` (see _topics_endpoint), so existing .env files
+    # keep working unchanged.
+    topics_url: str = ""
 
     @property
     def is_configured(self) -> bool:
@@ -145,6 +155,84 @@ def analyze_source_sync(
         # разбора: текстовый анализ остаётся доступным владельцу.
         classification=classification_from_payload(analysis.get(CLASSIFICATION_KEY)),
     )
+
+
+def _topics_endpoint(config: ContentFactoryConfig) -> str | None:
+    if config.topics_url.strip():
+        return config.topics_url.strip()
+    parts = urlsplit(config.url.strip())
+    if parts.query or parts.fragment:
+        return None
+    path = parts.path.rstrip("/")
+    if path.endswith("/internal/generate"):
+        path = path[: -len("/internal/generate")] + "/internal/propose-topics"
+        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+    return None
+
+
+def propose_topics_sync(
+    config: ContentFactoryConfig, *, source_text: str, count: int,
+) -> ContentTopicsResult | None:
+    """Блокирующий вызов /internal/propose-topics (F2D).
+
+    Returns None on any problem: network/timeout, non-2xx, non-JSON,
+    ok != True, wrong topic count, duplicate ids, or any missing/empty
+    id/title/angle/reason - same fail-closed convention as
+    analyze_source_sync. Never attempts to salvage a partially-valid
+    response: a controlled failure here becomes a controlled provider
+    error one layer up, not a best-effort guess.
+    """
+    endpoint = _topics_endpoint(config)
+    if not endpoint or not config.token or count <= 0:
+        return None
+
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(
+            {"source_text": source_text, "count": count},
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Internal-Token": config.token},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=config.timeout_seconds) as resp:
+            raw = resp.read()
+    except Exception:
+        log.warning("content_factory: propose topics request failed")
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if type(data) is not dict or data.get("ok") is not True:
+        return None
+
+    raw_topics = data.get("topics")
+    if type(raw_topics) is not list or len(raw_topics) != count:
+        return None
+
+    topics: list[ContentTopic] = []
+    seen_ids: set[str] = set()
+    for item in raw_topics:
+        if type(item) is not dict:
+            return None
+        topic_id, title, angle, reason = (
+            item.get("id"), item.get("title"), item.get("angle"), item.get("reason"),
+        )
+        if any(
+            type(value) is not str or not value.strip()
+            for value in (topic_id, title, angle, reason)
+        ):
+            return None
+        topic_id = topic_id.strip()
+        if topic_id in seen_ids:
+            return None
+        seen_ids.add(topic_id)
+        topics.append(ContentTopic(
+            id=topic_id, title=title.strip(), angle=angle.strip(), reason=reason.strip(),
+        ))
+    return ContentTopicsResult(topics=tuple(topics))
 
 
 def _parse_safety_findings(value: object) -> tuple[TextSafetyFinding, ...]:

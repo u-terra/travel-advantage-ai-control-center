@@ -1,0 +1,35 @@
+{
+  "id": "scn_16_new_task_during_content_thread",
+  "description": "Пользователь резко меняет задачу посреди активного контент-треда.",
+  "initial_state": {
+    "active_module": "content_factory",
+    "current_artifact_id": 107
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Напиши пост про весенний тур"
+    },
+    {
+      "role": "assistant",
+      "text": "<черновик>",
+      "artifact_id": 107
+    },
+    {
+      "role": "user",
+      "text": "Забудь, покажи лучше моих конкурентов"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "new_task",
+      "action": "list_competitors"
+    }
+  ],
+  "expected_state": {
+    "active_module": "competitors",
+    "current_artifact_id": 107
+  },
+  "notes": "Priority Matrix (F1 report раздел G): известный разрыв - сегодня резкая смена темы внутри активного FSM не распознаётся как отмена без явной кнопки 'Главное меню'.",
+  "status": "foundation_pending"
+}

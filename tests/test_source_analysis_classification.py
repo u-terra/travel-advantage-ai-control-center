@@ -424,11 +424,15 @@ def test_provider_contract_is_unchanged() -> None:
     # Классификация приехала внутри существующего payload, а не отдельным
     # методом: второй провайдер не обязан ничего доопределять.
     assert not hasattr(LLMProvider, "classify_material")
+    # F2D: propose_content_topics добавлен как отдельная узкая операция
+    # (structured content topics), не меняя смысл ни одного из четырёх
+    # существующих методов - см. app/services/llm/base.py.
     assert set(LLMProvider.__abstractmethods__) == {
         "is_configured",
         "generate_draft",
         "check_text",
         "analyze_source",
+        "propose_content_topics",
     }
 
 

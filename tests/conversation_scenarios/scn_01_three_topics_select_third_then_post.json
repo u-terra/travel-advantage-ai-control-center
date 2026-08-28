@@ -1,0 +1,43 @@
+{
+  "id": "scn_01_three_topics_select_third_then_post",
+  "description": "Бот предлагает 3 темы; пользователь выбирает третью; затем просит написать пост по ней.",
+  "initial_state": {
+    "active_module": null,
+    "pending_offer": null
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Предложи три темы для поста"
+    },
+    {
+      "role": "assistant",
+      "text": "1. ... 2. ... 3. ...",
+      "offer_type": "content_topics",
+      "offer_items": 3
+    },
+    {
+      "role": "user",
+      "text": "Да. С 3 варианта"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "select_offer_item",
+      "subject_ref_type": "offer",
+      "slots": {
+        "item_id": "3"
+      }
+    },
+    {
+      "intent": "generate_content",
+      "subject_ref_type": "offer_item"
+    }
+  ],
+  "expected_state": {
+    "active_module": "content_factory",
+    "current_artifact_id": "<new>"
+  },
+  "notes": "Требует reference resolver (F3) - offer.items[2], а не перечитывание текста.",
+  "status": "foundation_pending"
+}

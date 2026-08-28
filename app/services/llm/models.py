@@ -39,6 +39,31 @@ class TextCheckResult:
 
 
 @dataclass(frozen=True)
+class ContentTopic:
+    """Одна предложенная тема поста (F2D structured content topics)."""
+
+    id: str
+    title: str
+    angle: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class ContentTopicsResult:
+    """Результат ``propose_content_topics`` — набор предложенных тем.
+
+    Как и остальные типы этого модуля, это плоский контракт без собственной
+    валидации: адаптер провайдера (``app.services.content_factory``)
+    обязан провалидировать сырой HTTP-ответ (непустой список, уникальные id,
+    непустые поля, совпадение с запрошенным count) и привести его к этому
+    типу ДО возврата business-слою — см. analyze_source_sync для того же
+    принципа на SourceAnalysisPayload.
+    """
+
+    topics: tuple[ContentTopic, ...]
+
+
+@dataclass(frozen=True)
 class SourceAnalysisPayload:
     """Разбор источника на факты, аудитории и возможные форматы материалов."""
 

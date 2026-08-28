@@ -1,0 +1,21 @@
+{
+  "id": "scn_15_broken_url_external_source_error",
+  "description": "Пользователь присылает нерабочую ссылку - должна вернуться понятная ошибка источника, а не общий routing failure.",
+  "initial_state": {},
+  "turns": [
+    {
+      "role": "user",
+      "text": "Проанализируй https://example.invalid/broken"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "fetch_external_source",
+      "action": "fetch_public_source"
+    }
+  ],
+  "expected_state": {},
+  "expected_failure": "external_source_unavailable",
+  "notes": "Failure taxonomy (F1 report раздел K): external_source_unavailable не должен маскироваться под ambiguous_reference/unsupported_task.",
+  "status": "foundation_pending"
+}

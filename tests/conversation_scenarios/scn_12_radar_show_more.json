@@ -1,0 +1,28 @@
+{
+  "id": "scn_12_radar_show_more",
+  "description": "Пользователь просит показать больше сигналов Radar.",
+  "initial_state": {
+    "active_module": "radar"
+  },
+  "turns": [
+    {
+      "role": "assistant",
+      "text": "<5 сигналов>"
+    },
+    {
+      "role": "user",
+      "text": "Покажи ещё"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "paginate_signals",
+      "action": "rank_signals"
+    }
+  ],
+  "expected_state": {
+    "active_module": "radar"
+  },
+  "notes": "Radar сегодня не имеет пагинации (fixed limit=5, см. F1 report раздел Radar) - нужен новый параметр offset/cursor.",
+  "status": "foundation_pending"
+}

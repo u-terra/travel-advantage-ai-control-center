@@ -247,6 +247,7 @@ def test_startup_does_not_require_owner_for_tenant_aware_journal(
         content_factory_token="token",
         content_factory_timeout_seconds=1.0,
         content_factory_source_analysis_url="https://example.test/analyze",
+        content_factory_topics_url="",
         llm_provider="fake",
         lead_radar_db_path=tmp_path / "radar.sqlite3",
         bot_token="token",

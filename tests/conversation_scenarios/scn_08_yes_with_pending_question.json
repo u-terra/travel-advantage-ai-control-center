@@ -1,0 +1,33 @@
+{
+  "id": "scn_08_yes_with_pending_question",
+  "description": "Пользователь отвечает 'Да' когда есть активный pending_question.",
+  "initial_state": {
+    "pending_question": {
+      "question_type": "confirm_yes_no",
+      "prompt_text": "Сделать пост по второй теме?",
+      "subject_ref_type": "offer_item"
+    }
+  },
+  "turns": [
+    {
+      "role": "assistant",
+      "text": "Сделать пост по второй теме?"
+    },
+    {
+      "role": "user",
+      "text": "Да"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "answer_question",
+      "action": "generate_content",
+      "subject_ref_type": "offer_item"
+    }
+  ],
+  "expected_state": {
+    "pending_question": null
+  },
+  "notes": "pending_question должен быть answered ровно один раз (CAS, см. ConversationStateRepository.answer_question).",
+  "status": "foundation_pending"
+}

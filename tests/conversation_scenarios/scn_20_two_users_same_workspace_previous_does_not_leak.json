@@ -1,0 +1,32 @@
+{
+  "id": "scn_20_two_users_same_workspace_previous_does_not_leak",
+  "description": "Два разных telegram_user_id в одном workspace; 'предыдущий' одного пользователя не должен видеть артефакт другого.",
+  "initial_state": {},
+  "turns": [
+    {
+      "role": "user",
+      "user": "user_a",
+      "text": "Напиши пост про пляжный отдых"
+    },
+    {
+      "role": "assistant",
+      "text": "<артефакт A>",
+      "artifact_id": 108
+    },
+    {
+      "role": "user",
+      "user": "user_b",
+      "text": "Верни предыдущий вариант"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "revert_artifact_version",
+      "user": "user_b"
+    }
+  ],
+  "expected_failure": "no_active_artifact",
+  "expected_state": {},
+  "notes": "Working State ключуется по (workspace_id, telegram_user_id), не только workspace_id - user_b не должен унаследовать current_artifact_id user_a (F1 report раздел D/Q).",
+  "status": "foundation_pending"
+}

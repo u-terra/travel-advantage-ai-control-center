@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 from app.services.llm.models import (
     ContentDraft,
+    ContentTopicsResult,
     SourceAnalysisPayload,
     TextCheckResult,
 )
@@ -29,7 +30,9 @@ class FakeLLMProvider:
         draft: ContentDraft | None = None,
         check: TextCheckResult | None = None,
         analysis: SourceAnalysisPayload | None = None,
+        topics: ContentTopicsResult | None = None,
     ) -> None:
         self.generate_draft = Mock(return_value=draft)
         self.check_text = Mock(return_value=check)
         self.analyze_source = Mock(return_value=analysis)
+        self.propose_content_topics = Mock(return_value=topics)

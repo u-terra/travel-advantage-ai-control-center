@@ -19,8 +19,10 @@ from app.keyboards import (
     v2_back_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
+from app.services.conversation_state_service import ConversationStateService
 from app.services.generation_request_builder import (
     SourceAnalysisRequestTooLargeError,
     build_source_analysis_provider_request,
@@ -145,6 +147,7 @@ async def generate_source_material(
     source_analysis_repository: SourceAnalysisRepository,
     llm_provider: LLMProvider,
     partner_repository: PartnerRepository,
+    conversation_state_repository: ConversationStateRepository | None = None,
 ) -> None:
     data = (callback.data or "").removeprefix(SOURCE_MATERIAL_FORMAT_PREFIX)
     parts = data.split(":")
@@ -214,6 +217,15 @@ async def generate_source_material(
             reply_markup = v2_back_keyboard() if index == len(messages) - 1 else None
             await callback.message.answer(text, reply_markup=reply_markup)
         return
+    # F2A: record real progress into Working State - additive/best-effort,
+    # see app.services.conversation_state_service. The artifact above is
+    # already saved and shown to the user regardless of whether this
+    # succeeds.
+    await ConversationStateService(conversation_state_repository).record_artifact(
+        workspace_context.workspace_id, workspace_context.telegram_user_id, artifact.id,
+        active_module="content_factory", current_task="generate_source_material",
+        last_action="content_factory_generate",
+    )
     for index, text in enumerate(messages):
         reply_markup = material_result_keyboard(artifact.id) if index == len(messages) - 1 else None
         await callback.message.answer(text, reply_markup=reply_markup)

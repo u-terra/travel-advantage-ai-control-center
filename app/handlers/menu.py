@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.filters import MagicData
@@ -45,6 +46,8 @@ from app.keyboards import (
     v2_back_keyboard,
     web_resources_keyboard,
 )
+from app.domain.action_contract import ActionContract, ActionContractValidationError
+from app.domain.conversation_state import OfferItem
 from app.handlers.source_analysis import start_source_analysis
 from app.orchestration.context import record_turn
 from app.routing.modules import Module
@@ -57,8 +60,13 @@ from app.services.lead_radar import (
     unavailable_summary,
 )
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.conversation_state_repository import (
+    ConversationStateConflictError,
+    ConversationStateRepository,
+)
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
+from app.services.conversation_state_service import ConversationStateService
 from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.llm.base import LLMProvider
@@ -71,6 +79,10 @@ log = logging.getLogger(__name__)
 
 _RADAR_CONTENT_PREFIX = "radar_content:"
 _RADAR_CONTENT_LIMIT = 3
+# F2A: TTL for the persisted PendingOffer/PendingQuestion mirrors of these
+# buttons - generous enough to outlive a realistic "user steps away", short
+# enough that a stale offer/question does not linger indefinitely.
+_CONVERSATION_TTL = timedelta(minutes=30)
 _DRAFT_MODE = "ai"
 _RADAR_ARTIFACT_FAILURE = (
     "⚠️ Материал создан, но сохранить его в «Мои материалы» не удалось. "
@@ -228,6 +240,112 @@ def _radar_content_ideas(signals) -> list[dict[str, str]]:
         for signal in signals
         if signal.recommended_action == "content"
     ][:_RADAR_CONTENT_LIMIT]
+
+
+def _conversation_expiry() -> str:
+    return (datetime.now(timezone.utc) + _CONVERSATION_TTL).isoformat()
+
+
+def _radar_content_action_contract(raw_data: str) -> ActionContract | None:
+    """F2A button->ActionContract pilot for the Radar content-idea buttons.
+
+    Deterministic callback_data -> ActionContract translation, nothing more:
+    no resolver, no free-text, no guessing. ``interpretation_id`` cannot be
+    modeled as ActionContract.subject_ref (CONVERSATION_SUBJECT_REF_TYPES has
+    no "signal" noun - see app.domain.conversation_state), so it travels in
+    slots instead; that is exactly what slots are for.
+    """
+    raw_id = raw_data.removeprefix(_RADAR_CONTENT_PREFIX)
+    if not raw_id.isdigit() or int(raw_id) <= 0:
+        return None
+    try:
+        return ActionContract(
+            intent="select_radar_content_idea",
+            action="generate_radar_draft",
+            subject_ref_type=None,
+            subject_ref_id=None,
+            slots={"interpretation_id": raw_id},
+            source="button",
+            confidence=1.0,
+        )
+    except ActionContractValidationError:
+        return None
+
+
+async def _record_radar_content_offer(
+    conversation_state_repository: ConversationStateRepository | None,
+    workspace_id: int,
+    telegram_user_id: int,
+    ideas: list[dict[str, str]],
+) -> None:
+    """F2A PendingOffer pilot: mirrors the already-rendered Radar content-idea
+    keyboard into persisted storage, additively. ``ideas`` is already the
+    same structured Python list used to build the keyboard (see
+    ``on_find_signals`` below) - nothing here is parsed out of rendered text
+    or invented from a free-text reply (see the F2A "не парсить LLM-ответ"
+    constraint). Best-effort/never blocks the actual keyboard the user sees.
+    """
+    if conversation_state_repository is None or not ideas:
+        return
+    try:
+        items = tuple(
+            OfferItem(
+                id=idea["interpretation_id"],
+                label=_short_title(idea["title"]),
+                # Small ref/payload only - no large text copied in, per the
+                # F2A "не копировать огромные тексты в payload" constraint.
+                payload={"reason": idea.get("reason") or "", "url": idea.get("url") or ""},
+            )
+            for idea in ideas
+        )
+        await conversation_state_repository.create_offer(
+            workspace_id, telegram_user_id, "radar_content_ideas", items,
+            expires_at=_conversation_expiry(),
+        )
+    except ConversationStateConflictError:
+        # A still-live offer already exists for this user (e.g. Radar was
+        # run twice in quick succession) - the new keyboard above is still
+        # shown either way; the persisted mirror simply keeps the older one
+        # until it is consumed or expires.
+        log.info("menu: radar content PendingOffer already active, skipping")
+    except Exception:
+        log.warning("menu: radar content PendingOffer persistence failed")
+
+
+async def _consume_radar_content_offer(
+    conversation_state_repository: ConversationStateRepository | None,
+    workspace_id: int,
+    telegram_user_id: int,
+    interpretation_id: int,
+) -> None:
+    """F2B: marks the PendingOffer item the user just selected as consumed.
+
+    Fails open, not closed: a missing/expired/foreign-offer/stale-item
+    situation is only ever logged, never surfaced to the user - this button
+    was already a valid, working Telegram control before F2A/F2B existed,
+    and persisted-offer bookkeeping must not regress that.
+    """
+    if conversation_state_repository is None:
+        return
+    try:
+        # F2D: offer_type is now required - radar_content_ideas and
+        # content_topics offers can be active for the same user at once
+        # (see the F2D unique-index fix), so this must ask specifically for
+        # the Radar offer, never whichever offer happens to be active.
+        offer = await conversation_state_repository.get_active_offer(
+            workspace_id, telegram_user_id, "radar_content_ideas"
+        )
+        if offer is None:
+            log.info("menu: no active radar_content_ideas offer to consume")
+            return
+        if str(interpretation_id) not in {item.id for item in offer.items}:
+            log.info("menu: selected idea is not part of the active offer, skipping consume")
+            return
+        await conversation_state_repository.consume_offer(
+            workspace_id, telegram_user_id, offer.id
+        )
+    except Exception:
+        log.warning("menu: radar content PendingOffer consume failed")
 
 
 @router.message(F.text.in_(CATEGORY_BUTTONS))
@@ -430,6 +548,7 @@ async def on_find_signals(
     workspace_signal_repository: WorkspaceSignalRepository,
     workspace_context: WorkspaceContext | None,
     v2_menu_enabled: bool = False,
+    conversation_state_repository: ConversationStateRepository | None = None,
 ) -> None:
     await state.clear()
     if workspace_context is None:
@@ -454,6 +573,11 @@ async def on_find_signals(
     if not ideas:
         return
 
+    await _record_radar_content_offer(
+        conversation_state_repository, workspace_context.workspace_id,
+        workspace_context.telegram_user_id, ideas,
+    )
+
     await message.answer(
         "💡 Выберите идею, чтобы подготовить черновик Telegram-поста. "
         "Ничего не публикуется автоматически.",
@@ -473,20 +597,37 @@ async def on_radar_content_selected(
     lead_radar_config: LeadRadarConfig,
     partner_repository: PartnerRepository,
     artifact_repository: ArtifactRepository,
+    conversation_state_repository: ConversationStateRepository | None = None,
 ) -> None:
-    raw_data = callback.data or ""
-    try:
-        interpretation_id = int(raw_data.removeprefix(_RADAR_CONTENT_PREFIX))
-    except ValueError:
+    # F2A button->ActionContract pilot: the callback_data is deterministically
+    # translated into a validated ActionContract before anything else runs.
+    # This is intentionally the ONLY thing the contract changes here - once
+    # built, interpretation_id is read back out of it and every line below is
+    # the exact same existing business logic as before (same repository
+    # calls, same draft generation, same Artifact persistence). No second
+    # executor/business path is introduced - see _radar_content_action_contract.
+    contract = _radar_content_action_contract(callback.data or "")
+    if contract is None:
         await callback.answer(
             "Не удалось определить выбранную идею.",
             show_alert=True,
         )
         return
+    interpretation_id = int(contract.slots["interpretation_id"])
 
     if workspace_context is None:
         await callback.answer("Рабочее пространство недоступно.", show_alert=True)
         return
+
+    # F2B: consume the PendingOffer created in on_find_signals, if it is
+    # still the active one and actually contains this item. Best-effort
+    # bookkeeping only - a missing/expired/foreign offer must never turn
+    # this already-valid Telegram button into an error (see F2B report,
+    # failure policy).
+    await _consume_radar_content_offer(
+        conversation_state_repository, workspace_context.workspace_id,
+        workspace_context.telegram_user_id, interpretation_id,
+    )
 
     record = await workspace_signal_repository.get_for_workspace(
         workspace_context.workspace_id, interpretation_id
@@ -626,6 +767,12 @@ async def on_radar_content_selected(
         await callback.message.answer(_RADAR_ARTIFACT_FAILURE)
         await callback.message.answer(draft_text, reply_markup=v2_back_keyboard())
         return
+
+    await ConversationStateService(conversation_state_repository).record_artifact(
+        workspace_context.workspace_id, workspace_context.telegram_user_id, artifact.id,
+        active_module="lead_radar", current_task="radar_content_draft",
+        last_action="radar_content_draft_created",
+    )
 
     await callback.message.answer(
         draft_text, reply_markup=material_result_keyboard(artifact.id)

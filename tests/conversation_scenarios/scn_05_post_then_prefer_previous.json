@@ -1,0 +1,49 @@
+{
+  "id": "scn_05_post_then_prefer_previous",
+  "description": "Пользователь просит написать пост, затем говорит что предыдущий вариант был лучше и просит сделать его живее.",
+  "initial_state": {
+    "current_artifact_id": null
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Напиши пост про весенний тур"
+    },
+    {
+      "role": "assistant",
+      "text": "<вариант 1>",
+      "artifact_id": 103,
+      "artifact_version": 1
+    },
+    {
+      "role": "user",
+      "text": "Покороче"
+    },
+    {
+      "role": "assistant",
+      "text": "<вариант 2>",
+      "artifact_id": 103,
+      "artifact_version": 2
+    },
+    {
+      "role": "user",
+      "text": "Нет, предыдущий был лучше, сделай его живее"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "revise_artifact",
+      "action": "generate_content",
+      "subject_ref_type": "artifact_version",
+      "slots": {
+        "version": 1,
+        "style": "livelier"
+      }
+    }
+  ],
+  "expected_state": {
+    "current_artifact_id": 103
+  },
+  "notes": "Требует ссылку на konkретную предыдущую версию через ArtifactRepository.list_artifact_versions (F3), не на current.",
+  "status": "foundation_pending"
+}

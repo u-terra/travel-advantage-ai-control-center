@@ -14,6 +14,7 @@ from app.keyboards import (
     ARTIFACT_CHECK_PREFIX, ARTIFACT_REVIEW_SAVE_PREFIX,
     SOURCE_ACTION_MAIN_MENU, TEXT_REVIEW_SAVE,
 )
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.services.llm.models import TextCheckResult, TextSafetyFinding
 from tests.llm_fakes import FakeLLMProvider
 
@@ -58,7 +59,7 @@ def result(text="Улучшенный"):
 
 
 def deps(workspace=True, artifact=True, version=True):
-    partner = SimpleNamespace(workspace_id=10) if workspace else None
+    partner = SimpleNamespace(workspace_id=10, telegram_user_id=586249067) if workspace else None
     repo = SimpleNamespace(
         get_artifact=AsyncMock(return_value=SimpleNamespace(id=20, current_version_id=30) if artifact else None),
         get_current_artifact_version=AsyncMock(return_value=SimpleNamespace(id=30, content="Текущая") if version else None),
@@ -168,6 +169,26 @@ def test_save_rechecks_tenant_and_expected_version():
     assert "Сохранена версия №2" in callback.message.answers[-1][0]
 
 
+def test_save_artifact_review_records_same_current_artifact_id_across_versions(tmp_path):
+    """C: saving an improved version of an existing artifact keeps
+    current_artifact_id pointed at the same artifact - ArtifactRepository
+    (not conversation_state) remains the sole source of truth for which
+    *version* of it is current."""
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    callback = Callback("artifact_review_save:20")
+    state = State({"review_artifact_id": 20, "review_version_id": 30, "reviewed_text": "Новый"})
+    partner, repo = deps()
+
+    run(save_artifact_review(callback, state, partner, repo, conversation_repository))
+
+    conv_state = run(conversation_repository.get_state(10, 586249067))
+    assert conv_state is not None
+    assert conv_state.current_artifact_id == 20
+    assert conv_state.active_module == "text_review"
+    assert conv_state.last_action == "text_review_save_version"
+
+
 def test_old_button_for_other_artifact_is_rejected():
     callback = Callback("artifact_review_save:19")
     state = State({"review_artifact_id": 20, "review_version_id": 30, "reviewed_text": "Новый"})
@@ -206,6 +227,25 @@ def test_save_free_text_shows_check_for_created_artifact_and_main_menu():
     assert f"{ARTIFACT_CHECK_PREFIX}{created_artifact.id}" in callbacks
     assert f"{ARTIFACT_CHECK_PREFIX}20" not in callbacks
     assert SOURCE_ACTION_MAIN_MENU in callbacks
+
+
+def test_save_free_text_records_current_artifact_id(tmp_path):
+    """B: a fresh artifact created from a reviewed free-text save records
+    current_artifact_id into Working State."""
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    callback = Callback(TEXT_REVIEW_SAVE)
+    state = State({"reviewed_text": "Проверенный текст"})
+    partner, repo = deps()
+
+    run(save_free_text(callback, state, partner, repo, conversation_repository))
+
+    created_artifact = repo.create_artifact_with_initial_version.return_value[0]
+    conv_state = run(conversation_repository.get_state(10, 586249067))
+    assert conv_state is not None
+    assert conv_state.current_artifact_id == created_artifact.id
+    assert conv_state.active_module == "text_review"
+    assert conv_state.last_action == "text_review_save_free_text"
 
 
 def test_save_free_text_failure_does_not_show_artifact_check_button():

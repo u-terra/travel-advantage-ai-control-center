@@ -1,0 +1,24 @@
+{
+  "id": "scn_09_yes_without_pending_question",
+  "description": "Пользователь пишет 'Да' когда pending_question отсутствует.",
+  "initial_state": {
+    "pending_question": null
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Да"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "clarification_required",
+      "action": "unsupported_task"
+    }
+  ],
+  "expected_state": {
+    "pending_question": null
+  },
+  "notes": "'Да' не должно глобально трактоваться как подтверждение - без pending_question это ambiguous_reference/clarification_required, а не молчаливый no-op.",
+  "status": "foundation_pending"
+}

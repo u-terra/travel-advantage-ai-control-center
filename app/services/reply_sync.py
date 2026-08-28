@@ -15,7 +15,9 @@ from dataclasses import dataclass
 
 from app.domain.work import WorkItem
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.work_repository import WorkRepository
+from app.services.conversation_state_service import ConversationStateService
 
 log = logging.getLogger(__name__)
 
@@ -41,12 +43,18 @@ class ReplyWorkSyncService:
         self,
         work_repository: WorkRepository,
         artifact_repository: ArtifactRepository | None = None,
+        conversation_state_repository: ConversationStateRepository | None = None,
     ) -> None:
         self._work_repository = work_repository
         self._artifact_repository = artifact_repository
+        self._conversation_state = ConversationStateService(conversation_state_repository)
 
     async def sync(
-        self, workspace_id: int, draft_text: str, context: ReplyBridgeContext,
+        self,
+        workspace_id: int,
+        telegram_user_id: int,
+        draft_text: str,
+        context: ReplyBridgeContext,
     ) -> WorkItem | None:
         """- Уже существующий work_item (bridge) — переиспользуем как есть,
           второй не создаём: именно так due follow-up/active_dialog
@@ -74,6 +82,14 @@ class ReplyWorkSyncService:
             return None
 
         ref_type, ref_id = await self._maybe_create_artifact(workspace_id, draft_text, context)
+        if ref_type == "artifact" and ref_id is not None:
+            # F2A: record real progress into Working State - additive/
+            # best-effort, never blocks the work_item creation below.
+            await self._conversation_state.record_artifact(
+                workspace_id, telegram_user_id, ref_id,
+                active_module="travel_assistant", current_task="client_reply_draft",
+                last_action="reply_draft_created",
+            )
         who = context.subject_name or "клиент"
         try:
             return await self._work_repository.create_work_item(

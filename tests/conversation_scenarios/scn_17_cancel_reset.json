@@ -1,0 +1,29 @@
+{
+  "id": "scn_17_cancel_reset",
+  "description": "Пользователь явно отменяет текущий флоу.",
+  "initial_state": {
+    "active_module": "competitors",
+    "pending_question": {
+      "question_type": "free_text_label"
+    }
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Отмена"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "cancel",
+      "action": "reset_working_state"
+    }
+  ],
+  "expected_state": {
+    "active_module": null,
+    "pending_question": null,
+    "pending_offer": null
+  },
+  "notes": "Единая точка cancel (Priority Matrix п.1) вместо ~6 дублированных cancel-хендлеров (F1 report раздел H/R).",
+  "status": "foundation_pending"
+}

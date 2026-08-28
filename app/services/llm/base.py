@@ -22,6 +22,7 @@ from abc import ABC, abstractmethod
 
 from app.services.llm.models import (
     ContentDraft,
+    ContentTopicsResult,
     SourceAnalysisPayload,
     TextCheckResult,
 )
@@ -56,3 +57,13 @@ class LLMProvider(ABC):
     @abstractmethod
     def analyze_source(self, *, source_text: str) -> SourceAnalysisPayload | None:
         """Разобрать источник. None — при любой ошибке."""
+
+    @abstractmethod
+    def propose_content_topics(
+        self, *, source_text: str, count: int
+    ) -> ContentTopicsResult | None:
+        """Предложить ``count`` структурированных тем поста.
+
+        Один вызов — без второго LLM-запроса для форматирования/структуры.
+        None — при любой ошибке (сеть, таймаут, невалидный внешний ответ).
+        """

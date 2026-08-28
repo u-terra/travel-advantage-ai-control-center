@@ -18,6 +18,8 @@ from app.keyboards import (
 )
 from app.handlers.tasks import invalidate_pending_publication_offer
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.conversation_state_repository import ConversationStateRepository
+from app.services.conversation_state_service import ConversationStateService
 from app.services.llm.base import LLMProvider
 from app.services.llm.models import TextCheckResult
 from app.domain.partners import WorkspaceContext
@@ -144,6 +146,7 @@ async def save_artifact_review(
     callback: CallbackQuery, state: FSMContext,
     workspace_context: WorkspaceContext | None,
     artifact_repository: ArtifactRepository,
+    conversation_state_repository: ConversationStateRepository | None = None,
 ) -> None:
     artifact_id = _positive_id(callback.data or "", ARTIFACT_REVIEW_SAVE_PREFIX)
     data = await state.get_data()
@@ -173,6 +176,14 @@ async def save_artifact_review(
         await callback.answer("Не удалось сохранить: версия изменилась или материал недоступен.", show_alert=True)
         return
     await state.clear()
+    # F2A: current_artifact_id stays the same artifact - only a new version
+    # was appended. ArtifactRepository remains the sole source of truth for
+    # *which* version is current (see app.domain.conversation_state).
+    await ConversationStateService(conversation_state_repository).record_artifact(
+        workspace_context.workspace_id, workspace_context.telegram_user_id, artifact_id,
+        active_module="text_review", current_task="improve_artifact",
+        last_action="text_review_save_version",
+    )
     await callback.answer("Версия сохранена.")
     if callback.message is not None:
         await callback.message.answer(f"✅ Сохранена версия №{version.version_number}.")
@@ -189,6 +200,7 @@ async def save_free_text(
     callback: CallbackQuery, state: FSMContext,
     workspace_context: WorkspaceContext | None,
     artifact_repository: ArtifactRepository,
+    conversation_state_repository: ConversationStateRepository | None = None,
 ) -> None:
     data = await state.get_data()
     text = data.get("reviewed_text")
@@ -208,6 +220,11 @@ async def save_free_text(
             await callback.message.answer(text, reply_markup=v2_back_keyboard())
         return
     await state.clear()
+    await ConversationStateService(conversation_state_repository).record_artifact(
+        workspace_context.workspace_id, workspace_context.telegram_user_id, artifact.id,
+        active_module="text_review", current_task="save_reviewed_text",
+        last_action="text_review_save_free_text",
+    )
     await callback.answer("Материал сохранён.")
     if callback.message is not None:
         await callback.message.answer(

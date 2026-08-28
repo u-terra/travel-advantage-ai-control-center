@@ -16,10 +16,12 @@ from app.services.content_factory import (
     analyze_source_sync,
     check_text_sync,
     generate_draft_sync,
+    propose_topics_sync,
 )
 from app.services.llm.base import LLMProvider
 from app.services.llm.models import (
     ContentDraft,
+    ContentTopicsResult,
     SourceAnalysisPayload,
     TextCheckResult,
 )
@@ -60,3 +62,8 @@ class OpenAIContentFactoryProvider(LLMProvider):
 
     def analyze_source(self, *, source_text: str) -> SourceAnalysisPayload | None:
         return analyze_source_sync(self._config, source_text=source_text)
+
+    def propose_content_topics(
+        self, *, source_text: str, count: int
+    ) -> ContentTopicsResult | None:
+        return propose_topics_sync(self._config, source_text=source_text, count=count)

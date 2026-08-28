@@ -23,6 +23,7 @@ from app.handlers.tasks import (
 from app.handlers.text_review import review_artifact
 from app.keyboards import ARTIFACT_CHECK_PREFIX, BTN_V2_MAIN_MENU, active_main_menu
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.routing.modules import Module
 from app.services.llm.models import ContentDraft, SourceAnalysisPayload
@@ -380,6 +381,7 @@ _ANALYSIS_DEFAULT = object()
 def run_radar(
     profile=None, *, workspace_id=42, record=None, draft="Radar draft",
     artifact_repo=None, analysis=_ANALYSIS_DEFAULT, user_preferences=None,
+    conversation_state_repository=None,
 ):
     if analysis is _ANALYSIS_DEFAULT:
         analysis = analysis_payload()
@@ -403,6 +405,7 @@ def run_radar(
         run(on_radar_content_selected(
             callback, State(), current_journal, provider, context(workspace_id),
             repository, radar_config(), profiles, artifacts,
+            conversation_state_repository=conversation_state_repository,
         ))
     return callback, provider, profiles, repository, current_journal
 
@@ -863,6 +866,173 @@ def test_radar_artifact_is_reviewable_via_existing_check_text_flow(tmp_path) -> 
     review_provider.check_text.assert_called_once_with(source_text="Радар-черновик")
 
 
+# --- F2A: Working State integration (PendingOffer / ActionContract pilot /
+# current_artifact_id) on top of the existing Radar content-idea flow ---
+
+
+def _recommender_patch():
+    return patch("app.services.lead_radar._load_recommender", return_value=SimpleNamespace(
+        recommend_action=lambda row: {
+            "recommended_action": "content", "action_reason": "Подходит",
+        },
+        action_label=lambda action: "Создать контент",
+    ))
+
+
+def test_find_signals_creates_pending_offer_from_structured_ideas(tmp_path) -> None:
+    """PendingOffer H: the exact same structured `ideas` list used to build
+    the keyboard is what gets persisted - not anything parsed out of
+    rendered text (see F2A report section E)."""
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(),
+        list_for_workspace=AsyncMock(return_value=[radar_record(title="Идея для поста")]),
+    )
+    with _recommender_patch():
+        run(on_find_signals(
+            Message(), State(), radar_config(), signal_repo, context(42, 100),
+            conversation_state_repository=conversation_repository,
+        ))
+
+    offer = run(conversation_repository.get_active_offer(42, 100, "radar_content_ideas"))
+    assert offer is not None
+    assert [item.id for item in offer.items] == ["7"]
+    assert offer.items[0].label == "Идея для поста"
+
+
+def test_find_signals_without_conversation_repository_is_unaffected() -> None:
+    """No conversation_state_repository passed (e.g. dev/test wiring that
+    predates F2A) must behave exactly as before - no crash, same keyboard."""
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(),
+        list_for_workspace=AsyncMock(return_value=[radar_record()]),
+    )
+    message = Message()
+    with _recommender_patch():
+        run(on_find_signals(message, State(), radar_config(), signal_repo, context(42, 100)))
+    assert any("Выберите идею" in text for text, _ in message.answers)
+
+
+def test_radar_content_selected_records_current_artifact_id(tmp_path) -> None:
+    """B/C: a successful Radar draft records current_artifact_id into
+    Working State; ArtifactRepository (not conversation_state) remains the
+    only source of truth for which *version* is current."""
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    artifacts = artifact_repository(artifact_id=777)
+
+    run_radar(artifact_repo=artifacts, conversation_state_repository=conversation_repository)
+
+    state = run(conversation_repository.get_state(42, 100))
+    assert state is not None
+    assert state.current_artifact_id == 777
+    assert state.active_module == "lead_radar"
+    assert state.last_action == "radar_content_draft_created"
+
+
+def test_radar_content_selected_action_contract_pilot_uses_same_executor_once() -> None:
+    """I: the button->ActionContract adapter must not introduce a second
+    business path - create_artifact_with_initial_version still fires exactly
+    once, driven by the interpretation_id read back out of the contract."""
+    artifacts = artifact_repository(artifact_id=42)
+    run_radar(artifact_repo=artifacts)
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+
+
+def test_radar_content_selected_malformed_callback_data_is_rejected_before_any_business_call() -> None:
+    """The ActionContract adapter fails closed on malformed callback_data
+    (non-digit / non-positive) exactly like the pre-F2A int() parsing did -
+    no business call is reached either way."""
+    callback = Callback()
+    callback.data = "radar_content:not-a-number"
+    current_journal = journal()
+    repository = signal_repository()
+    artifacts = artifact_repository()
+
+    run(on_radar_content_selected(
+        callback, State(), current_journal, FakeLLMProvider(), context(42),
+        repository, radar_config(), profile_repository(), artifacts,
+    ))
+
+    assert callback.answers[0][0] == "Не удалось определить выбранную идею."
+    repository.get_for_workspace.assert_not_awaited()
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+
+
+def test_radar_content_selected_consumes_the_matching_active_offer(tmp_path) -> None:
+    """G: selecting a Radar idea consumes the matching active PendingOffer
+    exactly once."""
+    from app.domain.conversation_state import OfferItem
+
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    run(conversation_repository.create_offer(
+        42, 100, "radar_content_ideas",
+        (OfferItem(id="7", label="Идея", payload={}),),
+    ))
+
+    run_radar(conversation_state_repository=conversation_repository)  # default interpretation_id=7
+
+    assert run(conversation_repository.get_active_offer(42, 100, "radar_content_ideas")) is None
+
+
+def test_radar_content_selected_missing_offer_does_not_break_the_callback(tmp_path) -> None:
+    """H: no active offer at all (stale/missing/expired) - the existing
+    button flow must still complete successfully."""
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    artifacts = artifact_repository(artifact_id=321)
+
+    callback, provider, _, _, current_journal = run_radar(
+        artifact_repo=artifacts, conversation_state_repository=conversation_repository,
+    )
+
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    assert "📝 Черновик по идее из Radar" in callback.message.answers[-1][0]
+
+
+def test_radar_content_selected_does_not_consume_a_different_tenants_offer(tmp_path) -> None:
+    """I: an offer belonging to another workspace/user cannot be consumed
+    by this call - get_active_offer is itself workspace/user-scoped, so the
+    cross-tenant offer stays untouched, not merely rejected."""
+    from app.domain.conversation_state import OfferItem
+
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    other_workspace, other_user = 99, 555
+    run(conversation_repository.create_offer(
+        other_workspace, other_user, "radar_content_ideas",
+        (OfferItem(id="7", label="Идея", payload={}),),
+    ))
+
+    run_radar(conversation_state_repository=conversation_repository)  # workspace 42 / user 100
+
+    other_offer = run(conversation_repository.get_active_offer(other_workspace, other_user, "radar_content_ideas"))
+    assert other_offer is not None  # untouched - different tenant
+
+
+def test_radar_content_selected_only_consumes_offer_containing_the_selected_item(
+    tmp_path,
+) -> None:
+    """A stale offer_type or an offer that does not actually contain the
+    selected interpretation_id must not be consumed just because it's
+    active - see _consume_radar_content_offer's item-membership check."""
+    from app.domain.conversation_state import OfferItem
+
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    run(conversation_repository.create_offer(
+        42, 100, "radar_content_ideas",
+        (OfferItem(id="999", label="Другая идея", payload={}),),
+    ))
+
+    run_radar(conversation_state_repository=conversation_repository)  # selects interpretation_id=7
+
+    offer = run(conversation_repository.get_active_offer(42, 100, "radar_content_ideas"))
+    assert offer is not None  # still active - id "7" was never in this offer
+
+
 def test_last_task_is_workspace_scoped_and_keeps_user_format() -> None:
     current_journal = journal()
     current_journal.last.return_value = JournalEntry(
@@ -893,13 +1063,21 @@ def test_last_task_does_not_read_without_workspace_context() -> None:
     current_journal.last.assert_not_awaited()
 
 
-def run_regular_post(profile=None, *, workspace_id=42, text="Нужен пост о путешествиях"):
+def run_regular_post(
+    profile=None, *, workspace_id=42, text="Нужен пост о путешествиях",
+    draft="Персональный черновик", artifact_repository=None,
+    conversation_state_repository=None,
+):
     message = Message(text)
-    provider = FakeLLMProvider(draft=ContentDraft("Персональный черновик", ()))
+    provider = FakeLLMProvider(
+        draft=None if draft is None else ContentDraft(draft, ()),
+    )
     profiles = profile_repository(profile)
     current_journal = journal()
     run(on_free_text(
         message, current_journal, provider, context(workspace_id), profiles,
+        artifact_repository=artifact_repository,
+        conversation_state_repository=conversation_state_repository,
     ))
     return message, provider, profiles, current_journal
 
@@ -949,6 +1127,112 @@ def test_free_text_regular_post_missing_profile_keeps_generic_fallback():
     assert "[VERIFIED CLAIMS - ALLOWED FACTS]\n[]" in request
     assert "[UNVERIFIED CLAIMS - CAUTION, NEVER VERIFIED]\n[]" in request
     assert "Нужен пост о путешествиях" in request
+    assert "Персональный черновик" in message.answers[-1][0]
+
+
+# --- F2B: regular free-text Content Factory posts become an Artifact ---
+
+
+def test_free_text_regular_post_creates_exactly_one_artifact():
+    """A: ordinary free-text generation succeeds -> exactly one Artifact."""
+    artifacts = artifact_repository(artifact_id=901)
+    run_regular_post(business_profile(), artifact_repository=artifacts)
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+
+
+def test_free_text_regular_post_artifact_content_matches_shown_draft():
+    """B: the content persisted as the initial ArtifactVersion is exactly
+    the same draft_text variable embedded in what Telegram shows - not a
+    second LLM call, not a re-derivation."""
+    artifacts = artifact_repository(artifact_id=901)
+    message, provider, _, _ = run_regular_post(
+        business_profile(), draft="Уникальный черновик для сверки",
+        artifact_repository=artifacts,
+    )
+    kwargs = artifacts.create_artifact_with_initial_version.call_args.kwargs
+    assert kwargs["content"] == "Уникальный черновик для сверки"
+    assert "Уникальный черновик для сверки" in message.answers[-1][0]
+
+
+def test_free_text_regular_post_records_current_artifact_id(tmp_path):
+    """C: current_artifact_id is recorded in conversation_state."""
+    artifacts = artifact_repository(artifact_id=901)
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+
+    run_regular_post(
+        business_profile(), artifact_repository=artifacts,
+        conversation_state_repository=conversation_repository,
+    )
+
+    state = run(conversation_repository.get_state(42, 100))
+    assert state is not None
+    assert state.current_artifact_id == 901
+    assert state.active_module == "content_factory"
+    assert state.current_task == "content_factory_free_text"
+    assert state.last_action == "generate_content"
+
+
+def test_free_text_regular_post_failed_generation_creates_no_artifact():
+    """D: failed generation -> no Artifact created."""
+    artifacts = artifact_repository(artifact_id=901)
+    run_regular_post(business_profile(), draft=None, artifact_repository=artifacts)
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+
+
+def test_free_text_regular_post_long_draft_chunking_creates_only_one_artifact():
+    """E: a long draft that gets split into multiple Telegram messages by
+    _send_chunked still results in exactly one Artifact - chunking is a
+    transport concern, not a content-identity concern."""
+    artifacts = artifact_repository(artifact_id=901)
+    long_draft = "Строка черновика. " * 500
+    message, _, _, _ = run_regular_post(
+        business_profile(), draft=long_draft, artifact_repository=artifacts,
+    )
+    assert len(message.answers) > 1  # actually chunked
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    assert artifacts.create_artifact_with_initial_version.call_args.kwargs["content"] == long_draft
+
+
+def test_free_text_regular_post_artifact_repository_is_sole_version_source_of_truth(
+    tmp_path,
+):
+    """F: ArtifactRepository (not conversation_state) remains the only place
+    version numbers live - conversation_state only ever holds the artifact id."""
+    db = tmp_path / "journal.sqlite3"
+    partners = PartnerRepository(db)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    real_artifacts = ArtifactRepository(db)
+    run(real_artifacts.init())
+    conversation_repository = ConversationStateRepository(db)
+    run(conversation_repository.init())
+
+    run_regular_post(
+        business_profile(workspace_id=workspace.id), workspace_id=workspace.id,
+        draft="Версия первая",
+        artifact_repository=real_artifacts,
+        conversation_state_repository=conversation_repository,
+    )
+    state = run(conversation_repository.get_state(workspace.id, 100))
+    assert state is not None
+    artifact_id = state.current_artifact_id
+    assert artifact_id is not None
+    assert not hasattr(state, "current_artifact_version")
+    assert not hasattr(state, "current_version_number")
+
+    version = run(real_artifacts.get_current_artifact_version(workspace.id, artifact_id))
+    assert version is not None
+    assert version.version_number == 1
+    assert version.content == "Версия первая"
+
+
+def test_free_text_regular_post_without_conversation_repository_is_unaffected():
+    """Existing callers/tests that don't pass conversation_state_repository
+    (default None) must see identical generation behaviour - see the many
+    pre-existing run_regular_post(...) calls above/below that omit it."""
+    artifacts = artifact_repository(artifact_id=901)
+    message, _, _, _ = run_regular_post(business_profile(), artifact_repository=artifacts)
     assert "Персональный черновик" in message.answers[-1][0]
 
 

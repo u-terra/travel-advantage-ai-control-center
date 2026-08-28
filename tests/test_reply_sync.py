@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository, empty_business_context
 from app.repositories.work_repository import WorkRepository
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
@@ -69,7 +70,7 @@ def test_sync_creates_work_item_and_artifact_for_new_subject(tmp_path: Path) -> 
     context = ReplyBridgeContext(work_item_id=None, subject_id=ivan.id, subject_name="Иван")
 
     item = _run(ReplyWorkSyncService(work_repo, artifact_repo).sync(
-        workspace_id, "Черновик ответа Ивану", context,
+        workspace_id, 111222333, "Черновик ответа Ивану", context,
     ))
 
     assert item is not None
@@ -98,7 +99,7 @@ def test_sync_reuses_existing_work_item_without_new_artifact(tmp_path: Path) -> 
     )
 
     item = _run(ReplyWorkSyncService(work_repo, artifact_repo).sync(
-        workspace_id, "Черновик продолжения", context,
+        workspace_id, 111222333, "Черновик продолжения", context,
     ))
 
     assert item is not None
@@ -113,7 +114,7 @@ def test_sync_without_subject_or_work_item_returns_none(tmp_path: Path) -> None:
     context = ReplyBridgeContext(work_item_id=None, subject_id=None, subject_name=None)
 
     item = _run(ReplyWorkSyncService(work_repo, artifact_repo).sync(
-        workspace_id, "Черновик без адресата", context,
+        workspace_id, 111222333, "Черновик без адресата", context,
     ))
 
     assert item is None
@@ -127,12 +128,60 @@ def test_sync_works_without_artifact_repository(tmp_path: Path) -> None:
     context = ReplyBridgeContext(work_item_id=None, subject_id=ivan.id, subject_name="Иван")
 
     item = _run(ReplyWorkSyncService(work_repo, None).sync(
-        workspace_id, "Черновик без artifact_repository", context,
+        workspace_id, 111222333, "Черновик без artifact_repository", context,
     ))
 
     assert item is not None
     assert item.ref_type is None
     assert item.ref_id is None
+
+
+def test_sync_records_current_artifact_id_when_artifact_is_created(tmp_path: Path) -> None:
+    """F2A: the client-reply flow only records current_artifact_id when it
+    actually creates an Artifact - see test_sync_reuses_existing_work_item_
+    without_new_artifact above for the "no artifact created" branch."""
+    work_repo, artifact_repo, workspace_id = _stack(tmp_path)
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    _run(conversation_repository.init())
+    ivan = _run(work_repo.get_or_create_subject(workspace_id, "Иван"))
+    context = ReplyBridgeContext(work_item_id=None, subject_id=ivan.id, subject_name="Иван")
+
+    item = _run(
+        ReplyWorkSyncService(work_repo, artifact_repo, conversation_repository).sync(
+            workspace_id, 111222333, "Черновик ответа Ивану", context,
+        )
+    )
+
+    assert item is not None
+    state = _run(conversation_repository.get_state(workspace_id, 111222333))
+    assert state is not None
+    assert state.current_artifact_id == item.ref_id
+    assert state.active_module == "travel_assistant"
+    assert state.last_action == "reply_draft_created"
+
+
+def test_sync_reusing_existing_work_item_does_not_touch_conversation_state(
+    tmp_path: Path,
+) -> None:
+    work_repo, artifact_repo, workspace_id = _stack(tmp_path)
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    _run(conversation_repository.init())
+    ivan = _run(work_repo.get_or_create_subject(workspace_id, "Иван"))
+    existing = _run(work_repo.create_work_item(
+        workspace_id, kind="dialog", subject_id=ivan.id, loop_state="waiting_reply",
+        next_step="Ждём ответ: Иван", due_at="2026-01-01T00:00:00+00:00",
+    ))
+    context = ReplyBridgeContext(
+        work_item_id=existing.id, subject_id=ivan.id, subject_name="Иван",
+    )
+
+    _run(
+        ReplyWorkSyncService(work_repo, artifact_repo, conversation_repository).sync(
+            workspace_id, 111222333, "Черновик продолжения", context,
+        )
+    )
+
+    assert _run(conversation_repository.get_state(workspace_id, 111222333)) is None
 
 
 def test_sync_is_tenant_scoped(tmp_path: Path) -> None:
@@ -155,7 +204,7 @@ def test_sync_is_tenant_scoped(tmp_path: Path) -> None:
     reply_context = ReplyBridgeContext(work_item_id=None, subject_id=ivan.id, subject_name="Иван")
 
     item = _run(ReplyWorkSyncService(work_repo, artifact_repo).sync(
-        workspace_a, "Черновик", reply_context,
+        workspace_a, 111222333, "Черновик", reply_context,
     ))
 
     assert item is not None

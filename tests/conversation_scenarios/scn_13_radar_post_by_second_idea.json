@@ -1,0 +1,32 @@
+{
+  "id": "scn_13_radar_post_by_second_idea",
+  "description": "Пользователь просит сделать пост по второй идее из сигналов Radar.",
+  "initial_state": {
+    "active_module": "radar",
+    "pending_offer": {
+      "offer_type": "radar_signals",
+      "items": 5
+    }
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Сделай пост по второй идее"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "select_offer_item",
+      "action": "generate_content",
+      "subject_ref_type": "offer",
+      "slots": {
+        "item_id": "2"
+      }
+    }
+  ],
+  "expected_state": {
+    "active_module": "content_factory"
+  },
+  "notes": "Тот же select_offer_item механизм, что и scn_01, для radar-offer вместо content_topics-offer.",
+  "status": "foundation_pending"
+}

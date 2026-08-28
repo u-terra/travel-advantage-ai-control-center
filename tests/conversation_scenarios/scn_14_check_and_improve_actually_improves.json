@@ -1,0 +1,26 @@
+{
+  "id": "scn_14_check_and_improve_actually_improves",
+  "description": "Пользователь просит проверить и улучшить текст; результат должен быть реальным улучшением, не заглушкой.",
+  "initial_state": {
+    "current_artifact_id": 106
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Проверь и улучши этот текст"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "check_and_improve",
+      "action": "check_safety",
+      "subject_ref_type": "artifact",
+      "subject_ref_id": 106
+    }
+  ],
+  "expected_state": {
+    "current_artifact_id": 106
+  },
+  "notes": "Кнопка '🛡 Проверить и улучшить' и этот текст должны вести к одному executor'у (Unified Action Contract), не к дублированным путям (см. F1 report, раздел H).",
+  "status": "foundation_pending"
+}

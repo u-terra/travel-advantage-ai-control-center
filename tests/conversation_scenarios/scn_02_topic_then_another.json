@@ -1,0 +1,34 @@
+{
+  "id": "scn_02_topic_then_another",
+  "description": "Бот предлагает тему; пользователь просит ещё одну.",
+  "initial_state": {
+    "pending_offer": null
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Предложи тему для поста"
+    },
+    {
+      "role": "assistant",
+      "text": "Как насчёт: ...",
+      "offer_type": "content_topics",
+      "offer_items": 1
+    },
+    {
+      "role": "user",
+      "text": "Предложи ещё"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "regenerate_offer",
+      "subject_ref_type": "offer"
+    }
+  ],
+  "expected_state": {
+    "pending_offer": "<new_offer_replacing_old>"
+  },
+  "notes": "Требует reference resolver (F3) для распознавания 'ещё' как regenerate_offer, не regex-хотфикс.",
+  "status": "foundation_pending"
+}

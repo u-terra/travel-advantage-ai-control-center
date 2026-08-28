@@ -23,6 +23,7 @@ class Settings:
     llm_provider: str
     content_factory_url: str
     content_factory_source_analysis_url: str
+    content_factory_topics_url: str
     content_factory_token: str
     content_factory_timeout_seconds: float
     lead_radar_db_path: Path
@@ -71,6 +72,9 @@ def load_settings() -> Settings:
     llm_provider = normalize_provider_name(os.environ.get("LLM_PROVIDER"))
     cf_url = os.environ.get("CONTENT_FACTORY_INTERNAL_URL", "").strip()
     cf_analysis_url = os.environ.get("CONTENT_FACTORY_SOURCE_ANALYSIS_URL", "").strip()
+    # F2D: optional override, same convention as cf_analysis_url above -
+    # empty means auto-derive from cf_url (see content_factory._topics_endpoint).
+    cf_topics_url = os.environ.get("CONTENT_FACTORY_TOPICS_URL", "").strip()
     cf_token = os.environ.get("CONTENT_FACTORY_INTERNAL_TOKEN", "").strip()
     cf_timeout_raw = os.environ.get("CONTENT_FACTORY_TIMEOUT_SECONDS", "").strip()
     # Старые HTTP-настройки Lead Radar (LEAD_RADAR_INTERNAL_URL / _TOKEN /
@@ -118,6 +122,7 @@ def load_settings() -> Settings:
         llm_provider=llm_provider,
         content_factory_url=cf_url,
         content_factory_source_analysis_url=cf_analysis_url,
+        content_factory_topics_url=cf_topics_url,
         content_factory_token=cf_token,
         content_factory_timeout_seconds=cf_timeout,
         lead_radar_db_path=Path(lr_db_path_raw),

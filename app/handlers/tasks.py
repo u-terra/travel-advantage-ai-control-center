@@ -26,6 +26,7 @@ from app.orchestration.context import record_turn
 from app.orchestration.provider import OrchestrationLLMProvider
 from app.orchestration.shadow import run_shadow_orchestration
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.work_repository import WorkRepository
@@ -33,6 +34,7 @@ from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
 from app.services.assistant_tail_cleanup import strip_assistant_tail
+from app.services.conversation_state_service import ConversationStateService
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
@@ -180,6 +182,7 @@ async def on_reply_subject_received(
     workspace_context: WorkspaceContext | None,
     partner_repository: PartnerRepository,
     artifact_repository: ArtifactRepository | None = None,
+    conversation_state_repository: ConversationStateRepository | None = None,
 ) -> None:
     """Первый шаг «Ответить клиенту» (v2): «Кому отвечаем?» -> WorkSubject.
 
@@ -206,6 +209,7 @@ async def on_reply_subject_received(
             text, forced_module=Module.TRAVEL_ASSISTANT, skip_route_card=True,
             reply_subject_data=(None, None, None),
             work_repository=work_repository, artifact_repository=artifact_repository,
+            conversation_state_repository=conversation_state_repository,
         )
         return
 
@@ -237,6 +241,7 @@ async def on_task_after_button(
     partner_repository: PartnerRepository,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
+    conversation_state_repository: ConversationStateRepository | None = None,
     v2_menu_enabled: bool = False,
 ) -> None:
     data = await state.get_data()
@@ -271,6 +276,7 @@ async def on_task_after_button(
         task_text, forced_module=forced_module, skip_route_card=skip_route_card,
         reply_subject_data=(reply_work_item_id, reply_subject_id, reply_subject_name),
         work_repository=work_repository, artifact_repository=artifact_repository,
+        conversation_state_repository=conversation_state_repository,
         v2_menu_enabled=v2_menu_enabled,
     )
 
@@ -285,6 +291,9 @@ async def on_free_text(
     v2_menu_enabled: bool = False,
     state: FSMContext | None = None,
     orchestration_llm_provider: OrchestrationLLMProvider | None = None,
+    work_repository: WorkRepository | None = None,
+    artifact_repository: ArtifactRepository | None = None,
+    conversation_state_repository: ConversationStateRepository | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -299,6 +308,7 @@ async def on_free_text(
             reply_markup=active_main_menu(v2_menu_enabled),
         )
         return
+
     decision = route_text(task_text)
     await journal.add(
         workspace_context.workspace_id,
@@ -320,6 +330,15 @@ async def on_free_text(
     await _maybe_send_module_result(
         message, decision, llm_provider,
         workspace_context, partner_repository,
+        # F2B: on_free_text (plain typed text, no button) previously never
+        # forwarded these into _maybe_send_draft at all - the regular-post
+        # Artifact-creation gap the F2B report opens with is exactly this
+        # path ("User: Напиши пост... Bot: [пост]" is on_free_text, not the
+        # button-driven on_task_after_button flow). reply_context stays
+        # None here as before - on_free_text has no reply-subject step, so
+        # the client-reply branch in _maybe_send_draft remains inert.
+        work_repository=work_repository, artifact_repository=artifact_repository,
+        conversation_state_repository=conversation_state_repository,
         state=state, v2_menu_enabled=v2_menu_enabled,
     )
     await record_turn(
@@ -420,6 +439,7 @@ async def _route_and_dispatch(
     reply_subject_data: tuple[int | None, int | None, str | None],
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
+    conversation_state_repository: ConversationStateRepository | None = None,
     v2_menu_enabled: bool = False,
 ) -> None:
     """Общий хвост on_task_after_button и «сообщение вместо имени» в
@@ -455,6 +475,7 @@ async def _route_and_dispatch(
         message, decision, llm_provider,
         workspace_context, partner_repository,
         work_repository=work_repository, artifact_repository=artifact_repository,
+        conversation_state_repository=conversation_state_repository,
         reply_context=reply_context, state=state, v2_menu_enabled=v2_menu_enabled,
     )
 
@@ -468,6 +489,7 @@ async def _maybe_send_module_result(
     *,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
+    conversation_state_repository: ConversationStateRepository | None = None,
     reply_context: ReplyBridgeContext | None = None,
     state: FSMContext | None = None,
     v2_menu_enabled: bool = False,
@@ -521,6 +543,7 @@ async def _maybe_send_module_result(
     await _maybe_send_draft(
         message, decision, provider, workspace_context, partner_repository,
         work_repository=work_repository, artifact_repository=artifact_repository,
+        conversation_state_repository=conversation_state_repository,
         reply_context=reply_context,
     )
 
@@ -709,6 +732,14 @@ async def _send_text_check(
 
 
 _CLIENT_REPLY_HEADING = "💬 Черновик ответа клиенту — для ручной проверки"
+_FREE_TEXT_ARTIFACT_TITLE_MAX_LEN = 80
+
+
+def _free_text_artifact_title(task_text: str) -> str:
+    value = task_text.strip() or "пост"
+    if len(value) <= _FREE_TEXT_ARTIFACT_TITLE_MAX_LEN:
+        return f"Telegram: {value}"
+    return f"Telegram: {value[:_FREE_TEXT_ARTIFACT_TITLE_MAX_LEN - 1].rstrip()}…"
 
 
 async def _send_chunked(
@@ -742,6 +773,7 @@ async def _maybe_send_draft(
     *,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
+    conversation_state_repository: ConversationStateRepository | None = None,
     reply_context: ReplyBridgeContext | None = None,
 ) -> None:
     workspace_id = workspace_context.workspace_id
@@ -873,6 +905,41 @@ async def _maybe_send_draft(
             "доступность, оплату, бронирование и возможные риски."
         )
 
+    if is_regular_post and artifact_repository is not None:
+        # F2B: closes the structural gap confirmed in the F2A report - this
+        # branch generated and showed text but never created an Artifact, so
+        # Working State had no stable current_artifact_id for it. content is
+        # exactly draft_text - the same variable embedded into `lines` above
+        # and sent to the user below, no second LLM call, no re-derivation.
+        # Not reachable when draft is None (see the early `return` above), so
+        # a failed generation never creates an Artifact.
+        try:
+            artifact, _ = await artifact_repository.create_artifact_with_initial_version(
+                workspace_id,
+                artifact_type=spec.artifact_type,
+                title=_free_text_artifact_title(decision.task_text),
+                content=draft_text,
+                generation_note=(
+                    f"Content Factory (free text): "
+                    f"{provider_request.material_type}/{provider_request.output_format}"
+                ),
+            )
+        except Exception:
+            # Best-effort bookkeeping only, same policy as ConversationStateService:
+            # a technical persistence failure here must not turn an already-
+            # generated, already-about-to-be-shown draft into an error for the
+            # user (see the F2B report, failure policy). Unlike material_generation.py,
+            # this flow never promised "saved to Мои материалы" to the user, so no
+            # user-facing warning is added here either - the text below is
+            # unchanged either way.
+            log.warning("tasks: free-text Content Factory artifact persistence failed")
+        else:
+            await ConversationStateService(conversation_state_repository).record_artifact(
+                workspace_id, workspace_context.telegram_user_id, artifact.id,
+                active_module="content_factory", current_task="content_factory_free_text",
+                last_action="generate_content",
+            )
+
     reply_keyboard: InlineKeyboardMarkup | None = None
     if (
         decision.primary_module is Module.TRAVEL_ASSISTANT
@@ -883,8 +950,12 @@ async def _maybe_send_draft(
         # создать новый + Artifact») живёт в ReplyWorkSyncService — transport-
         # independent, ничего не знает про InlineKeyboardMarkup. Клавиатуру
         # строим здесь же, сразу после: это Telegram-специфика.
-        sync_service = ReplyWorkSyncService(work_repository, artifact_repository)
-        updated_item = await sync_service.sync(workspace_id, draft_text, reply_context)
+        sync_service = ReplyWorkSyncService(
+            work_repository, artifact_repository, conversation_state_repository,
+        )
+        updated_item = await sync_service.sync(
+            workspace_id, workspace_context.telegram_user_id, draft_text, reply_context,
+        )
         if updated_item is not None:
             reply_keyboard = reply_confirm_keyboard(
                 updated_item.id, work_item_revision(updated_item),

@@ -1,0 +1,44 @@
+{
+  "id": "scn_18_restart_short_follow_up_still_resolves",
+  "description": "Процесс бота перезапускается между ходами; короткий follow-up всё ещё резолвится благодаря persisted working state.",
+  "initial_state": {
+    "pending_offer": {
+      "offer_type": "content_topics",
+      "items": 3
+    }
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Предложи три темы"
+    },
+    {
+      "role": "assistant",
+      "text": "1... 2... 3...",
+      "offer_type": "content_topics",
+      "offer_items": 3
+    },
+    {
+      "role": "system",
+      "text": "<process restart>"
+    },
+    {
+      "role": "user",
+      "text": "Третью"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "select_offer_item",
+      "subject_ref_type": "offer",
+      "slots": {
+        "item_id": "3"
+      }
+    }
+  ],
+  "expected_state": {
+    "active_module": "content_factory"
+  },
+  "notes": "Это то, что F1 уже физически доказывает на уровне repository (restart-safe тесты); сквозной сценарий ждёт F2/F3 wiring.",
+  "status": "foundation_pending"
+}

@@ -1,0 +1,33 @@
+{
+  "id": "scn_19_two_messages_sent_quickly",
+  "description": "Пользователь отправляет два сообщения почти одновременно; второе должно видеть результат первого, не выполняться параллельно.",
+  "initial_state": {},
+  "turns": [
+    {
+      "role": "user",
+      "text": "Дай 3 темы"
+    },
+    {
+      "role": "user",
+      "text": "И сразу напиши пост по первой"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "regenerate_or_create_offer",
+      "action": "generate_content"
+    },
+    {
+      "intent": "select_offer_item",
+      "action": "generate_content",
+      "slots": {
+        "item_id": "1"
+      }
+    }
+  ],
+  "expected_state": {
+    "active_module": "content_factory"
+  },
+  "notes": "Race-защита уже реализована на уровне ChatSerializationMiddleware (F1, per-(workspace,user) asyncio.Lock, см. tests/test_chat_serialization.py); порядок исполнения сценария ждёт F2/F3 wiring.",
+  "status": "foundation_pending"
+}

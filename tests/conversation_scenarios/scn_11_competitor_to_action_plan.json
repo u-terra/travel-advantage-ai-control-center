@@ -1,0 +1,28 @@
+{
+  "id": "scn_11_competitor_to_action_plan",
+  "description": "Пользователь просит превратить анализ конкурента в план действий.",
+  "initial_state": {
+    "current_subject_ref_type": "competitor",
+    "current_subject_ref_id": 5
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Конкурент ТурКлуб → сделай из анализа план действий"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "build_action_plan",
+      "action": "next_best_action",
+      "subject_ref_type": "competitor",
+      "subject_ref_id": 5
+    }
+  ],
+  "expected_state": {
+    "current_subject_ref_type": "competitor",
+    "current_subject_ref_id": 5
+  },
+  "notes": "Зависит от scn_10 (нужен сохранённый анализ конкурента, которого пока не существует).",
+  "status": "foundation_pending"
+}

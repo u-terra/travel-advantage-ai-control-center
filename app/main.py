@@ -16,11 +16,13 @@ from app.orchestration.factory import create_orchestration_llm_provider
 from app.orchestration.provider import OrchestrationLLMProvider
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
+from app.services.chat_serialization import ChatSerializationMiddleware
 from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
 from app.services.llm.base import LLMProvider
@@ -43,6 +45,7 @@ def _build_dispatcher(
     workspace_signal_repository: WorkspaceSignalRepository | None = None,
     competitor_repository: CompetitorRepository | None = None,
     work_repository: WorkRepository | None = None,
+    conversation_state_repository: ConversationStateRepository | None = None,
     onboarding_rollout_at: datetime | None = None,
     orchestration_llm_provider: OrchestrationLLMProvider | None = None,
 ) -> Dispatcher:
@@ -58,6 +61,16 @@ def _build_dispatcher(
         workspace_context = WorkspaceContextMiddleware(partner_repository)
         dp.message.outer_middleware(workspace_context)
         dp.callback_query.outer_middleware(workspace_context)
+        # F1 Conversation Core Foundation: serializes updates per
+        # (workspace_id, telegram_user_id) so two fast consecutive messages
+        # from the same user can't be handled out of order/in parallel (see
+        # app.services.chat_serialization). Needs workspace_context already
+        # resolved, so it sits right after it and before the access/
+        # onboarding gates - purely additive, no behavior change for any
+        # existing flow.
+        chat_serialization = ChatSerializationMiddleware()
+        dp.message.outer_middleware(chat_serialization)
+        dp.callback_query.outer_middleware(chat_serialization)
         # Требует уже готовый workspace_context — регистрируется следом,
         # тем же принципом, что и WorkspaceContextMiddleware. Stage 3A:
         # решает, доступен ли рабочий Оркестратор (workspace + active/
@@ -82,6 +95,10 @@ def _build_dispatcher(
     dp["workspace_signal_repository"] = workspace_signal_repository
     dp["competitor_repository"] = competitor_repository
     dp["work_repository"] = work_repository
+    # F1 Conversation Core Foundation - infrastructure only, see
+    # app.repositories.conversation_state_repository. No handler reads or
+    # writes through this yet.
+    dp["conversation_state_repository"] = conversation_state_repository
     # Phase 1 LLM orchestration shadow mode - see app.orchestration. Defaults
     # to the inert NullOrchestrationLLMProvider when not passed explicitly,
     # same as every other optional dependency here.
@@ -142,11 +159,15 @@ async def _async_main() -> None:
     work_repository = WorkRepository(settings.journal_db_path)
     await work_repository.init()
 
+    conversation_state_repository = ConversationStateRepository(settings.journal_db_path)
+    await conversation_state_repository.init()
+
     content_factory_config = ContentFactoryConfig(
         url=settings.content_factory_url,
         token=settings.content_factory_token,
         timeout_seconds=settings.content_factory_timeout_seconds,
         source_analysis_url=settings.content_factory_source_analysis_url,
+        topics_url=settings.content_factory_topics_url,
     )
     # Неизвестный LLM_PROVIDER — ошибка на старте, а не молчаливый уход
     # не к тому вендору.
@@ -178,8 +199,9 @@ async def _async_main() -> None:
         workspace_signal_repository,
         competitor_repository,
         work_repository,
-        settings.onboarding_rollout_at,
-        orchestration_llm_provider,
+        conversation_state_repository=conversation_state_repository,
+        onboarding_rollout_at=settings.onboarding_rollout_at,
+        orchestration_llm_provider=orchestration_llm_provider,
     )
 
     await dp.start_polling(bot)

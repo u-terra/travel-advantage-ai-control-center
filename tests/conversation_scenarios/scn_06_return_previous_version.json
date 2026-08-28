@@ -1,0 +1,24 @@
+{
+  "id": "scn_06_return_previous_version",
+  "description": "Пользователь просит вернуть предыдущий вариант артефакта.",
+  "initial_state": {
+    "current_artifact_id": 104
+  },
+  "turns": [
+    {
+      "role": "user",
+      "text": "Верни предыдущий вариант"
+    }
+  ],
+  "expected_actions": [
+    {
+      "intent": "revert_artifact_version",
+      "subject_ref_type": "artifact"
+    }
+  ],
+  "expected_state": {
+    "current_artifact_id": 104
+  },
+  "notes": "Реализуется через ArtifactRepository.get_artifact_version + add_artifact_version_if_current, версии не теряются.",
+  "status": "foundation_pending"
+}

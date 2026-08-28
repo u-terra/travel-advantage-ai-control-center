@@ -15,6 +15,7 @@ from app.handlers.material_generation import (
 )
 from app.domain.business_profiles import BusinessClaim, BusinessContext, BusinessProfile
 from app.keyboards import ARTIFACT_CHECK_PREFIX, source_material_formats_keyboard
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.llm.models import ContentDraft
@@ -217,6 +218,49 @@ def test_generation_calls_factory_once_then_saves_linked_artifact(output_format)
     buttons = callback.message.answers[-1][1]["reply_markup"].inline_keyboard
     artifact = artifacts.create_artifact_with_initial_version.return_value[0]
     assert buttons[2][0].callback_data == f"{ARTIFACT_CHECK_PREFIX}{artifact.id}"
+
+
+def test_generation_records_current_artifact_id_in_working_state(tmp_path):
+    """B (K restart-safe by construction: real SQLite ConversationStateRepository)."""
+    conversation_repository = ConversationStateRepository(tmp_path / "journal.sqlite3")
+    run(conversation_repository.init())
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies()
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+
+    run(generate_source_material(
+        callback, partner, artifacts, analyses, provider, profiles,
+        conversation_state_repository=conversation_repository,
+    ))
+
+    created_artifact = artifacts.create_artifact_with_initial_version.return_value[0]
+    state = run(conversation_repository.get_state(10, 999))
+    assert state is not None
+    assert state.current_artifact_id == created_artifact.id
+    assert state.active_module == "content_factory"
+    assert state.last_action == "content_factory_generate"
+
+    # K: survives a simulated process restart (fresh repository instance,
+    # same file) - same guarantee already proven at the repository level in
+    # test_conversation_state_repository.py, exercised here end-to-end.
+    restarted = ConversationStateRepository(conversation_repository.db_path)
+    run(restarted.init())
+    restarted_state = run(restarted.get_state(10, 999))
+    assert restarted_state == state
+
+
+def test_generation_without_conversation_repository_is_unaffected():
+    """Existing callers that don't pass conversation_state_repository
+    (default None) must see identical generation behaviour - see the many
+    pre-existing tests above/below that call generate_source_material
+    without it."""
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies()
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+
+    run(generate_source_material(callback, partner, artifacts, analyses, provider, profiles))
+
+    assert "✍️ Черновик материала" in callback.message.answers[-1][0]
 
 
 def test_ai_failure_creates_no_artifact_and_hides_details():
