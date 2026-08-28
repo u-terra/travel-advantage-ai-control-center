@@ -73,6 +73,29 @@ ASSISTANT_TOPIC_KEYWORDS: tuple[str, ...] = (
     "оплат",
 )
 
+# Product/rank signals that require context rather than broad single words.
+# In particular, bare Ruby/Elite/points/partner are intentionally excluded:
+# they collide with programming, games, sport, and ordinary business text.
+ASSISTANT_TOPIC_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:loyalty\s+points?|travel\s+credits?|mwr\s+life|"
+        r"elite\s+turbo|guest\s+pass)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:\b(?:silver|ruby)\b.{0,60}(?:\b(?:выплат\w*|доход\w*|"
+        r"заработ\w*|закры\w*|ранг\w*)\b|\$\s*\d+)|"
+        r"(?:\b(?:выплат\w*|доход\w*|заработ\w*|закры\w*|ранг\w*)\b|"
+        r"\$\s*\d+).{0,60}\b(?:silver|ruby)\b)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:\b(?:что|как|с\s+чего)\b.{0,50}\bнов\w*\s+партн[её]р\w*\b|"
+        r"\bнов\w*\s+партн[её]р\w*\b.{0,50}\b(?:что|как|с\s+чего)\b)",
+        re.IGNORECASE,
+    ),
+)
+
 RADAR_KEYWORDS: tuple[str, ...] = (
     "найти людей", "найти сигнал", "найти темы",
     "сигнал", "сигналы",

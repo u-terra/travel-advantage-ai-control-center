@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from app.routing.keywords import (
     ASSISTANT_INTENT_KEYWORDS,
     ASSISTANT_TOPIC_KEYWORDS,
+    ASSISTANT_TOPIC_PATTERNS,
     CONTENT_KEYWORDS,
     CONTENT_PATTERNS,
     PACKAGING_KEYWORDS,
@@ -100,7 +101,9 @@ def route_text(task_text: str) -> RouteDecision:
         text_lower, CONTENT_KEYWORDS
     ) + _count_pattern_matches(text_lower, CONTENT_PATTERNS)
     intent_score = _count_matches(text_lower, ASSISTANT_INTENT_KEYWORDS)
-    topic_score = _count_matches(text_lower, ASSISTANT_TOPIC_KEYWORDS)
+    topic_score = _count_matches(
+        text_lower, ASSISTANT_TOPIC_KEYWORDS
+    ) + _count_pattern_matches(text_lower, ASSISTANT_TOPIC_PATTERNS)
     radar_score = _count_matches(text_lower, RADAR_KEYWORDS)
     packaging_score = _count_matches(text_lower, PACKAGING_KEYWORDS)
 

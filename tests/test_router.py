@@ -7,6 +7,54 @@ from app.routing.router import route_for_button, route_text
 from app.routing.safety import SafetyLevel
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Чем Loyalty Points отличаются от Travel Credits?",
+        "Можно ли передать Travel Credits другому человеку?",
+        "Что получает Silver с Elite Turbo?",
+        "Какие выплаты у Ruby?",
+        "Я точно буду получать $300 в день, если стану Ruby?",
+        "Что такое MWR Life?",
+        "Что должен знать новый партнёр?",
+        "Как закрыть Silver?",
+        "Что такое Elite Turbo?",
+        "Что такое Guest Pass?",
+    ],
+)
+def test_branded_knowledge_questions_route_to_travel_assistant(text: str) -> None:
+    decision = route_text(text)
+    assert decision.primary_module is Module.TRAVEL_ASSISTANT
+    assert decision.is_uncertain is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ruby язык программирования",
+        "Elite Dangerous",
+        "баллы футбольного матча",
+        "партнёр по бизнесу прислал договор",
+    ],
+)
+def test_ambiguous_single_words_do_not_route_to_travel_assistant(text: str) -> None:
+    assert route_text(text).primary_module is not Module.TRAVEL_ASSISTANT
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Напиши пост про Elite Turbo", Module.CONTENT_FACTORY),
+        ("Покажи сигналы Lead Radar про Elite Turbo", Module.LEAD_RADAR),
+        ("Подготовь инструкцию для нового партнёра", Module.PARTNER_PACKAGING),
+    ],
+)
+def test_specialized_flow_priority_survives_new_topic_patterns(
+    text: str, expected: Module,
+) -> None:
+    assert route_text(text).primary_module is expected
+
+
 def test_post_routes_to_content_factory():
     d = route_text("Нужен пост о сомнениях перед поездкой")
     assert d.primary_module is Module.CONTENT_FACTORY
