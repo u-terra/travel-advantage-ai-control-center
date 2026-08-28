@@ -22,6 +22,7 @@ from app.planner.provider import PlannerLLMProvider
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.conversation_state_repository import ConversationStateRepository
+from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.source_catalog_repository import SourceCatalogRepository
@@ -30,8 +31,10 @@ from app.repositories.workspace_signal_repository import WorkspaceSignalReposito
 from app.services.chat_serialization import ChatSerializationMiddleware
 from app.services.content_factory import ContentFactoryConfig
 from app.services.lead_radar import LeadRadarConfig
+from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
 from app.services.llm.factory import create_llm_provider
+from app.services.reference_resolver import ReferenceResolver
 from app.services.source_registry import SEED_REGISTRY_PATH
 from app.storage import Journal
 from app.workspace_context import WorkspaceContextMiddleware
@@ -57,6 +60,7 @@ def _build_dispatcher(
     planner_enabled: bool = False,
     planner_allowed_telegram_user_ids: frozenset[int] = frozenset(),
     planner_max_llm_calls: int = DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN,
+    reference_resolver: ReferenceResolver | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -122,6 +126,7 @@ def _build_dispatcher(
     dp["planner_enabled"] = planner_enabled
     dp["planner_allowed_telegram_user_ids"] = planner_allowed_telegram_user_ids
     dp["planner_max_llm_calls"] = planner_max_llm_calls
+    dp["reference_resolver"] = reference_resolver
     return dp
 
 
@@ -178,6 +183,10 @@ async def _async_main() -> None:
 
     conversation_state_repository = ConversationStateRepository(settings.journal_db_path)
     await conversation_state_repository.init()
+
+    knowledge_repository = KnowledgeRepository()
+    await knowledge_repository.init()
+    reference_resolver = ReferenceResolver(KnowledgeService(knowledge_repository))
 
     content_factory_config = ContentFactoryConfig(
         url=settings.content_factory_url,
@@ -244,6 +253,7 @@ async def _async_main() -> None:
         planner_enabled=settings.planner_enabled,
         planner_allowed_telegram_user_ids=settings.planner_allowed_telegram_user_ids,
         planner_max_llm_calls=settings.planner_max_llm_calls,
+        reference_resolver=reference_resolver,
     )
 
     await dp.start_polling(bot)

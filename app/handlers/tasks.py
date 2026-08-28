@@ -40,6 +40,7 @@ from app.repositories.workspace_signal_repository import WorkspaceSignalReposito
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
+from app.services.action_contract_adapter import build_action_contract
 from app.services.assistant_tail_cleanup import strip_assistant_tail
 from app.services.conversation_state_service import ConversationStateService
 from app.services.daily_actions import DailyActionsService
@@ -47,6 +48,7 @@ from app.services.generation_request_builder import build_provider_generation_re
 from app.services.lead_radar import LeadRadarConfig
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.reference_resolver import ReferenceResolver, ResolvedActionContext
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
 from app.services.user_style import UserStyleService
 from app.storage import Journal
@@ -90,6 +92,22 @@ _UNCERTAIN_ROUTE_MESSAGE = (
     "⚠️ Не удалось уверенно определить маршрут для этой задачи. "
     "Выберите категорию задачи кнопкой главного меню или переформулируйте запрос."
 )
+
+_KNOWLEDGE_UNAVAILABLE_MESSAGE = (
+    "Не удалось безопасно проверить информацию в базе знаний. "
+    "Пожалуйста, попробуйте позже или уточните данные по официальному источнику."
+)
+
+_CURRENT_SOURCE_REQUIRED_MESSAGE = (
+    "Для ответа нужна проверка текущего официального источника. "
+    "Статическая база знаний не подтверждает актуальную доступность или условия."
+)
+
+_KNOWLEDGE_ELIGIBLE_MODULES = frozenset({
+    Module.TRAVEL_ASSISTANT,
+    Module.SAFETY_LAYER,
+    Module.PARTNER_PACKAGING,
+})
 
 # Fix: длинный текст, вставленный из главного меню (например, целая
 # публикация или пост), обычно не содержит ни одного из routing keywords —
@@ -201,6 +219,7 @@ async def on_reply_subject_received(
     partner_repository: PartnerRepository,
     artifact_repository: ArtifactRepository | None = None,
     conversation_state_repository: ConversationStateRepository | None = None,
+    reference_resolver: ReferenceResolver | None = None,
 ) -> None:
     """Первый шаг «Ответить клиенту» (v2): «Кому отвечаем?» -> WorkSubject.
 
@@ -228,6 +247,7 @@ async def on_reply_subject_received(
             reply_subject_data=(None, None, None),
             work_repository=work_repository, artifact_repository=artifact_repository,
             conversation_state_repository=conversation_state_repository,
+            reference_resolver=reference_resolver,
         )
         return
 
@@ -261,6 +281,7 @@ async def on_task_after_button(
     artifact_repository: ArtifactRepository | None = None,
     conversation_state_repository: ConversationStateRepository | None = None,
     v2_menu_enabled: bool = False,
+    reference_resolver: ReferenceResolver | None = None,
 ) -> None:
     data = await state.get_data()
     forced_raw = data.get("forced_module")
@@ -296,6 +317,7 @@ async def on_task_after_button(
         work_repository=work_repository, artifact_repository=artifact_repository,
         conversation_state_repository=conversation_state_repository,
         v2_menu_enabled=v2_menu_enabled,
+        reference_resolver=reference_resolver,
     )
 
 
@@ -319,6 +341,7 @@ async def on_free_text(
     conversation_state_repository: ConversationStateRepository | None = None,
     workspace_signal_repository: WorkspaceSignalRepository | None = None,
     lead_radar_config: LeadRadarConfig | None = None,
+    reference_resolver: ReferenceResolver | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -382,7 +405,7 @@ async def on_free_text(
         await message.answer(
             build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
         )
-    await _maybe_send_module_result(
+    knowledge_controlled = await _maybe_send_module_result(
         message, decision, llm_provider,
         workspace_context, partner_repository,
         # F2B: on_free_text (plain typed text, no button) previously never
@@ -395,12 +418,15 @@ async def on_free_text(
         work_repository=work_repository, artifact_repository=artifact_repository,
         conversation_state_repository=conversation_state_repository,
         state=state, v2_menu_enabled=v2_menu_enabled,
+        reference_resolver=reference_resolver,
     )
     await record_turn(
         state, role="assistant",
         text=f"[{decision.primary_module.value}] ответ отправлен",
         module=decision.primary_module.value,
     )
+    if knowledge_controlled:
+        return
     # LLM orchestration shadow mode (Phase 1): runs strictly AFTER the reply
     # above, never before and never blocking it - see
     # app.orchestration.shadow for the fail-closed contract. Defaults to the
@@ -581,6 +607,7 @@ async def _route_and_dispatch(
     artifact_repository: ArtifactRepository | None = None,
     conversation_state_repository: ConversationStateRepository | None = None,
     v2_menu_enabled: bool = False,
+    reference_resolver: ReferenceResolver | None = None,
 ) -> None:
     """Общий хвост on_task_after_button и «сообщение вместо имени» в
     on_reply_subject_received: маршрутизация, Journal, показ/скип карточки
@@ -617,6 +644,7 @@ async def _route_and_dispatch(
         work_repository=work_repository, artifact_repository=artifact_repository,
         conversation_state_repository=conversation_state_repository,
         reply_context=reply_context, state=state, v2_menu_enabled=v2_menu_enabled,
+        reference_resolver=reference_resolver,
     )
 
 
@@ -633,16 +661,46 @@ async def _maybe_send_module_result(
     reply_context: ReplyBridgeContext | None = None,
     state: FSMContext | None = None,
     v2_menu_enabled: bool = False,
-) -> None:
+    reference_resolver: ReferenceResolver | None = None,
+) -> bool:
+    # Slice 1: one turn-local retrieval after the existing route decision and
+    # before any generation.  Known non-KB modules bypass even the resolver;
+    # Planner is handled earlier in on_free_text and never reaches this point
+    # when it accepts the request.
+    if (
+        reference_resolver is not None
+        and decision.primary_module in _KNOWLEDGE_ELIGIBLE_MODULES
+    ):
+        action_contract = build_action_contract(decision)
+        try:
+            resolved = await reference_resolver.resolve(
+                question=decision.task_text,
+                action_contract=action_contract,
+                primary_module=decision.primary_module,
+            )
+        except Exception:
+            log.warning("reference_resolver: unexpected failure", exc_info=True)
+            await message.answer(_KNOWLEDGE_UNAVAILABLE_MESSAGE)
+            return True
+        if resolved.need_knowledge and resolved.knowledge_bundle is None:
+            await message.answer(_KNOWLEDGE_UNAVAILABLE_MESSAGE)
+            return True
+        if resolved.needs_clarification:
+            await message.answer(_knowledge_clarification_message(resolved))
+            return True
+        if resolved.requires_current_source:
+            await message.answer(_CURRENT_SOURCE_REQUIRED_MESSAGE)
+            return True
+
     if decision.primary_module is Module.SAFETY_LAYER:
         await _send_text_check(message, decision, provider)
-        return
+        return False
 
     if decision.primary_module is Module.PARTNER_PACKAGING:
         await _send_partner_package(
             message, decision, workspace_context.workspace_id, partner_repository,
         )
-        return
+        return False
 
     # Prod bug: в v2 UI карточка маршрута («📌 Карточка маршрута», содержащая
     # предупреждение "Маршрут не определён уверенно") не показывается
@@ -676,9 +734,9 @@ async def _maybe_send_module_result(
                         offer_message.chat.id, offer_message.message_id,
                     ),
                 })
-            return
+            return False
         await message.answer(_UNCERTAIN_ROUTE_MESSAGE)
-        return
+        return False
 
     await _maybe_send_draft(
         message, decision, provider, workspace_context, partner_repository,
@@ -686,6 +744,26 @@ async def _maybe_send_module_result(
         conversation_state_repository=conversation_state_repository,
         reply_context=reply_context,
     )
+    return False
+
+
+def _knowledge_clarification_message(resolved: ResolvedActionContext) -> str:
+    """Render turn-local stable options without persisting an offer."""
+    titles_by_key = {
+        item.stable_key: item.title
+        for item in resolved.knowledge_bundle.primary_items
+    } if resolved.knowledge_bundle is not None else {}
+    options = [
+        titles_by_key.get(stable_key, stable_key)
+        for stable_key in resolved.clarification_options
+    ]
+    if not options:
+        return (
+            "Не удалось однозначно определить, какая информация вам нужна. "
+            "Пожалуйста, уточните вопрос."
+        )
+    rendered = "\n".join(f"• {option}" for option in options)
+    return f"Уточните, пожалуйста, какой вариант вы имеете в виду:\n{rendered}"
 
 
 
