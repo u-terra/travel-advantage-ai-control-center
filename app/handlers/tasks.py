@@ -25,17 +25,26 @@ from app.keyboards import (
 from app.orchestration.context import record_turn
 from app.orchestration.provider import OrchestrationLLMProvider
 from app.orchestration.shadow import run_shadow_orchestration
+from app.planner.context import PlannerExecutionContext
+from app.planner.cost import DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN
+from app.planner.eligibility import is_planner_allowed_for_user, is_planner_eligible
+from app.planner.provider import PlannerLLMProvider
+from app.planner.service import run_planner_for_task
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.work_repository import WorkRepository
+from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
 from app.services.assistant_tail_cleanup import strip_assistant_tail
 from app.services.conversation_state_service import ConversationStateService
+from app.services.daily_actions import DailyActionsService
 from app.services.generation_request_builder import build_provider_generation_request
+from app.services.lead_radar import LeadRadarConfig
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
@@ -61,6 +70,15 @@ _DRAFT_SEND_FAILURE_MESSAGE = (
 _LONG_TASK_ACK_MESSAGE = (
     "⏳ Готовлю материал. Для большого объёма ответ может занять немного "
     "больше времени."
+)
+
+# Stage 3 Planner MVP (see app.planner.service): sent at most once, only
+# after a plan has actually been accepted (see _try_planner_flow's
+# on_plan_accepted callback) - never a spurious ack for a request that will
+# fall back to the old router anyway.
+_PLANNER_ACK_MESSAGE = (
+    "⏳ Собираю и анализирую информацию — это может занять больше времени, "
+    "чем обычно."
 )
 
 _TEXT_CHECK_FAILURE_MESSAGE = (
@@ -291,9 +309,16 @@ async def on_free_text(
     v2_menu_enabled: bool = False,
     state: FSMContext | None = None,
     orchestration_llm_provider: OrchestrationLLMProvider | None = None,
+    planner_llm_provider: PlannerLLMProvider | None = None,
+    planner_enabled: bool = False,
+    planner_allowed_telegram_user_ids: frozenset[int] = frozenset(),
+    planner_max_llm_calls: int = DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN,
+    competitor_repository: CompetitorRepository | None = None,
     work_repository: WorkRepository | None = None,
     artifact_repository: ArtifactRepository | None = None,
     conversation_state_repository: ConversationStateRepository | None = None,
+    workspace_signal_repository: WorkspaceSignalRepository | None = None,
+    lead_radar_config: LeadRadarConfig | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -308,6 +333,36 @@ async def on_free_text(
             reply_markup=active_main_menu(v2_menu_enabled),
         )
         return
+
+    # Stage 3 Planner MVP - gated BEFORE route_text(), but route_text() and
+    # everything below is completely untouched: this only ever short-
+    # circuits the function early (via `return`) when the Planner path
+    # fully handled the message. Every check here is cheap/local (bool,
+    # allowlist membership, a regex-based eligibility check) - none of them
+    # is itself an LLM call, so an ineligible/disallowed/disabled request
+    # costs nothing extra (see app.planner.cost / the Stage 3 cost addendum).
+    telegram_user_id = getattr(getattr(message, "from_user", None), "id", None)
+    if (
+        planner_enabled
+        and is_planner_allowed_for_user(telegram_user_id, planner_allowed_telegram_user_ids)
+        and planner_llm_provider is not None
+        and planner_llm_provider.is_configured
+        and is_planner_eligible(task_text)
+    ):
+        log.info(
+            "planner_flow: eligible workspace_id=%s user_id=%s",
+            workspace_context.workspace_id, telegram_user_id,
+        )
+        handled = await _try_planner_flow(
+            message, task_text, workspace_context, partner_repository,
+            llm_provider, planner_llm_provider, competitor_repository,
+            work_repository, artifact_repository, workspace_signal_repository,
+            lead_radar_config, state, planner_max_llm_calls,
+        )
+        if handled:
+            return
+        # Controlled fallback: fall through to the existing router flow
+        # below exactly as if Planner had never been attempted.
 
     decision = route_text(task_text)
     await journal.add(
@@ -385,6 +440,91 @@ async def _run_orchestration_shadow(
         )
     except Exception:
         log.debug("orchestration_shadow: wrapper caught unexpected failure", exc_info=True)
+
+
+async def _try_planner_flow(
+    message: Message,
+    task_text: str,
+    workspace_context: WorkspaceContext,
+    partner_repository: PartnerRepository,
+    llm_provider: LLMProvider,
+    planner_llm_provider: PlannerLLMProvider,
+    competitor_repository: CompetitorRepository | None,
+    work_repository: WorkRepository | None,
+    artifact_repository: ArtifactRepository | None,
+    workspace_signal_repository: WorkspaceSignalRepository | None,
+    lead_radar_config: LeadRadarConfig | None,
+    state: FSMContext | None,
+    max_llm_calls: int,
+) -> bool:
+    """Defense-in-depth wrapper around app.planner.service.run_planner_for_task
+    (same reasoning as _run_orchestration_shadow above): that function
+    already never raises, but a Planner-caused crash reaching a real user
+    message is exactly the one outcome that must be structurally impossible,
+    not just "usually fine".
+
+    Returns True if the Planner path fully handled the message (a reply was
+    sent) - False means the caller MUST fall back to the existing router,
+    continuing exactly as if this had never been attempted. Never raises.
+    """
+    try:
+        profile = await partner_repository.get_business_profile(
+            workspace_context.workspace_id
+        )
+        daily_actions_service = None
+        if work_repository is not None and artifact_repository is not None:
+            # Same assembly app.handlers.daily_actions uses for "Что делать
+            # сегодня" - reused as-is, not reimplemented.
+            daily_actions_service = DailyActionsService(
+                work_repository, partner_repository, artifact_repository,
+                workspace_signal_repository,
+            )
+        execution_context = PlannerExecutionContext(
+            workspace_id=workspace_context.workspace_id,
+            llm_provider=llm_provider,
+            competitor_repository=competitor_repository,
+            partner_repository=partner_repository,
+            lead_radar_config=lead_radar_config,
+            daily_actions_service=daily_actions_service,
+        )
+
+        acked = False
+
+        async def _on_plan_accepted(_plan) -> None:
+            # Sent at most once, and only once a real plan is about to
+            # execute - never a spurious ack for a request that fails
+            # before that point and falls back to the old router anyway.
+            nonlocal acked
+            if not acked:
+                acked = True
+                await message.answer(_PLANNER_ACK_MESSAGE)
+
+        outcome = await run_planner_for_task(
+            task_text,
+            provider=planner_llm_provider,
+            execution_context=execution_context,
+            business_profile=profile,
+            advisory_route_decision=route_text(task_text),
+            on_plan_accepted=_on_plan_accepted,
+            max_llm_calls=max_llm_calls,
+        )
+    except Exception:
+        log.warning("planner_flow: wrapper caught unexpected failure", exc_info=True)
+        return False
+
+    if not outcome.success or not outcome.reply_text:
+        log.info(
+            "planner_flow: falling back to router workspace_id=%s reason=%s",
+            workspace_context.workspace_id, outcome.fallback_reason,
+        )
+        return False
+
+    await _send_chunked(message, outcome.reply_text)
+    await record_turn(state, role="user", text=task_text)
+    await record_turn(
+        state, role="assistant", text="[Planner] ответ отправлен", module="Planner",
+    )
+    return True
 
 
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data == TASK_CONFIRM_PUBLICATION_ANALYSIS)

@@ -29,11 +29,11 @@ def create_radar(path: Path, rows: list[tuple]) -> None:
             llm_relevance TEXT, llm_reason TEXT, llm_suggested_message TEXT
         )""")
         db.executemany(
-            "INSERT INTO lead_signals(id, source_id, created_at, source_type, origin_type, "
-            "item_url, item_title, item_summary, status, notes, ai_score, ai_category, "
-            "ai_reason, suggested_message, llm_checked, llm_checked_at, llm_signal_type, "
-            "llm_score, llm_relevance, llm_reason, llm_suggested_message) "
-            "VALUES (?, ?, '2025-01-01', 'rss', 'publisher_post', ?, ?, 'summary', "
+            "INSERT INTO lead_signals(id, source_id, source_name, created_at, source_type, "
+            "origin_type, item_url, item_title, item_summary, status, notes, ai_score, "
+            "ai_category, ai_reason, suggested_message, llm_checked, llm_checked_at, "
+            "llm_signal_type, llm_score, llm_relevance, llm_reason, llm_suggested_message) "
+            "VALUES (?, ?, ?, '2025-01-01', 'rss', 'publisher_post', ?, ?, 'summary', "
             "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows,
         )
 
@@ -71,9 +71,10 @@ def raw(source_id: str | None, row_id: int = 1, **values):
     defaults = dict(status="review", notes="note", score=73.0, category="market_signal",
                     reason="reason", suggested="draft", checked=1, checked_at="checked",
                     signal_type="type", llm_score=81.0, relevance="high",
-                    llm_reason="llm reason", llm_message="llm draft")
+                    llm_reason="llm reason", llm_message="llm draft", source_name=None)
     defaults.update(values)
-    return (row_id, source_id, f"https://item/{row_id}", f"title {row_id}",
+    return (row_id, source_id, defaults["source_name"], f"https://item/{row_id}",
+            f"title {row_id}",
             defaults["status"], defaults["notes"], defaults["score"], defaults["category"],
             defaults["reason"], defaults["suggested"], defaults["checked"],
             defaults["checked_at"], defaults["signal_type"], defaults["llm_score"],
@@ -165,3 +166,111 @@ def test_concurrent_bridge_does_not_duplicate(tmp_path: Path) -> None:
         list(pool.map(lambda _: run(repo.sync_eligible()), range(2)))
     with sqlite3.connect(app_db) as db:
         assert db.execute("SELECT COUNT(*) FROM workspace_signal_interpretations").fetchone()[0] == 1
+
+
+# --- видимость уже синхронизированных записей после отключения источника ---
+# (list_for_workspace() не должен продолжать показывать записи отключённого
+# источника только потому, что они уже были синхронизированы раньше)
+
+
+def test_disabled_subscription_hides_already_synced_record(tmp_path: Path) -> None:
+    app_db, radar_db, owner, _, catalog = setup(tmp_path)
+    source = run(catalog.add_source(owner, "https://example.com/leadsrc")).source
+    create_radar(radar_db, [raw(source.id, 1)])
+    repo = WorkspaceSignalRepository(app_db, radar_db)
+    run(repo.init(None))
+    run(repo.sync_eligible())
+    assert [row.radar_signal_id for row in run(repo.list_for_workspace(owner))] == [1]
+
+    run(catalog.set_enabled(owner, source.id, False))
+    assert run(repo.list_for_workspace(owner)) == []
+
+
+def test_globally_inactive_source_hides_already_synced_record(tmp_path: Path) -> None:
+    app_db, radar_db, owner, _, catalog = setup(tmp_path)
+    source = run(catalog.add_source(owner, "https://example.com/leadsrc2")).source
+    create_radar(radar_db, [raw(source.id, 1)])
+    repo = WorkspaceSignalRepository(app_db, radar_db)
+    run(repo.init(None))
+    run(repo.sync_eligible())
+    assert [row.radar_signal_id for row in run(repo.list_for_workspace(owner))] == [1]
+
+    with sqlite3.connect(app_db) as db:
+        db.execute("UPDATE source_catalog SET status='inactive' WHERE id=?", (source.id,))
+    assert run(repo.list_for_workspace(owner)) == []
+
+
+def test_legacy_null_source_id_visible_via_unique_name_match(tmp_path: Path) -> None:
+    app_db, radar_db, owner, _, catalog = setup(tmp_path)
+    source = run(catalog.add_source(owner, "https://example.com/legacy-a")).source
+    with sqlite3.connect(app_db) as db:
+        db.execute("UPDATE source_catalog SET name=? WHERE id=?", ("Legacy Source A", source.id))
+    create_radar(radar_db, [raw(None, 1, source_name="Legacy Source A")])
+    repo = WorkspaceSignalRepository(app_db, radar_db)
+    run(repo.init(owner))  # legacy backfill: interpretation.source_id stays NULL
+
+    visible = run(repo.list_for_workspace(owner))
+    assert [row.radar_signal_id for row in visible] == [1]
+
+    # отключение источника обязано скрыть legacy-запись, опознанную по имени
+    run(catalog.set_enabled(owner, source.id, False))
+    assert run(repo.list_for_workspace(owner)) == []
+
+
+def test_legacy_null_source_id_ambiguous_name_is_not_shown(tmp_path: Path) -> None:
+    app_db, radar_db, owner, _, catalog = setup(tmp_path)
+    source_a = run(catalog.add_source(owner, "https://example.com/dup-a")).source
+    source_b = run(catalog.add_source(owner, "https://example.com/dup-b")).source
+    with sqlite3.connect(app_db) as db:
+        db.execute(
+            "UPDATE source_catalog SET name='Duplicate Name' WHERE id IN (?, ?)",
+            (source_a.id, source_b.id),
+        )
+    create_radar(radar_db, [raw(None, 1, source_name="Duplicate Name")])
+    repo = WorkspaceSignalRepository(app_db, radar_db)
+    run(repo.init(owner))
+
+    assert run(repo.list_for_workspace(owner)) == []
+
+
+def test_limit_applies_after_visibility_filtering(tmp_path: Path, monkeypatch) -> None:
+    import app.repositories.workspace_signal_repository as repo_module
+
+    monkeypatch.setattr(repo_module, "_LIST_BATCH_SIZE", 1)
+    app_db, radar_db, owner, _, catalog = setup(tmp_path)
+    enabled = run(catalog.add_source(owner, "https://example.com/good")).source
+    disabled = run(catalog.add_source(owner, "https://example.com/bad")).source
+    # enabled-source row получает НИЗКИЙ interpretation id (синхронизирован первым),
+    # disabled-source строки — более высокие id и стоят первыми в ORDER BY id DESC,
+    # так что limit=1 обязан пропустить их все, а не просто взять верхушку окна.
+    rows = [raw(enabled.id, 1)] + [raw(disabled.id, i) for i in range(2, 7)]
+    create_radar(radar_db, rows)
+    repo = repo_module.WorkspaceSignalRepository(app_db, radar_db)
+    run(repo.init(None))
+    run(repo.sync_eligible())
+    run(catalog.set_enabled(owner, disabled.id, False))
+
+    result = run(repo.list_for_workspace(owner, limit=1))
+    assert [row.radar_signal_id for row in result] == [1]
+
+
+def test_get_for_workspace_hides_disabled_source_record(tmp_path: Path) -> None:
+    # Кнопка выбора сигнала в Telegram (on_radar_content_selected) переживает
+    # отключение источника — старое сообщение с callback_data никуда не
+    # девается. get_for_workspace() обязан применять то же правило видимости,
+    # что и list_for_workspace(), иначе пользователь может нажать старую
+    # кнопку и получить interpretation уже отключённого источника.
+    app_db, radar_db, owner, _, catalog = setup(tmp_path)
+    source = run(catalog.add_source(owner, "https://example.com/stale-button")).source
+    create_radar(radar_db, [raw(source.id, 1)])
+    repo = WorkspaceSignalRepository(app_db, radar_db)
+    run(repo.init(None))
+    run(repo.sync_eligible())
+
+    interpretations = run(repo.list_for_workspace(owner))
+    assert len(interpretations) == 1
+    interpretation_id = interpretations[0].interpretation_id
+    assert run(repo.get_for_workspace(owner, interpretation_id)) is not None
+
+    run(catalog.set_enabled(owner, source.id, False))
+    assert run(repo.get_for_workspace(owner, interpretation_id)) is None

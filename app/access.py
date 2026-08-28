@@ -4,10 +4,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove, TelegramObject
+from aiogram.types import TelegramObject
 
-# Единственный ответ постороннему пользователю. Не раскрывает меню, данные,
-# статистику, результаты поиска, технические ошибки и сведения о конфигурации.
+# Исторический текст отказа — Stage 3A больше не показывает его пользователю
+# автоматически (см. AllowlistMiddleware ниже), константа оставлена для
+# обратной совместимости импортов и как задокументированная формулировка,
+# если она понадобится где-то явно в будущем.
 ACCESS_DENIED_MESSAGE = "Доступ к панели управления ограничен."
 
 
@@ -33,13 +35,20 @@ def parse_allowed_user_ids(raw: str | None) -> frozenset[int]:
 
 
 class AllowlistMiddleware(BaseMiddleware):
-    """Централизованный guard доступа к панели управления.
+    """Stage 3A: публичный вход ≠ рабочий доступ.
 
-    Регистрируется как outer-middleware на наблюдателях message и callback_query,
-    поэтому срабатывает раньше любых фильтров и хендлеров — посторонний не видит
-    ни меню, ни данных, ни ошибок. Доступ закрыт по умолчанию: если набор
-    разрешённых ID пуст или ID пользователя в него не входит — обработка не
-    доходит до хендлеров панели.
+    До Stage 3A это был единственный guard доступа к боту вообще — не в
+    allowlist означало полный отказ ("Доступ к панели управления
+    ограничен."). Теперь публичный слой (/start, лобби, "Осмотреться")
+    обязан быть доступен любому Telegram-пользователю без allowlist, а
+    рабочий доступ решает AccessStateMiddleware (app/access_state_gate.py)
+    по workspace/подписке, а не по этому env-списку.
+
+    AllowlistMiddleware больше никого не блокирует — он только кладёт
+    is_allowlisted в workflow data как явный, изолированный флаг:
+    legacy/admin/pilot-разработка может явно проверить его там, где это
+    осознанно нужно, вместо того чтобы этот guard молча решал за всех.
+    TELEGRAM_ALLOWED_USER_IDS сознательно не удалён — см. app/config.py.
     """
 
     def __init__(self, allowed_user_ids: frozenset[int]) -> None:
@@ -56,19 +65,5 @@ class AllowlistMiddleware(BaseMiddleware):
     ) -> Any:
         user = getattr(event, "from_user", None)
         user_id = getattr(user, "id", None)
-
-        if self.is_allowed(user_id):
-            return await handler(event, data)
-
-        await self._deny(event)
-        return None
-
-    async def _deny(self, event: TelegramObject) -> None:
-        if isinstance(event, CallbackQuery):
-            # Всплывающий алерт, ничего из содержимого сообщения не раскрывается.
-            await event.answer(ACCESS_DENIED_MESSAGE, show_alert=True)
-        elif isinstance(event, Message):
-            await event.answer(
-                ACCESS_DENIED_MESSAGE,
-                reply_markup=ReplyKeyboardRemove(),
-            )
+        data["is_allowlisted"] = self.is_allowed(user_id)
+        return await handler(event, data)

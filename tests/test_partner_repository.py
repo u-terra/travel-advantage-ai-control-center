@@ -46,6 +46,78 @@ def test_init_creates_tables_in_empty_database(tmp_path: Path) -> None:
     assert {"partner_workspaces", "partner_profiles", "workspace_memberships"} <= tables
 
 
+def test_fresh_workspace_gets_unlimited_active_access_by_default(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _run(repository.init())
+    workspace, _ = _run(repository.ensure_owner_workspace(OWNER_ID))
+
+    fetched = _run(repository.get_workspace(workspace.id))
+    assert fetched.access_status == "active"
+    assert fetched.access_expires_at is None
+
+
+def test_stage3a_migration_keeps_existing_production_workspace_active(
+    tmp_path: Path,
+) -> None:
+    """Additive-миграция Stage 3A: partner_workspaces, созданный ДО появления
+    access_status/access_expires_at, обязан безопасно остаться с полным
+    доступом после апгрейда схемы — ни один существующий пользователь не
+    должен внезапно потерять доступ."""
+    db_path = tmp_path / "workspace.sqlite3"
+    # Симулируем production-схему без access_status/access_expires_at.
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            """CREATE TABLE partner_workspaces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                slug TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )"""
+        )
+        db.execute(
+            "INSERT INTO partner_workspaces (name, slug, status, created_at, updated_at) "
+            "VALUES ('Существующий', 'existing-ws', 'active', 'now', 'now')"
+        )
+        db.execute(
+            """CREATE TABLE workspace_memberships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL,
+                telegram_user_id INTEGER NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+                status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE (workspace_id, telegram_user_id)
+            )"""
+        )
+        db.execute(
+            "INSERT INTO workspace_memberships "
+            "(workspace_id, telegram_user_id, role, status, created_at, updated_at) "
+            "VALUES (1, ?, 'owner', 'active', 'now', 'now')",
+            (OWNER_ID,),
+        )
+        db.commit()
+
+    repository = _repository(tmp_path)
+    _run(repository.init())
+
+    workspace = _run(repository.get_workspace(1))
+    assert workspace.access_status == "active"
+    assert workspace.access_expires_at is None
+
+    # Полный сквозной путь тоже не сломан: существующий владелец по-прежнему
+    # резолвится в тот же workspace, как и до миграции схемы.
+    context = _run(repository.resolve_workspace_context(OWNER_ID))
+    assert context is not None
+    assert context.workspace_id == 1
+    assert context.role == "owner"
+
+
+def test_stage3a_migration_is_idempotent_on_repeated_init(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _run(repository.init())
+    _run(repository.init())  # повторный init не должен падать на ALTER TABLE
+    workspace, _ = _run(repository.ensure_owner_workspace(OWNER_ID))
+    assert workspace.access_status == "active"
+
+
 def test_existing_journal_data_is_preserved(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     _run(repository.init())

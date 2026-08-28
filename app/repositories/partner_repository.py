@@ -15,6 +15,7 @@ from app.domain.partners import (
     WorkspaceContext,
     WorkspaceMembership,
     UserConsent,
+    WorkspaceUserPreferences,
 )
 from app.domain.business_profiles import (
     BUSINESS_PROFILE_SCHEMA_VERSION,
@@ -30,6 +31,7 @@ from app.domain.business_profiles import (
 
 WORKSPACE_ROLES = frozenset({"owner", "admin", "member"})
 MEMBERSHIP_STATUSES = frozenset({"active", "inactive"})
+MAX_USER_EXAMPLE_POSTS = 5
 
 
 class AmbiguousWorkspaceError(RuntimeError):
@@ -46,6 +48,10 @@ class PartnerProvisioningConflictError(RuntimeError):
 
 class PartnerMembershipNotFoundError(RuntimeError):
     """No unambiguous membership exists for an admin status operation."""
+
+
+class TooManyUserExamplesError(RuntimeError):
+    """Stage 3B1: у пользователя уже сохранено максимум example_posts."""
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,9 @@ CREATE TABLE IF NOT EXISTS partner_workspaces (
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'active',
+    access_status TEXT NOT NULL DEFAULT 'active'
+        CHECK (access_status IN ('trial_active', 'active', 'expired', 'suspended')),
+    access_expires_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -100,6 +109,24 @@ CREATE TABLE IF NOT EXISTS user_consents (
 
 CREATE INDEX IF NOT EXISTS idx_user_consents_lookup
     ON user_consents(workspace_id, telegram_user_id, consent_version);
+
+CREATE TABLE IF NOT EXISTS workspace_user_preferences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER NOT NULL,
+    telegram_user_id INTEGER NOT NULL,
+    style_description TEXT NOT NULL DEFAULT '',
+    example_posts TEXT NOT NULL DEFAULT '[]',
+    avoid_phrases TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id),
+    FOREIGN KEY (workspace_id, telegram_user_id)
+        REFERENCES workspace_memberships(workspace_id, telegram_user_id),
+    UNIQUE (workspace_id, telegram_user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_user_preferences_lookup
+    ON workspace_user_preferences(workspace_id, telegram_user_id);
 """
 
 _PROFILE_SCHEMA = """CREATE TABLE {table_name} (
@@ -128,6 +155,9 @@ _PROFILE_SCHEMA = """CREATE TABLE {table_name} (
 _CONTEXT_KEYS = frozenset({
     "specializations", "destinations", "audiences", "markets", "positioning",
     "communication", "goals", "content_preferences", "public_contacts", "claims",
+    # Stage 3B1: регион работы — свободный текст, хранится в context_json,
+    # отдельной ALTER TABLE не требует (JSON-блоб уже расширяемый).
+    "region",
 })
 _POSITIONING_KEYS = frozenset({"statement", "value_proposition", "differentiators"})
 _COMMUNICATION_KEYS = frozenset({
@@ -174,7 +204,43 @@ class PartnerRepository:
             await db.execute("PRAGMA foreign_keys = ON")
             await db.executescript(_BASE_SCHEMA)
             await db.commit()
+            db.row_factory = aiosqlite.Row
+            await self._ensure_access_state_columns(db)
             await self._init_profiles(db)
+
+    @staticmethod
+    async def _ensure_access_state_columns(db: aiosqlite.Connection) -> None:
+        """Additive миграция Stage 3A для баз, созданных до access_status.
+
+        Существующие production workspace обязаны безопасно остаться с
+        полным доступом: access_status по умолчанию 'active',
+        access_expires_at по умолчанию NULL (бессрочно) — доступ не
+        теряется в момент апгрейда схемы.
+        """
+        columns = {
+            row["name"]
+            for row in await (await db.execute(
+                "PRAGMA table_info(partner_workspaces)"
+            )).fetchall()
+        }
+        if "access_status" in columns and "access_expires_at" in columns:
+            return
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            if "access_status" not in columns:
+                await db.execute(
+                    "ALTER TABLE partner_workspaces ADD COLUMN access_status TEXT "
+                    "NOT NULL DEFAULT 'active' "
+                    "CHECK (access_status IN ('trial_active', 'active', 'expired', 'suspended'))"
+                )
+            if "access_expires_at" not in columns:
+                await db.execute(
+                    "ALTER TABLE partner_workspaces ADD COLUMN access_expires_at TEXT"
+                )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
     async def _init_profiles(self, db: aiosqlite.Connection) -> None:
         db.row_factory = aiosqlite.Row
@@ -1152,6 +1218,7 @@ def _now() -> str:
 
 
 def _workspace_from_row(row: aiosqlite.Row) -> PartnerWorkspace:
+    row_keys = row.keys()
     return PartnerWorkspace(
         id=row["id"],
         name=row["name"],
@@ -1159,6 +1226,13 @@ def _workspace_from_row(row: aiosqlite.Row) -> PartnerWorkspace:
         status=row["status"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        # SELECT * подхватывает новые столбцы автоматически после миграции,
+        # но row.keys() на всякий случай подстраховывает вызовы с явным
+        # списком колонок, не включающим access_status/access_expires_at.
+        access_status=row["access_status"] if "access_status" in row_keys else "active",
+        access_expires_at=(
+            row["access_expires_at"] if "access_expires_at" in row_keys else None
+        ),
     )
 
 
@@ -1197,6 +1271,7 @@ def _business_profile_from_row(row: aiosqlite.Row) -> BusinessProfile:
 def empty_business_context() -> dict[str, Any]:
     return {
         "specializations": [], "destinations": [], "audiences": [], "markets": [],
+        "region": "",
         "positioning": {"statement": "", "value_proposition": "", "differentiators": []},
         "communication": {
             "tone": "", "formality": "", "emoji_preference": "",
@@ -1239,6 +1314,8 @@ def validate_business_context(context: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("specializations", "destinations", "audiences", "markets", "goals"):
         if key in context:
             normalized[key] = _string_list(context[key], key)
+    if "region" in context:
+        normalized["region"] = _string(context["region"], "region")
     for key, allowed, list_keys in (
         ("positioning", _POSITIONING_KEYS, {"differentiators"}),
         ("communication", _COMMUNICATION_KEYS, {"preferred_terms", "banned_formulations"}),
@@ -1267,6 +1344,7 @@ def business_context_to_dict(context: BusinessContext) -> dict[str, Any]:
         "destinations": list(context.destinations),
         "audiences": list(context.audiences),
         "markets": list(context.markets),
+        "region": context.region,
         "positioning": {
             **dict(context.positioning),
             "differentiators": list(context.positioning["differentiators"]),
@@ -1375,6 +1453,9 @@ def _context_dto(context: Mapping[str, Any]) -> BusinessContext:
         specializations=tuple(context["specializations"]),
         destinations=tuple(context["destinations"]),
         audiences=tuple(context["audiences"]), markets=tuple(context["markets"]),
+        # .get(...) — старые context_json, сохранённые до Stage 3B1, не
+        # содержат "region" вообще; пусто, а не KeyError.
+        region=str(context.get("region") or ""),
         positioning=MappingProxyType({
             **context["positioning"],
             "differentiators": tuple(context["positioning"]["differentiators"]),

@@ -1,9 +1,11 @@
 """Интеграционные тесты: env → load_settings → guard, плюс сборка dispatcher.
 
-Проверяют не только middleware в изоляции, но и итоговую конфигурацию (реальный
-load_settings из окружения) и сборку dispatcher (_build_dispatcher регистрирует
-guard на message и callback_query). Ключевая гарантия — fail-closed: доступ
-управляется ТОЛЬКО через TELEGRAM_ALLOWED_USER_IDS.
+Stage 3A: AllowlistMiddleware больше не блокирует доступ — публичный слой
+(/start, лобби) обязан быть доступен любому Telegram-пользователю без
+TELEGRAM_ALLOWED_USER_IDS. Guard остаётся зарегистрирован (порядок
+middleware не меняется — AccessStateMiddleware/WorkspaceContextMiddleware
+идут следом), но теперь только помечает is_allowlisted и всегда пропускает
+обработку дальше.
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiogram.types import CallbackQuery, Message
 
-from app.access import ACCESS_DENIED_MESSAGE, AllowlistMiddleware
+from app.access import AllowlistMiddleware
+from app.access_state_gate import AccessStateMiddleware
 from app.config import load_settings
 from app.main import _build_dispatcher
 from app.workspace_context import WorkspaceContextMiddleware
@@ -64,56 +67,62 @@ def _guard_from_env(
     return AllowlistMiddleware(settings.allowed_user_ids)
 
 
-async def _reaches_handler(guard: AllowlistMiddleware, event: MagicMock) -> bool:
+async def _is_allowlisted_after_pass_through(
+    guard: AllowlistMiddleware, event: MagicMock
+) -> bool:
+    """Guard больше не блокирует: и allowlisted, и посторонний доходят до
+    хендлера. Возвращает is_allowlisted, положенный guard'ом в data."""
     handler = AsyncMock(return_value="handled")
     result = await guard(handler, event, {})
-    if handler.await_count:
-        return True
-    # Отказ: хендлер не вызван, отправлен единственный ответ с нужным текстом.
-    event.answer.assert_awaited_once()
-    assert event.answer.await_args.args[0] == ACCESS_DENIED_MESSAGE
-    assert result is None
-    return False
+    assert result == "handled"
+    handler.assert_awaited_once()
+    event.answer.assert_not_called()
+    return handler.await_args.args[1]["is_allowlisted"]
 
 
-# 1. TELEGRAM_ALLOWED_USER_IDS отсутствует, ADMIN_TELEGRAM_ID задан — доступ закрыт.
-def test_missing_allowlist_closes_access_even_with_admin(
+# 1. TELEGRAM_ALLOWED_USER_IDS отсутствует, ADMIN_TELEGRAM_ID задан — публичный
+#    слой всё равно доступен (is_allowlisted=False для всех).
+def test_missing_allowlist_still_reaches_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     guard = _guard_from_env(monkeypatch, allowed=None)
     assert guard.allowed_user_ids == frozenset()
-    assert _run(_reaches_handler(guard, _message(OWNER_ID))) is False
-    assert _run(_reaches_handler(guard, _message(STRANGER_ID))) is False
+    assert _run(_is_allowlisted_after_pass_through(guard, _message(OWNER_ID))) is False
+    assert _run(_is_allowlisted_after_pass_through(guard, _message(STRANGER_ID))) is False
 
 
-# 2. TELEGRAM_ALLOWED_USER_IDS пуст — доступ закрыт.
-def test_empty_allowlist_closes_access(monkeypatch: pytest.MonkeyPatch) -> None:
+# 2. TELEGRAM_ALLOWED_USER_IDS пуст — тот же результат.
+def test_empty_allowlist_still_reaches_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     guard = _guard_from_env(monkeypatch, allowed="   ")
     assert guard.allowed_user_ids == frozenset()
-    assert _run(_reaches_handler(guard, _message(OWNER_ID))) is False
-    assert _run(_reaches_handler(guard, _callback(OWNER_ID))) is False
+    assert _run(_is_allowlisted_after_pass_through(guard, _message(OWNER_ID))) is False
+    assert _run(_is_allowlisted_after_pass_through(guard, _callback(OWNER_ID))) is False
 
 
-# 3. TELEGRAM_ALLOWED_USER_IDS=586249067 — пользователь 586249067 разрешён.
-def test_allowlisted_user_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+# 3. TELEGRAM_ALLOWED_USER_IDS=586249067 — пользователь 586249067 помечен allowlisted.
+def test_allowlisted_user_is_flagged_true(monkeypatch: pytest.MonkeyPatch) -> None:
     guard = _guard_from_env(monkeypatch, allowed=str(OWNER_ID))
     assert guard.allowed_user_ids == frozenset({OWNER_ID})
-    assert _run(_reaches_handler(guard, _message(OWNER_ID))) is True
-    assert _run(_reaches_handler(guard, _callback(OWNER_ID))) is True
+    assert _run(_is_allowlisted_after_pass_through(guard, _message(OWNER_ID))) is True
+    assert _run(_is_allowlisted_after_pass_through(guard, _callback(OWNER_ID))) is True
 
 
-# 4. Посторонний message заблокирован.
-def test_stranger_message_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+# 4. Посторонний message доходит до хендлера, но помечен not allowlisted.
+def test_stranger_message_reaches_handler_as_not_allowlisted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     guard = _guard_from_env(monkeypatch, allowed=str(OWNER_ID))
-    assert _run(_reaches_handler(guard, _message(STRANGER_ID))) is False
+    assert _run(_is_allowlisted_after_pass_through(guard, _message(STRANGER_ID))) is False
 
 
-# 5. Посторонний callback заблокирован.
-def test_stranger_callback_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+# 5. Посторонний callback — аналогично, без show_alert-отказа.
+def test_stranger_callback_reaches_handler_as_not_allowlisted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     guard = _guard_from_env(monkeypatch, allowed=str(OWNER_ID))
     cb = _callback(STRANGER_ID)
-    assert _run(_reaches_handler(guard, cb)) is False
-    assert cb.answer.await_args.kwargs.get("show_alert") is True
+    assert _run(_is_allowlisted_after_pass_through(guard, cb)) is False
+    cb.answer.assert_not_called()
 
 
 # ADMIN_TELEGRAM_ID сохраняется в конфигурации (для прочих функций проекта),
@@ -176,4 +185,11 @@ def test_workspace_middleware_is_registered_after_allowlist(
             i for i, item in enumerate(middlewares)
             if isinstance(item, WorkspaceContextMiddleware)
         )
+        access_state_index = next(
+            i for i, item in enumerate(middlewares)
+            if isinstance(item, AccessStateMiddleware)
+        )
         assert guard_index < workspace_index
+        # AccessStateMiddleware — центральный gate рабочего доступа (Stage
+        # 3A), ему нужен уже готовый workspace_context.
+        assert workspace_index < access_state_index

@@ -8,6 +8,7 @@ import aiosqlite
 
 
 _MIGRATION_KEY = "legacy_radar_owner_v1"
+_LIST_BATCH_SIZE = 200
 
 _SCHEMA = (
 """CREATE TABLE IF NOT EXISTS workspace_signal_interpretations (
@@ -66,6 +67,7 @@ class WorkspaceSignalRecord:
     item_title: str
     item_summary: str
     item_url: str
+    source_name: str
 
 
 class WorkspaceSignalRepository:
@@ -182,20 +184,75 @@ class WorkspaceSignalRepository:
     async def list_for_workspace(
         self, workspace_id: int, *, limit: int = 200
     ) -> list[WorkspaceSignalRecord]:
+        """Записи workspace, видимые прямо сейчас.
+
+        Запись из уже синхронизированной interpretation скрывается, если её
+        источник с тех пор отключён (workspace-подписка) или деактивирован
+        (source_catalog) — независимо от того, когда она была синхронизирована.
+        `limit` применяется к количеству ВИДИМЫХ записей: если первые
+        по времени вставки записи скрыты, чтение продолжается дальше, а не
+        обрезается до формального размера окна.
+        """
         if limit < 1:
             raise ValueError("limit должен быть положительным")
+        active_ids, name_to_ids = await self._load_source_visibility(workspace_id)
+        results: list[WorkspaceSignalRecord] = []
+        offset = 0
+        batch_size = max(limit, _LIST_BATCH_SIZE)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            rows = await (await db.execute(
-                "SELECT * FROM workspace_signal_interpretations "
-                "WHERE workspace_id = ? ORDER BY id DESC LIMIT ?",
-                (workspace_id, limit),
+            while len(results) < limit:
+                rows = await (await db.execute(
+                    "SELECT * FROM workspace_signal_interpretations "
+                    "WHERE workspace_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (workspace_id, batch_size, offset),
+                )).fetchall()
+                if not rows:
+                    break
+                offset += len(rows)
+                for record in await self._attach_raw(rows):
+                    if _is_source_visible(record.source_id, record.source_name, active_ids, name_to_ids):
+                        results.append(record)
+                        if len(results) >= limit:
+                            break
+        return results
+
+    async def _load_source_visibility(
+        self, workspace_id: int
+    ) -> tuple[set[str], dict[str, list[str]]]:
+        """Текущие видимые источники: (активные+подключённые id, имя -> список id).
+
+        Второе используется только как fallback-опознание legacy-записей
+        с пустым `source_id` — по точному и однозначному совпадению имени.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            active_rows = await (await db.execute(
+                "SELECT c.id FROM source_catalog c "
+                "JOIN workspace_source_subscriptions s ON s.source_id = c.id "
+                "WHERE c.status = 'active' AND s.workspace_id = ? AND s.enabled = 1",
+                (workspace_id,),
             )).fetchall()
-        return await self._attach_raw(rows)
+            name_rows = await (await db.execute(
+                "SELECT id, name FROM source_catalog"
+            )).fetchall()
+        active_ids = {row["id"] for row in active_rows}
+        name_to_ids: dict[str, list[str]] = {}
+        for row in name_rows:
+            name_to_ids.setdefault(row["name"], []).append(row["id"])
+        return active_ids, name_to_ids
 
     async def get_for_workspace(
         self, workspace_id: int, interpretation_id: int
     ) -> WorkspaceSignalRecord | None:
+        """Одна запись, если она видна прямо сейчас.
+
+        Callback-кнопки в Telegram переживают отключение источника (старое
+        сообщение никуда не девается), поэтому здесь действует то же правило
+        видимости, что и в `list_for_workspace()`: источник должен быть
+        активен и подключён к workspace прямо сейчас, иначе — None, как и
+        при отсутствии записи (fail closed).
+        """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             row = await (await db.execute(
@@ -206,7 +263,13 @@ class WorkspaceSignalRepository:
         if row is None:
             return None
         records = await self._attach_raw([row])
-        return records[0] if records else None
+        if not records:
+            return None
+        record = records[0]
+        active_ids, name_to_ids = await self._load_source_visibility(workspace_id)
+        if not _is_source_visible(record.source_id, record.source_name, active_ids, name_to_ids):
+            return None
+        return record
 
     async def _attach_raw(self, interpretations) -> list[WorkspaceSignalRecord]:
         if not interpretations:
@@ -219,7 +282,8 @@ class WorkspaceSignalRepository:
             radar.row_factory = aiosqlite.Row
             raw_rows = await (await radar.execute(
                 f"SELECT id, created_at, source_type, origin_type, item_title, "
-                f"item_summary, item_url FROM lead_signals WHERE id IN ({placeholders})",
+                f"item_summary, item_url, source_name FROM lead_signals "
+                f"WHERE id IN ({placeholders})",
                 raw_ids,
             )).fetchall()
         raw_by_id = {row["id"]: row for row in raw_rows}
@@ -256,8 +320,29 @@ def _record(row, raw) -> WorkspaceSignalRecord:
         created_at=row["created_at"], raw_created_at=raw["created_at"] or "",
         source_type=raw["source_type"] or "", origin_type=raw["origin_type"] or "",
         item_title=raw["item_title"] or "", item_summary=raw["item_summary"] or "",
-        item_url=raw["item_url"] or "",
+        item_url=raw["item_url"] or "", source_name=raw["source_name"] or "",
     )
+
+
+def _is_source_visible(
+    source_id: str | None,
+    source_name: str,
+    active_ids: set[str],
+    name_to_ids: dict[str, list[str]],
+) -> bool:
+    """Виден ли источник записи прямо сейчас (активен и подключён к workspace).
+
+    Если у interpretation есть `source_id` — решает он один. Для legacy-строк
+    без `source_id` разрешён fallback по имени источника из Radar, но только
+    когда оно однозначно (ровно одна запись source_catalog с таким именем);
+    неоднозначное или неопознанное имя — запись не показывается (fail closed).
+    """
+    if source_id is not None:
+        return source_id in active_ids
+    candidates = name_to_ids.get(source_name, [])
+    if len(candidates) != 1:
+        return False
+    return candidates[0] in active_ids
 
 
 def _now() -> str:

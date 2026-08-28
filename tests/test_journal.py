@@ -254,7 +254,17 @@ def test_startup_does_not_require_owner_for_tenant_aware_journal(
         allowed_user_ids=frozenset(),
         v2_menu_enabled=False,
         orchestration_llm_provider="null",
+        orchestration_openai_api_key="",
+        orchestration_openai_model="gpt-4o-mini",
+        orchestration_openai_timeout_seconds=10.0,
         onboarding_rollout_at=None,
+        planner_enabled=False,
+        planner_llm_provider="null",
+        planner_openai_api_key="",
+        planner_openai_model="gpt-4o-mini",
+        planner_openai_timeout_seconds=20.0,
+        planner_allowed_telegram_user_ids=frozenset(),
+        planner_max_llm_calls=4,
     )
     monkeypatch.setattr(main, "load_settings", lambda: settings)
     monkeypatch.setattr(main, "PartnerRepository", Partner)

@@ -28,6 +28,7 @@ from app.services.generation_request_builder import (
     build_source_analysis_provider_request,
 )
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.user_style import UserStyleService
 from app.services.llm.base import LLMProvider
 from app.domain.partners import WorkspaceContext
 
@@ -170,6 +171,8 @@ async def generate_source_material(
     profile = await partner_repository.get_business_profile(
         workspace_context.workspace_id
     )
+    # Stage 3B1: личный стиль ТЕКУЩЕГО пользователя (не workspace).
+    user_preferences = await UserStyleService(partner_repository).get(workspace_context)
     spec = MaterialOrchestrationService().build_generation_spec(
         workspace_context.workspace_id,
         source,
@@ -177,6 +180,7 @@ async def generate_source_material(
         profile,
         artifact_type=_ARTIFACT_TYPE,
         output_format=output_format,
+        user_preferences=user_preferences,
     )
     try:
         request = build_source_analysis_provider_request(spec)

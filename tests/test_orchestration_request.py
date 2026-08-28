@@ -113,6 +113,31 @@ def test_system_rules_are_short_and_not_a_keyword_dictionary():
         assert isinstance(rule, str) and rule.strip()
 
 
+def test_system_rules_flag_income_promises_regardless_of_module():
+    """Live shadow testing found the model setting safety_required=false on
+    rewrite/create_content requests that contained an income guarantee
+    inside the pasted material - the action verb alone was treated as
+    sufficient signal. This rule makes the risky-content signal explicit."""
+    matching = [r for r in SYSTEM_ROUTING_RULES if "доход" in r or "заработ" in r]
+    assert matching, "no rule covers income/profit promises"
+    assert any("safety_required=true" in r for r in matching)
+    assert any("regardless of primary_module or intent" in r for r in matching)
+
+
+def test_system_rules_flag_competitor_price_comparisons_regardless_of_module():
+    matching = [r for r in SYSTEM_ROUTING_RULES if "Booking" in r or "Airbnb" in r]
+    assert matching, "no rule covers competitor/price comparisons"
+    assert any("safety_required=true" in r for r in matching)
+    assert any("regardless of primary_module or intent" in r for r in matching)
+
+
+def test_system_rules_flag_guaranteed_outcome_claims_regardless_of_module():
+    matching = [r for r in SYSTEM_ROUTING_RULES if "guaranteed" in r.lower()]
+    assert matching, "no rule covers guaranteed-outcome claims"
+    assert any("safety_required=true" in r for r in matching)
+    assert any("regardless of primary_module or intent" in r for r in matching)
+
+
 def test_fsm_state_is_passed_through():
     request = build_orchestration_request("пост", fsm_state="TextReview:waiting_for_text")
     assert request.fsm_state == "TextReview:waiting_for_text"

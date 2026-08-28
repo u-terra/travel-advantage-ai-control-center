@@ -41,6 +41,12 @@ class BusinessContext:
     content_preferences: Mapping[str, Any]
     public_contacts: Mapping[str, str]
     claims: tuple[BusinessClaim, ...]
+    # Stage 3B1: регион работы бизнеса (свободный текст, например "Москва
+    # и область" или "вся Россия"). Отдельно от markets (тот про
+    # рынки/валюты, а не про географию обслуживания клиентов). Значение по
+    # умолчанию сохраняет обратную совместимость существующих конструкторов
+    # BusinessContext(...) без этого поля.
+    region: str = ""
 
 
 @dataclass(frozen=True)

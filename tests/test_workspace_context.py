@@ -84,15 +84,24 @@ def test_context_does_not_leak_between_updates_and_ambiguous_is_fail_closed() ->
     assert seen == [(context(1), False), (None, False), (None, True)]
 
 
-def test_allowlist_runs_before_workspace_resolver() -> None:
-    repository = SimpleNamespace(resolve_workspace_context=AsyncMock())
+def test_allowlist_no_longer_blocks_workspace_resolution() -> None:
+    """Stage 3A: allowlist больше не блокирует пайплайн — посторонний (не в
+    allowlist) всё равно доходит до WorkspaceContextMiddleware и дальше, и
+    получает is_allowlisted=False рядом с обычным (скорее всего пустым)
+    workspace_context, а не полную остановку обработки."""
+    repository = SimpleNamespace(resolve_workspace_context=AsyncMock(return_value=None))
     workspace = WorkspaceContextMiddleware(repository)
     allowlist = AllowlistMiddleware(frozenset({1}))
-    final = AsyncMock()
+    final = AsyncMock(return_value="handled")
 
     async def workspace_handler(current_event, data):
         return await workspace(final, current_event, data)
 
-    run(allowlist(workspace_handler, event(2), {}))
-    repository.resolve_workspace_context.assert_not_awaited()
-    final.assert_not_awaited()
+    result = run(allowlist(workspace_handler, event(2), {}))
+
+    assert result == "handled"
+    repository.resolve_workspace_context.assert_awaited_once_with(2)
+    final.assert_awaited_once()
+    seen_data = final.await_args.args[1]
+    assert seen_data["is_allowlisted"] is False
+    assert seen_data["workspace_context"] is None

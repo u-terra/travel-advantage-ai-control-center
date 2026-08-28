@@ -50,6 +50,24 @@ SYSTEM_ROUTING_RULES: tuple[str, ...] = (
     "automatically.",
     "When genuinely unsure between two modules, prefer needs_clarification "
     "and lower confidence over guessing.",
+    # Live shadow-mode finding: the model reliably set safety_required=false
+    # on rewrite/create_content requests even when the material itself
+    # carried a real compliance risk (income guarantee, competitor price
+    # comparison, guaranteed-outcome claim) - the action verb was treated as
+    # sufficient signal on its own. These three rules make the risky-content
+    # signal explicit and independent of which module/intent wins.
+    "Any income, profit, or payback promise - guaranteed or implied "
+    "(доход, заработок, окупаемость, \"гарантируем доход\") - anywhere in "
+    "the message, including inside PASTED MATERIAL, means safety_required=true, "
+    "regardless of primary_module or intent.",
+    "Any comparison of price, savings, or service against a named "
+    "competitor or platform (Booking, Airbnb, \"дешевле чем\", \"выгоднее "
+    "чем\", \"по сравнению с\") means safety_required=true, regardless of "
+    "primary_module or intent.",
+    "Any claim of a guaranteed, certain, or risk-free outcome "
+    "(гарантированный результат, \"100% результат\", \"без риска\", "
+    "\"точно сработает\") means safety_required=true, regardless of "
+    "primary_module or intent.",
 )
 
 

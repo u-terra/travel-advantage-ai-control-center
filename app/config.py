@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 
 from app.access import parse_allowed_user_ids
 from app.orchestration.factory import normalize_orchestration_provider_name
+from app.planner.cost import normalize_max_llm_calls
+from app.planner.factory import normalize_planner_provider_name
 from app.services.llm.factory import normalize_provider_name
 from app.services.source_registry import runtime_registry_path
 
@@ -36,6 +38,13 @@ class Settings:
     # keyword/regex router keeps driving every reply either way, this flag
     # only controls whether a parallel comparison gets logged.
     orchestration_llm_provider: str
+    # Настройки первого живого orchestration-провайдера ("openai") - прямой
+    # HTTPS-вызов OpenAI, отдельный ключ от production CONTENT_FACTORY_*
+    # (см. app.orchestration.openai_provider). Пустой api_key оставляет
+    # provider.is_configured=False - shadow остаётся инертным, как с "null".
+    orchestration_openai_api_key: str
+    orchestration_openai_model: str
+    orchestration_openai_timeout_seconds: float
     # Порог обязательного Business Onboarding: workspace, созданные ДО этого
     # момента, никогда не блокируются онбордингом, даже с incomplete-профилем
     # (legacy-совместимость). None (переменная не задана) — fail-safe в
@@ -43,6 +52,32 @@ class Settings:
     # настроит момент rollout — см. app/services/business_profile_context.py:
     # is_onboarding_required.
     onboarding_rollout_at: datetime | None
+    # Stage 3 Planner MVP - OFF by default (see app.planner). When False, or
+    # when planner_llm_provider resolves to "null"/is unconfigured, or when
+    # the requesting user is not in planner_allowed_telegram_user_ids,
+    # behavior is 100% identical to before Planner existed - the old
+    # keyword router drives every reply, exactly as today.
+    planner_enabled: bool
+    planner_llm_provider: str
+    # Settings for the first live Planner provider ("openai") - direct
+    # HTTPS call, same pattern as ORCHESTRATION_OPENAI_*. If
+    # PLANNER_OPENAI_API_KEY is not set, falls back to
+    # ORCHESTRATION_OPENAI_API_KEY (same vendor secret already configured
+    # for shadow-mode routing) rather than requiring operators to provision
+    # and manage a second identical secret - see load_settings().
+    planner_openai_api_key: str
+    planner_openai_model: str
+    planner_openai_timeout_seconds: float
+    # Staged rollout allowlist: empty/unset means Planner is allowed for
+    # NOBODY, even with planner_enabled=True and a configured provider - see
+    # app.planner.eligibility.is_planner_allowed_for_user. This is
+    # deliberately NOT "no restriction" - staged rollout must never
+    # accidentally become "enabled for everyone".
+    planner_allowed_telegram_user_ids: frozenset[int]
+    # Stage 3.1: hard per-run LLM call budget - see app.planner.cost.
+    # Invalid/missing/out-of-range falls back to
+    # app.planner.cost.DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN (4).
+    planner_max_llm_calls: int
 
 
 def _parse_bool(raw: str | None) -> bool:
@@ -89,7 +124,41 @@ def load_settings() -> Settings:
     orchestration_llm_provider = normalize_orchestration_provider_name(
         os.environ.get("ORCHESTRATION_LLM_PROVIDER")
     )
+    orchestration_openai_api_key = os.environ.get("ORCHESTRATION_OPENAI_API_KEY", "").strip()
+    orchestration_openai_model = (
+        os.environ.get("ORCHESTRATION_OPENAI_MODEL", "").strip() or "gpt-4o-mini"
+    )
+    orchestration_openai_timeout_raw = os.environ.get(
+        "ORCHESTRATION_OPENAI_TIMEOUT_SECONDS", ""
+    ).strip()
     onboarding_rollout_at = _parse_datetime(os.environ.get("ONBOARDING_ROLLOUT_AT"))
+
+    planner_enabled = _parse_bool(os.environ.get("PLANNER_ENABLED"))
+    planner_llm_provider = normalize_planner_provider_name(
+        os.environ.get("PLANNER_LLM_PROVIDER")
+    )
+    planner_openai_api_key = (
+        os.environ.get("PLANNER_OPENAI_API_KEY", "").strip()
+        or orchestration_openai_api_key
+    )
+    planner_openai_model = (
+        os.environ.get("PLANNER_OPENAI_MODEL", "").strip() or "gpt-4o-mini"
+    )
+    planner_openai_timeout_raw = os.environ.get(
+        "PLANNER_OPENAI_TIMEOUT_SECONDS", ""
+    ).strip()
+    planner_allowed_raw = os.environ.get(
+        "PLANNER_ALLOWED_TELEGRAM_USER_IDS", ""
+    ).strip()
+    # Same parser as the main bot allowlist (TELEGRAM_ALLOWED_USER_IDS) -
+    # unset/empty/malformed all fail closed to an empty set, which
+    # is_planner_allowed_for_user treats as "allowed for nobody".
+    planner_allowed_telegram_user_ids = parse_allowed_user_ids(planner_allowed_raw)
+    # Stage 3.1 hard cost cap - invalid/missing/out-of-range falls back to a
+    # safe default (4), never raises at startup. See app.planner.cost.
+    planner_max_llm_calls = normalize_max_llm_calls(
+        os.environ.get("PLANNER_MAX_LLM_CALLS")
+    )
 
     if not token:
         raise RuntimeError("BOT_TOKEN не задан. Заполните .env")
@@ -113,6 +182,24 @@ def load_settings() -> Settings:
     if cf_timeout <= 0:
         cf_timeout = 20.0
 
+    try:
+        orchestration_openai_timeout = (
+            float(orchestration_openai_timeout_raw) if orchestration_openai_timeout_raw else 10.0
+        )
+    except ValueError:
+        orchestration_openai_timeout = 10.0
+    if orchestration_openai_timeout <= 0:
+        orchestration_openai_timeout = 10.0
+
+    try:
+        planner_openai_timeout = (
+            float(planner_openai_timeout_raw) if planner_openai_timeout_raw else 20.0
+        )
+    except ValueError:
+        planner_openai_timeout = 20.0
+    if planner_openai_timeout <= 0:
+        planner_openai_timeout = 20.0
+
     return Settings(
         bot_token=token,
         admin_telegram_id=admin_id,
@@ -132,5 +219,15 @@ def load_settings() -> Settings:
         sources_registry_path=runtime_registry_path(),
         v2_menu_enabled=v2_menu_enabled,
         orchestration_llm_provider=orchestration_llm_provider,
+        orchestration_openai_api_key=orchestration_openai_api_key,
+        orchestration_openai_model=orchestration_openai_model,
+        orchestration_openai_timeout_seconds=orchestration_openai_timeout,
         onboarding_rollout_at=onboarding_rollout_at,
+        planner_enabled=planner_enabled,
+        planner_llm_provider=planner_llm_provider,
+        planner_openai_api_key=planner_openai_api_key,
+        planner_openai_model=planner_openai_model,
+        planner_openai_timeout_seconds=planner_openai_timeout,
+        planner_allowed_telegram_user_ids=planner_allowed_telegram_user_ids,
+        planner_max_llm_calls=planner_max_llm_calls,
     )

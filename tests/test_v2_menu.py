@@ -358,7 +358,7 @@ async def _first_matching_handler(text: str, **workflow_data: Any) -> str | None
 @pytest.mark.parametrize(
     ("button", "handler_name"),
     [
-        (BTN_V2_PROFILE, "show_profile"),
+        (BTN_V2_PROFILE, "show_profile_menu"),
         (BTN_V2_MATERIALS, "show_materials"),
         (BTN_V2_COMPETITORS, "show_competitors"),
         (BTN_V2_FIND_SIGNALS, "on_find_signals"),

@@ -8,6 +8,7 @@ import pytest
 
 from app.repositories.competitor_repository import (
     CompetitorAddressError,
+    CompetitorLabelError,
     CompetitorRepository,
 )
 from app.repositories.partner_repository import PartnerRepository, empty_business_context
@@ -83,3 +84,110 @@ def test_add_competitor_rejects_invalid_address(
 
     with pytest.raises(CompetitorAddressError):
         _run(repository.add_competitor(workspace_a, address))
+
+
+# ── Stage 3.2: human labels ──────────────────────────────────────────────────
+
+
+def test_add_competitor_without_label_keeps_old_behavior(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+
+    competitor = _run(repository.add_competitor(workspace_a, "https://vk.ru/progulkipovolge"))
+
+    assert competitor.label == competitor.url == "https://vk.ru/progulkipovolge"
+
+
+def test_add_competitor_with_blank_label_keeps_old_behavior(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+
+    competitor = _run(repository.add_competitor(workspace_a, "https://vk.ru/progulkipovolge", label="   "))
+
+    assert competitor.label == competitor.url
+
+
+def test_add_competitor_with_label_stores_human_name(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+
+    competitor = _run(repository.add_competitor(
+        workspace_a, "https://vk.ru/progulkipovolge", label="ТурКлуб",
+    ))
+
+    assert competitor.label == "ТурКлуб"
+    assert competitor.url == "https://vk.ru/progulkipovolge"
+
+
+def test_update_label_renames_existing_competitor(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+
+    competitor = _run(repository.add_competitor(workspace_a, "https://vk.ru/progulkipovolge"))
+    assert competitor.label == competitor.url  # old-style row, exactly like production today
+
+    updated = _run(repository.update_label(workspace_a, competitor.id, "ТурКлуб"))
+
+    assert updated is not None
+    assert updated.id == competitor.id
+    assert updated.label == "ТурКлуб"
+    assert updated.url == "https://vk.ru/progulkipovolge"  # url untouched
+
+
+def test_update_label_is_isolated_by_workspace(tmp_path: Path) -> None:
+    db_path, workspace_a, workspace_b = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+
+    # workspace_b must not be able to rename workspace_a's competitor.
+    result = _run(repository.update_label(workspace_b, competitor.id, "Не моё"))
+
+    assert result is None
+    listed_a = _run(repository.list_for_workspace(workspace_a))
+    assert listed_a[0].label == listed_a[0].url  # unchanged
+
+
+def test_update_label_unknown_competitor_id_returns_none(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+
+    result = _run(repository.update_label(workspace_a, 999, "Что угодно"))
+    assert result is None
+
+
+@pytest.mark.parametrize("label", ["", "   "])
+def test_update_label_rejects_empty_label(tmp_path: Path, label: str) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+
+    with pytest.raises(CompetitorLabelError):
+        _run(repository.update_label(workspace_a, competitor.id, label))
+
+
+def test_update_label_rejects_overly_long_label(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+
+    with pytest.raises(CompetitorLabelError):
+        _run(repository.update_label(workspace_a, competitor.id, "x" * 101))
+
+
+def test_update_label_collapses_whitespace(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+
+    updated = _run(repository.update_label(workspace_a, competitor.id, "  Тур   Клуб  "))
+    assert updated.label == "Тур Клуб"

@@ -11,6 +11,12 @@ class PartnerWorkspace:
     status: str
     created_at: str
     updated_at: str
+    # Stage 3A: рабочий доступ (не путать со status — тот про сам workspace,
+    # этот про подписку/пробный период). Значения по умолчанию сохраняют
+    # обратную совместимость позиционных вызовов PartnerWorkspace(...) в
+    # существующих тестах и коде — все они получают безлимитный active.
+    access_status: str = "active"
+    access_expires_at: str | None = None
 
 
 @dataclass(frozen=True)

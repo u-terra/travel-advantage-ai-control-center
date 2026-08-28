@@ -34,6 +34,17 @@ BTN_V2_PROFILE = "⚙️ Профиль"
 BTN_V2_HELP = "ℹ️ Помощь"
 BTN_V2_MAIN_MENU = "⬅️ Главное меню"
 
+# Stage 3A: pre-subscription lobby — доступны без workspace и без подписки.
+BTN_LOBBY_BROWSE = "🧭 Осмотреться"
+BTN_LOBBY_TRY_14_DAYS = "🚀 Попробовать 14 дней"
+BTN_LOBBY_SUBSCRIBE_MONTH = "💳 Подключить на месяц"
+BTN_LOBBY_WHATS_INCLUDED = "ℹ️ Что входит в подписку"
+BTN_LOBBY_EXTEND_ACCESS = "🔄 Продлить доступ"
+BTN_LOBBY_BACK = "⬅️ Назад в лобби"
+
+BROWSE_SECTION_PREFIX = "browse:section:"
+BROWSE_BACK = "browse:back"
+
 SOURCE_TOGGLE_PREFIX = "source_toggle:"
 PILOT_CONSENT_ACCEPT_PREFIX = "pilot_consent:accept:"
 SOURCE_REGISTRY_ADD = "source_registry:add"
@@ -63,6 +74,9 @@ ARTIFACT_OPEN_PREFIX = "artifact_open:"
 ARTIFACT_MARK_USED_PREFIX = "artifact_used:"
 ARTIFACT_KEEP_LATER_PREFIX = "artifact_later:"
 COMPETITOR_REGISTRY_ADD = "competitor_registry:add"
+# Stage 3.2: minimal rename action - callback_data carries the competitor id
+# so the handler can look it up scoped to the caller's own workspace.
+COMPETITOR_REGISTRY_RENAME_PREFIX = "competitor_registry:rename:"
 MATERIAL_ENTRY_ANALYZE = "material_entry:analyze"
 MATERIAL_ENTRY_FIND_SIGNALS = "material_entry:find_signals"
 
@@ -93,6 +107,13 @@ REPLY_CONFIRM_DISMISS_PREFIX = "reply_confirm:dismiss:"
 # провижининга). Значение в callback_data — одно из тех же BUSINESS_TYPES,
 # что уже принимает BusinessProfileService, никакой новой номенклатуры.
 ONBOARDING_BUSINESS_TYPE_PREFIX = "onboarding:business_type:"
+
+# Stage 3B1: self-service «⚙️ Профиль и персонализация» — то же самое поле
+# business_type редактируется тем же ONBOARDING_BUSINESS_TYPE_PREFIX/
+# onboarding_business_type_keyboard(), новой номенклатуры не заводим.
+PROFILE_MENU_PREFIX = "profile_menu:"
+PROFILE_FIELD_PREFIX = "profile_field:"
+PROFILE_EXAMPLES_PREFIX = "profile_examples:"
 
 
 WEB_RESOURCES_BACK = "web_resources_back"
@@ -166,6 +187,74 @@ def v2_back_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[[KeyboardButton(text=BTN_V2_MAIN_MENU)]],
         resize_keyboard=True,
     )
+
+
+def lobby_new_visitor_keyboard() -> ReplyKeyboardMarkup:
+    """Новый посетитель без workspace: знакомство + два неактивных пока
+    платных варианта + пояснение — без активного рабочего доступа."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_LOBBY_BROWSE)],
+            [KeyboardButton(text=BTN_LOBBY_TRY_14_DAYS)],
+            [KeyboardButton(text=BTN_LOBBY_SUBSCRIBE_MONTH)],
+            [KeyboardButton(text=BTN_LOBBY_WHATS_INCLUDED)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def lobby_expired_keyboard() -> ReplyKeyboardMarkup:
+    """У workspace был рабочий доступ, но он закончился."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_LOBBY_BROWSE)],
+            [KeyboardButton(text=BTN_LOBBY_EXTEND_ACCESS)],
+            [KeyboardButton(text=BTN_LOBBY_WHATS_INCLUDED)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def browse_sections_keyboard() -> InlineKeyboardMarkup:
+    """🧭 Осмотреться — публичный read-only раздел, доступен без workspace."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🚀 С чего начать", callback_data=f"{BROWSE_SECTION_PREFIX}start",
+        )],
+        [InlineKeyboardButton(
+            text="📡 Сигналы и идеи", callback_data=f"{BROWSE_SECTION_PREFIX}signals",
+        )],
+        [InlineKeyboardButton(
+            text="✍️ Создание материалов", callback_data=f"{BROWSE_SECTION_PREFIX}materials",
+        )],
+        [InlineKeyboardButton(
+            text="💬 Ответы клиентам", callback_data=f"{BROWSE_SECTION_PREFIX}replies",
+        )],
+        [InlineKeyboardButton(
+            text="📚 Источники", callback_data=f"{BROWSE_SECTION_PREFIX}sources",
+        )],
+        [InlineKeyboardButton(
+            text="👀 Конкуренты", callback_data=f"{BROWSE_SECTION_PREFIX}competitors",
+        )],
+        [InlineKeyboardButton(
+            text="⚙️ Профиль и персонализация", callback_data=f"{BROWSE_SECTION_PREFIX}profile",
+        )],
+        [InlineKeyboardButton(
+            text="💳 Как устроен доступ", callback_data=f"{BROWSE_SECTION_PREFIX}access",
+        )],
+        [InlineKeyboardButton(
+            text="🖥 Свой сервер или подписка", callback_data=f"{BROWSE_SECTION_PREFIX}hosting",
+        )],
+        [InlineKeyboardButton(
+            text="❓ Частые вопросы", callback_data=f"{BROWSE_SECTION_PREFIX}faq",
+        )],
+    ])
+
+
+def browse_section_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=BTN_BACK, callback_data=BROWSE_BACK)],
+    ])
 
 
 def source_analysis_result_keyboard() -> ReplyKeyboardMarkup:
@@ -377,15 +466,26 @@ def material_entry_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def competitors_list_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def competitors_list_keyboard(
+    competitors: tuple[tuple[int, str], ...] = (),
+) -> InlineKeyboardMarkup:
+    """Принимает готовые пары (id, подпись для кнопки «Назвать») — клавиатура
+    не знает про Competitor. Без аргументов ведёт себя как раньше (только
+    «Добавить»/«Главное меню») — существующий пустой сценарий не меняется."""
+    rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(
-            text="➕ Добавить конкурента", callback_data=COMPETITOR_REGISTRY_ADD
-        )],
-        [InlineKeyboardButton(
-            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
-        )],
-    ])
+            text=f"✏️ Назвать: {label}",
+            callback_data=f"{COMPETITOR_REGISTRY_RENAME_PREFIX}{competitor_id}",
+        )]
+        for competitor_id, label in competitors
+    ]
+    rows.append([InlineKeyboardButton(
+        text="➕ Добавить конкурента", callback_data=COMPETITOR_REGISTRY_ADD
+    )])
+    rows.append([InlineKeyboardButton(
+        text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def daily_action_keyboard(work_item_id: int, bucket: str) -> InlineKeyboardMarkup:
@@ -439,6 +539,94 @@ def onboarding_business_type_keyboard() -> InlineKeyboardMarkup:
             text="🏢 Турфирма",
             callback_data=f"{ONBOARDING_BUSINESS_TYPE_PREFIX}travel_company",
         )],
+    ])
+
+
+# ── Stage 3B1: ⚙️ Профиль и персонализация (self-service) ───────────────────
+
+
+def profile_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🏢 Профиль компании", callback_data=f"{PROFILE_MENU_PREFIX}company",
+        )],
+        [InlineKeyboardButton(
+            text="✍️ Мой стиль общения", callback_data=f"{PROFILE_MENU_PREFIX}style",
+        )],
+        [InlineKeyboardButton(
+            text="📝 Примеры моих текстов", callback_data=f"{PROFILE_MENU_PREFIX}examples",
+        )],
+        [InlineKeyboardButton(
+            text="🚫 Чего не использовать", callback_data=f"{PROFILE_MENU_PREFIX}avoid",
+        )],
+        [InlineKeyboardButton(
+            text="👁 Посмотреть профиль", callback_data=f"{PROFILE_MENU_PREFIX}view",
+        )],
+        [InlineKeyboardButton(text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU)],
+    ])
+
+
+def profile_company_fields_keyboard(*, show_business_type: bool) -> InlineKeyboardMarkup:
+    """show_business_type=False для ta_affiliated workspace — тип бизнеса
+
+    там задан системно и пользователю недоступен для редактирования."""
+    rows = [
+        [InlineKeyboardButton(
+            text="Название бизнеса", callback_data=f"{PROFILE_FIELD_PREFIX}business_name",
+        )],
+    ]
+    if show_business_type:
+        rows.append([InlineKeyboardButton(
+            text="Тип бизнеса", callback_data=f"{PROFILE_FIELD_PREFIX}business_type",
+        )])
+    rows.extend([
+        [InlineKeyboardButton(
+            text="Короткое описание", callback_data=f"{PROFILE_FIELD_PREFIX}short_description",
+        )],
+        [InlineKeyboardButton(
+            text="Специализации", callback_data=f"{PROFILE_FIELD_PREFIX}specializations",
+        )],
+        [InlineKeyboardButton(
+            text="Направления", callback_data=f"{PROFILE_FIELD_PREFIX}destinations",
+        )],
+        [InlineKeyboardButton(
+            text="Регион работы", callback_data=f"{PROFILE_FIELD_PREFIX}region",
+        )],
+        [InlineKeyboardButton(
+            text="Целевая аудитория", callback_data=f"{PROFILE_FIELD_PREFIX}audiences",
+        )],
+        [InlineKeyboardButton(
+            text="Стиль общения компании", callback_data=f"{PROFILE_FIELD_PREFIX}tone",
+        )],
+        [InlineKeyboardButton(
+            text="⬅️ Назад", callback_data=f"{PROFILE_MENU_PREFIX}root",
+        )],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def profile_examples_keyboard(count: int) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if count < 5:
+        rows.append([InlineKeyboardButton(
+            text="➕ Добавить пример", callback_data=f"{PROFILE_EXAMPLES_PREFIX}add",
+        )])
+    if count:
+        rows.append([InlineKeyboardButton(
+            text="👁 Посмотреть примеры", callback_data=f"{PROFILE_EXAMPLES_PREFIX}view",
+        )])
+        rows.append([InlineKeyboardButton(
+            text="🗑 Очистить примеры", callback_data=f"{PROFILE_EXAMPLES_PREFIX}clear",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="⬅️ Назад", callback_data=f"{PROFILE_MENU_PREFIX}root",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def profile_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PROFILE_MENU_PREFIX}root")],
     ])
 
 

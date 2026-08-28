@@ -31,10 +31,15 @@ CREATE INDEX IF NOT EXISTS idx_competitors_workspace
 """
 
 _MAX_URL_LENGTH = 500
+_MAX_LABEL_LENGTH = 100
 
 
 class CompetitorAddressError(ValueError):
     """Ссылка на конкурента пуста, слишком длинная или без схемы http(s)."""
+
+
+class CompetitorLabelError(ValueError):
+    """Название конкурента пусто или слишком длинное."""
 
 
 class CompetitorRepository:
@@ -48,8 +53,15 @@ class CompetitorRepository:
             await db.executescript(_SCHEMA)
             await db.commit()
 
-    async def add_competitor(self, workspace_id: int, url: str) -> Competitor:
+    async def add_competitor(
+        self, workspace_id: int, url: str, label: str | None = None,
+    ) -> Competitor:
+        """Stage 3.2: ``label`` is optional and backward compatible - when
+        omitted or blank, behavior is unchanged from before (label = url).
+        Passing a non-blank label stores that human-readable name instead;
+        existing rows (label == url) are never touched by this method."""
         address = _validate_address(url)
+        resolved_label = _validate_label(label) if label and label.strip() else address
         now = _now()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -57,13 +69,33 @@ class CompetitorRepository:
             cursor = await db.execute(
                 "INSERT INTO competitors (workspace_id, url, label, created_at) "
                 "VALUES (?, ?, ?, ?)",
-                (workspace_id, address, address, now),
+                (workspace_id, address, resolved_label, now),
             )
             await db.commit()
             row = await self._row(db, workspace_id, cursor.lastrowid or 0)
         if row is None:
             raise RuntimeError("Не удалось сохранить конкурента")
         return _from_row(row)
+
+    async def update_label(
+        self, workspace_id: int, competitor_id: int, label: str,
+    ) -> Competitor | None:
+        """Renames an already-saved competitor. Workspace isolation is
+        enforced by the WHERE clause itself (not a separate check): a
+        competitor_id belonging to a different workspace matches zero rows
+        and this returns None, exactly like "not found" - it never leaks
+        whether the id exists in someone else's workspace."""
+        resolved_label = _validate_label(label)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute(
+                "UPDATE competitors SET label = ? WHERE workspace_id = ? AND id = ?",
+                (resolved_label, workspace_id, competitor_id),
+            )
+            await db.commit()
+            row = await self._row(db, workspace_id, competitor_id)
+        return _from_row(row) if row is not None else None
 
     async def list_for_workspace(
         self, workspace_id: int, limit: int = 20
@@ -102,6 +134,15 @@ def _validate_address(url: str) -> str:
     if any(char.isspace() for char in address):
         raise CompetitorAddressError("ссылка не должна содержать пробелы")
     return address
+
+
+def _validate_label(label: str) -> str:
+    normalized = " ".join((label or "").strip().split())
+    if not normalized:
+        raise CompetitorLabelError("название не должно быть пустым")
+    if len(normalized) > _MAX_LABEL_LENGTH:
+        raise CompetitorLabelError("название слишком длинное")
+    return normalized
 
 
 def _now() -> str:

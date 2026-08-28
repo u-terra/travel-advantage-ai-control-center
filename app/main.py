@@ -13,7 +13,12 @@ from app.config import load_settings
 from app.handlers import build_router
 from app.onboarding_gate import OnboardingGateMiddleware
 from app.orchestration.factory import create_orchestration_llm_provider
+from app.orchestration.openai_provider import OrchestrationOpenAIConfig
 from app.orchestration.provider import OrchestrationLLMProvider
+from app.planner.cost import DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN
+from app.planner.factory import create_planner_llm_provider
+from app.planner.openai_provider import PlannerOpenAIConfig
+from app.planner.provider import PlannerLLMProvider
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.conversation_state_repository import ConversationStateRepository
@@ -48,6 +53,10 @@ def _build_dispatcher(
     conversation_state_repository: ConversationStateRepository | None = None,
     onboarding_rollout_at: datetime | None = None,
     orchestration_llm_provider: OrchestrationLLMProvider | None = None,
+    planner_llm_provider: PlannerLLMProvider | None = None,
+    planner_enabled: bool = False,
+    planner_allowed_telegram_user_ids: frozenset[int] = frozenset(),
+    planner_max_llm_calls: int = DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -105,6 +114,14 @@ def _build_dispatcher(
     dp["orchestration_llm_provider"] = (
         orchestration_llm_provider or create_orchestration_llm_provider(None)
     )
+    # Stage 3 Planner MVP - see app.planner. Defaults to the inert
+    # NullPlannerLLMProvider/disabled flag/empty allowlist when not passed
+    # explicitly, same pattern as orchestration_llm_provider above: existing
+    # callers/tests that don't pass these are entirely unaffected.
+    dp["planner_llm_provider"] = planner_llm_provider or create_planner_llm_provider(None)
+    dp["planner_enabled"] = planner_enabled
+    dp["planner_allowed_telegram_user_ids"] = planner_allowed_telegram_user_ids
+    dp["planner_max_llm_calls"] = planner_max_llm_calls
     return dp
 
 
@@ -181,8 +198,29 @@ async def _async_main() -> None:
 
     # Phase 1 LLM orchestration shadow mode - defaults to "null" (fully
     # inert) unless ORCHESTRATION_LLM_PROVIDER is set. See app.orchestration.
+    orchestration_openai_config = OrchestrationOpenAIConfig(
+        api_key=settings.orchestration_openai_api_key,
+        model=settings.orchestration_openai_model,
+        timeout_seconds=settings.orchestration_openai_timeout_seconds,
+    )
     orchestration_llm_provider = create_orchestration_llm_provider(
-        settings.orchestration_llm_provider
+        settings.orchestration_llm_provider,
+        openai_config=orchestration_openai_config,
+    )
+
+    # Stage 3 Planner MVP - defaults to "null" (fully inert) unless
+    # PLANNER_LLM_PROVIDER is set. See app.planner. Неизвестный
+    # PLANNER_LLM_PROVIDER — ошибка на старте, а не молчаливый уход не к
+    # тому вендору (тот же принцип, что и LLM_PROVIDER/ORCHESTRATION_LLM_PROVIDER
+    # выше).
+    planner_openai_config = PlannerOpenAIConfig(
+        api_key=settings.planner_openai_api_key,
+        model=settings.planner_openai_model,
+        timeout_seconds=settings.planner_openai_timeout_seconds,
+    )
+    planner_llm_provider = create_planner_llm_provider(
+        settings.planner_llm_provider,
+        openai_config=planner_openai_config,
     )
 
     bot = Bot(settings.bot_token)
@@ -202,6 +240,10 @@ async def _async_main() -> None:
         conversation_state_repository=conversation_state_repository,
         onboarding_rollout_at=settings.onboarding_rollout_at,
         orchestration_llm_provider=orchestration_llm_provider,
+        planner_llm_provider=planner_llm_provider,
+        planner_enabled=settings.planner_enabled,
+        planner_allowed_telegram_user_ids=settings.planner_allowed_telegram_user_ids,
+        planner_max_llm_calls=settings.planner_max_llm_calls,
     )
 
     await dp.start_polling(bot)

@@ -4,6 +4,7 @@ from app.handlers import (
     competitors,
     content_usage,
     daily_actions,
+    lobby,
     material_generation,
     materials,
     consent,
@@ -22,6 +23,12 @@ def build_router() -> Router:
     r = Router(name="owner")
     r.include_router(start.router)
     r.include_router(consent.router)
+    # Stage 3A: лобби — после /start и /consent, но до онбординга и всего
+    # остального меню: его catch-all перехватывает любую другую кнопку/
+    # свободный текст, пока access_state не active/trial_active (см.
+    # app/handlers/lobby.py — MagicData(~F.access_state.in_(...))). Без
+    # workspace/с истёкшим доступом онбординг и рабочее меню недостижимы.
+    r.include_router(lobby.router)
     # Онбординг — после /start и /consent (обе команды должны оставаться
     # доступны независимо от статуса профиля), но до всего остального меню:
     # его catch-all перехватывает любую другую кнопку/свободный текст, пока
