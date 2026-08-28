@@ -1,0 +1,100 @@
+{
+  "dataset_version": 1,
+  "sources": [
+    {
+      "stable_key": "ta.compensation.official_extract.v1",
+      "title": "Travel Advantage / MWR Life — официальный фрагмент о вознаграждениях",
+      "source_type": "official_material",
+      "source_name": "Материал, предоставленный владельцем проекта",
+      "source_reference": "knowledge/travel_advantage/sources/official-compensation-extract.md",
+      "version": "extract-v1",
+      "effective_date": null,
+      "verification_status": "verified_official",
+      "content_hash": "f20e6cbd8bcd0b73d46e053b250fc188c3e4ed8eb85477fc1b0e86b1d903b3cd"
+    }
+  ],
+  "items": [
+    {
+      "stable_key": "ta.member_bonus",
+      "category": "member_bonus",
+      "title": "Member Bonus",
+      "content": "Member Bonus — вознаграждение, размер которого зависит от вида личного членства. Точные значения хранятся в связанных KnowledgeFact.",
+      "source_key": "ta.compensation.official_extract.v1",
+      "source_ref": "Member Bonus — базовые значения",
+      "status": "active",
+      "sort_order": 10,
+      "tags": ["elite", "elite turbo", "member bonus"],
+      "related": [{"relation_type": "used_with", "item_key": "ta.builder_bonus"}]
+    },
+    {
+      "stable_key": "ta.builder_bonus",
+      "category": "builder_bonus",
+      "title": "Builder Bonus",
+      "content": "Builder Bonus в практическом примере Silver представлен отдельным каноническим фактом.",
+      "source_key": "ta.compensation.official_extract.v1",
+      "source_ref": "Практический расчёт: Silver и личная Elite",
+      "status": "active",
+      "sort_order": 20,
+      "tags": ["builder bonus", "silver"],
+      "related": []
+    }
+  ],
+  "facts": [
+    {
+      "stable_key": "ta.member_bonus.elite.usd",
+      "item_key": "ta.member_bonus",
+      "source_key": "ta.compensation.official_extract.v1",
+      "fact_type": "member_bonus",
+      "subject_type": "membership",
+      "subject_key": "membership.elite",
+      "value_number": 40,
+      "currency": "USD",
+      "source_ref": "Member Bonus — базовые значения / Elite",
+      "sort_order": 10
+    },
+    {
+      "stable_key": "ta.member_bonus.elite_turbo.usd",
+      "item_key": "ta.member_bonus",
+      "source_key": "ta.compensation.official_extract.v1",
+      "fact_type": "member_bonus",
+      "subject_type": "membership",
+      "subject_key": "membership.elite_turbo",
+      "value_number": 80,
+      "currency": "USD",
+      "source_ref": "Member Bonus — базовые значения / Elite Turbo",
+      "sort_order": 20
+    },
+    {
+      "stable_key": "ta.builder_bonus.silver.personal_elite.usd",
+      "item_key": "ta.builder_bonus",
+      "source_key": "ta.compensation.official_extract.v1",
+      "fact_type": "builder_bonus",
+      "subject_type": "rank",
+      "subject_key": "rank.silver",
+      "qualifier_key": "membership",
+      "qualifier_value": "membership.elite",
+      "value_number": 10,
+      "currency": "USD",
+      "condition_text": "Личная регистрация Elite участником ранга Silver в приведённом официальном примере.",
+      "source_ref": "Практический расчёт: Silver и личная Elite / Builder-rank bonus",
+      "sort_order": 10
+    }
+  ],
+  "examples": [
+    {
+      "stable_key": "ta.example.silver.personal_elite",
+      "item_key": "ta.member_bonus",
+      "title": "Silver и личная Elite",
+      "scenario": "Участник ранга Silver лично регистрирует Elite.",
+      "explanation": "Итог складывается из Member Bonus и Builder/rank bonus, перечисленных через fact_refs.",
+      "result_number": 50,
+      "currency": "USD",
+      "source_key": "ta.compensation.official_extract.v1",
+      "source_ref": "Практический расчёт: Silver и личная Elite",
+      "fact_refs": [
+        {"fact_key": "ta.member_bonus.elite.usd", "role": "member_bonus_component"},
+        {"fact_key": "ta.builder_bonus.silver.personal_elite.usd", "role": "builder_bonus_component"}
+      ]
+    }
+  ]
+}

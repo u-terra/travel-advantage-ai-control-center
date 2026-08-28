@@ -1,0 +1,143 @@
+{
+  "dataset_version": 1,
+  "sources": [{
+    "stable_key": "mwr.compensation.available_values.v2",
+    "title": "MWR Life Compensation Plan — доступные официальные значения",
+    "source_type": "owner_provided_official_material",
+    "source_name": "Официальные данные, предоставленные владельцем Knowledge Base",
+    "source_reference": "knowledge/travel_advantage/sources/advisor-compensation-values-available.md",
+    "version": "dataset-v2",
+    "effective_date": null,
+    "verification_status": "verified_official",
+    "content_hash": "d0967853e140af9ebd547d2518db5e88b5986bfd1ec509e1bda3a8762704fe24"
+  }],
+  "items": [
+    {
+      "stable_key":"ta.member_bonus","category":"member_bonus","title":"Member Bonus",
+      "content":"Вознаграждение по виду членства. Все суммы находятся только в канонических facts.",
+      "source_key":"mwr.compensation.available_values.v2","source_ref":"Member Bonus","tags":["elite","elite turbo","member bonus"],
+      "related":[{"relation_type":"used_with","item_key":"ta.builder_bonus"}]
+    },
+    {
+      "stable_key":"ta.builder_bonus","category":"builder_bonus","title":"Builder Bonus",
+      "content":"Ранговые значения и дифференциальные расчёты Builder Bonus представлены facts и examples.",
+      "source_key":"mwr.compensation.available_values.v2","source_ref":"Builder Bonus и практические расчёты","tags":["builder bonus","differential"],
+      "related":[{"relation_type":"used_with","item_key":"ta.member_bonus"},{"relation_type":"illustrated_by","item_key":"ta.compensation_examples"}]
+    },
+    {
+      "stable_key":"ta.dual_team_income","category":"dual_team_income","title":"Dual Team",
+      "content":"Доступные дневные значения Dual Team по рангам хранятся как отдельные facts.",
+      "source_key":"mwr.compensation.available_values.v2","source_ref":"Dual Team","tags":["dual team","ruby","silver"],"related":[]
+    },
+    {
+      "stable_key":"ta.registration_team","category":"ranks_and_qualifications","title":"Registration Team",
+      "content":"Доступное требование Registration Team для Gold хранится отдельным fact.",
+      "source_key":"mwr.compensation.available_values.v2","source_ref":"Registration Team","tags":["gold","pv","registration team"],"related":[]
+    },
+    {
+      "stable_key":"ta.personal_member_residual","category":"personal_member_residual","title":"Personal Member Residual",
+      "content":"Доступный процент для явно указанного диапазона личных участников хранится отдельным fact.",
+      "source_key":"mwr.compensation.available_values.v2","source_ref":"Personal Member Residual","tags":["personal members","residual"],"related":[]
+    },
+    {
+      "stable_key":"ta.compensation_examples","category":"practical_examples","title":"Практические расчёты Compensation Plan",
+      "content":"Примеры ссылаются на канонические facts и не копируют их как независимые источники истины.",
+      "source_key":"mwr.compensation.available_values.v2","source_ref":"Builder Bonus и практические расчёты","tags":["calculations","examples"],
+      "related":[{"relation_type":"uses","item_key":"ta.member_bonus"},{"relation_type":"uses","item_key":"ta.builder_bonus"}]
+    },
+    {
+      "stable_key":"ta.compensation_compliance","category":"compliance_notes","title":"Ограничения полноты Compensation Plan",
+      "content":"Размеры вознаграждений не являются гарантией дохода. Непереданные значения не восстанавливаются. VIP Builder Bonus отсутствует; Rank Achievement prizes нельзя связывать с рангами без однозначных данных.",
+      "source_key":"mwr.compensation.available_values.v2","source_ref":"Ограничения полноты","tags":["ambiguity","compliance","income disclaimer"],"related":[]
+    }
+  ],
+  "facts": [
+    {
+      "stable_key":"ta.member_bonus.elite.usd","item_key":"ta.member_bonus","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"member_bonus","subject_type":"membership","subject_key":"membership.elite","value_number":40,"currency":"USD",
+      "source_ref":"Member Bonus / Elite"
+    },
+    {
+      "stable_key":"ta.member_bonus.elite_turbo.usd","item_key":"ta.member_bonus","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"member_bonus","subject_type":"membership","subject_key":"membership.elite_turbo","value_number":80,"currency":"USD",
+      "source_ref":"Member Bonus / Elite Turbo"
+    },
+    {
+      "stable_key":"ta.builder_bonus.silver.personal_elite.usd","item_key":"ta.builder_bonus","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"builder_bonus_rank_amount","subject_type":"rank","subject_key":"rank.silver","qualifier_key":"membership_component","qualifier_value":"elite",
+      "value_number":10,"currency":"USD","condition_text":"Значение Silver на один Elite-компонент в предоставленных расчётах.",
+      "source_ref":"Builder Bonus и практические расчёты / Silver / Elite component"
+    },
+    {
+      "stable_key":"ta.builder_bonus.ruby.elite_component.usd","item_key":"ta.builder_bonus","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"builder_bonus_rank_amount","subject_type":"rank","subject_key":"rank.ruby","qualifier_key":"membership_component","qualifier_value":"elite",
+      "value_number":70,"currency":"USD","condition_text":"Значение Ruby на один Elite-компонент в предоставленном дифференциальном расчёте.",
+      "source_ref":"Builder Bonus и практические расчёты / Ruby / Elite component"
+    },
+    {
+      "stable_key":"ta.elite_turbo.compensation_components","item_key":"ta.builder_bonus","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"compensation_component_count","subject_type":"membership","subject_key":"membership.elite_turbo","value_number":2,"unit":"components",
+      "condition_text":"В предоставленных практических расчётах Elite Turbo считается двумя компонентами.",
+      "source_ref":"Builder Bonus и практические расчёты / Elite Turbo / component count"
+    },
+    {
+      "stable_key":"ta.dual_team.daily_income.silver.usd","item_key":"ta.dual_team_income","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"dual_team_daily_income","subject_type":"rank","subject_key":"rank.silver","value_number":4,"currency":"USD","period":"day",
+      "source_ref":"Dual Team / Silver / daily income"
+    },
+    {
+      "stable_key":"ta.dual_team.daily_income.ruby.usd","item_key":"ta.dual_team_income","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"dual_team_daily_income","subject_type":"rank","subject_key":"rank.ruby","value_number":300,"currency":"USD","period":"day",
+      "source_ref":"Dual Team / Ruby / daily income"
+    },
+    {
+      "stable_key":"ta.registration_team.points.gold.pv","item_key":"ta.registration_team","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"registration_team_points_required","subject_type":"rank","subject_key":"rank.gold","value_number":72,"unit":"PV",
+      "source_ref":"Registration Team / Gold / points required"
+    },
+    {
+      "stable_key":"ta.personal_members_residual.10_25.percent","item_key":"ta.personal_member_residual","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"personal_members_residual_percent","subject_type":"personal_member_count_range","subject_key":"personal_members.10_25","qualifier_key":"member_count_range","qualifier_value":"10-25",
+      "value_number":10,"unit":"percent","source_ref":"Personal Member Residual / 10–25 personal members"
+    },
+    {
+      "stable_key":"ta.compensation.income_not_guaranteed","item_key":"ta.compensation_compliance","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"compliance_rule","subject_type":"compensation_plan","subject_key":"mwr_life_compensation_plan","qualifier_key":"rule","qualifier_value":"income_not_guaranteed",
+      "value_text":"Размеры бонусов являются правилами маркетинг-плана, а не гарантией дохода","source_ref":"Ограничения полноты / income disclaimer"
+    },
+    {
+      "stable_key":"ta.compensation.vip_builder_bonus.missing","item_key":"ta.compensation_compliance","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"missing_official_value","subject_type":"bonus","subject_key":"vip_builder_bonus","value_text":"Значение не предоставлено; не придумывать","source_ref":"Ограничения полноты / VIP Builder Bonus"
+    },
+    {
+      "stable_key":"ta.compensation.rank_achievement.mapping_ambiguous","item_key":"ta.compensation_compliance","source_key":"mwr.compensation.available_values.v2",
+      "fact_type":"ambiguity_note","subject_type":"bonus","subject_key":"rank_achievement","value_text":"Prizes нельзя сопоставить конкретным рангам по доступным данным","source_ref":"Ограничения полноты / Rank Achievement prizes"
+    }
+  ],
+  "examples": [
+    {
+      "stable_key":"ta.example.silver.personal_elite","item_key":"ta.compensation_examples","title":"Silver и личная Elite",
+      "scenario":"Silver лично регистрирует Elite.","explanation":"Итог образован Member Bonus и одним Builder Bonus Silver.",
+      "result_number":50,"currency":"USD","source_key":"mwr.compensation.available_values.v2","source_ref":"Builder Bonus и практические расчёты / Silver + личная Elite",
+      "fact_refs":[{"fact_key":"ta.member_bonus.elite.usd","role":"member_bonus"},{"fact_key":"ta.builder_bonus.silver.personal_elite.usd","role":"builder_bonus"}]
+    },
+    {
+      "stable_key":"ta.example.silver.personal_elite_turbo","item_key":"ta.compensation_examples","title":"Silver и личная Elite Turbo",
+      "scenario":"Silver лично регистрирует Elite Turbo.","explanation":"Итог образован Member Bonus Elite Turbo и двумя Builder-компонентами Silver; числа компонентов берутся из facts.",
+      "result_number":100,"currency":"USD","source_key":"mwr.compensation.available_values.v2","source_ref":"Builder Bonus и практические расчёты / Silver + личная Elite Turbo",
+      "fact_refs":[{"fact_key":"ta.member_bonus.elite_turbo.usd","role":"member_bonus"},{"fact_key":"ta.builder_bonus.silver.personal_elite.usd","role":"builder_bonus_per_component"},{"fact_key":"ta.elite_turbo.compensation_components","role":"component_count"}]
+    },
+    {
+      "stable_key":"ta.example.ruby.downline_silver.elite","item_key":"ta.compensation_examples","title":"Ruby, продажа Elite нижестоящим Silver",
+      "scenario":"Продажу Elite сделал нижестоящий Silver в структуре Ruby.","explanation":"Дифференциал рассчитывается между каноническими ранговыми суммами Ruby и Silver.",
+      "result_number":60,"currency":"USD","source_key":"mwr.compensation.available_values.v2","source_ref":"Builder Bonus и практические расчёты / Ruby − Silver / Elite",
+      "fact_refs":[{"fact_key":"ta.builder_bonus.ruby.elite_component.usd","role":"upper_rank_amount"},{"fact_key":"ta.builder_bonus.silver.personal_elite.usd","role":"lower_rank_amount"}]
+    },
+    {
+      "stable_key":"ta.example.ruby.downline_silver.elite_turbo","item_key":"ta.compensation_examples","title":"Ruby, продажа Elite Turbo нижестоящим Silver",
+      "scenario":"Продажу Elite Turbo сделал нижестоящий Silver в структуре Ruby.","explanation":"Дифференциал Ruby и Silver применяется к двум компонентам Elite Turbo.",
+      "result_number":120,"currency":"USD","source_key":"mwr.compensation.available_values.v2","source_ref":"Builder Bonus и практические расчёты / Ruby − Silver / Elite Turbo",
+      "fact_refs":[{"fact_key":"ta.builder_bonus.ruby.elite_component.usd","role":"upper_rank_amount"},{"fact_key":"ta.builder_bonus.silver.personal_elite.usd","role":"lower_rank_amount"},{"fact_key":"ta.elite_turbo.compensation_components","role":"component_count"}]
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+{
+  "dataset_version": 1,
+  "sources": [{
+    "stable_key": "ta.product_structure.advisor_brief.v1",
+    "title": "Travel Advantage / MWR Life — продуктовая структура по материалу Советника",
+    "source_type": "advisor_official_brief",
+    "source_name": "Материал Советника, исходный официальный документ не приложен",
+    "source_reference": "knowledge/travel_advantage/sources/advisor-product-structure-brief.md",
+    "version": null,
+    "effective_date": null,
+    "verification_status": "verified_official",
+      "content_hash": "7bd730f8dc8fd528d54ed8ad77243bbedd274a82c2423bc5b5df1e2b2b9ca8dd"
+  }],
+  "items": [
+    {
+      "stable_key": "ta.platform",
+      "category": "travel_platform",
+      "title": "Travel Advantage",
+      "content": "Туристическая OTA-платформа и продуктовая часть экосистемы для поиска и бронирования туристических услуг.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Travel Advantage и MWR Life / Travel Advantage",
+      "tags": ["ota", "travel advantage", "туристическая платформа"],
+      "related": [
+        {"relation_type": "has_membership", "item_key": "ta.membership"},
+        {"relation_type": "has_feature", "item_key": "ta.loyalty_points"},
+        {"relation_type": "has_feature", "item_key": "ta.travel_credits"},
+        {"relation_type": "has_feature", "item_key": "ta.life_experiences"},
+        {"relation_type": "supports", "item_key": "ta.additional_travelers"},
+        {"relation_type": "distinct_from", "item_key": "mwr.compensation_plan"},
+        {"relation_type": "has_support", "item_key": "ta.support"}
+      ]
+    },
+    {
+      "stable_key": "mwr.life",
+      "category": "ambassador_compensation",
+      "title": "MWR Life",
+      "content": "Бизнес- и партнёрская система с Lifestyle Ambassadors, клиентской сетью, командами, рангами и компенсационным планом.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Travel Advantage и MWR Life / MWR Life",
+      "tags": ["lifestyle ambassadors", "mwr life"],
+      "related": [
+        {"relation_type": "provides_product", "item_key": "ta.platform"},
+        {"relation_type": "has_plan", "item_key": "mwr.compensation_plan"},
+        {"relation_type": "has_support", "item_key": "mwr.support"}
+      ]
+    },
+    {
+      "stable_key": "mwr.compensation_plan",
+      "category": "ambassador_compensation",
+      "title": "MWR Life Compensation Plan",
+      "content": "Компенсационный план относится к бизнес- и партнёрской системе MWR Life, а не к продуктовой структуре Travel Advantage.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Travel Advantage и MWR Life / разграничение",
+      "tags": ["compensation plan"],
+      "related": [{"relation_type": "distinct_from", "item_key": "ta.platform"}]
+    },
+    {
+      "stable_key": "ta.membership",
+      "category": "memberships",
+      "title": "Membership Travel Advantage",
+      "content": "Рабочая модель включает VIP, Elite и Elite Turbo. Числовые значения стоимости хранятся только в связанных facts.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Membership",
+      "tags": ["elite", "elite turbo", "membership", "vip"],
+      "related": [
+        {"relation_type": "includes_feature", "item_key": "ta.loyalty_points"},
+        {"relation_type": "supports", "item_key": "ta.additional_travelers"}
+      ]
+    },
+    {
+      "stable_key": "ta.life_experiences",
+      "category": "life_experiences",
+      "title": "Life Experiences",
+      "content": "Организованные путешествия на определённые даты; состав и правила конкретного предложения могут различаться.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Life Experiences",
+      "tags": ["life experience", "организованное путешествие"],
+      "related": [
+        {"relation_type": "may_use", "item_key": "ta.loyalty_points"},
+        {"relation_type": "may_use", "item_key": "ta.travel_credits"}
+      ]
+    },
+    {
+      "stable_key": "ta.loyalty_points",
+      "category": "loyalty_points",
+      "title": "Loyalty Points",
+      "content": "Баллы членства и продления; не являются деньгами или cashback и применяются только по правилам подходящего предложения.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Loyalty Points",
+      "tags": ["loyalty points"],
+      "related": [{"relation_type": "distinct_from", "item_key": "ta.travel_credits"}]
+    },
+    {
+      "stable_key": "ta.travel_credits",
+      "category": "travel_credits",
+      "title": "Travel Credits",
+      "content": "Кредиты, связанные преимущественно с использованием платформы и бронированиями; доступное количество зависит от сервиса.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Travel Credits",
+      "tags": ["travel credits"],
+      "related": [{"relation_type": "distinct_from", "item_key": "ta.loyalty_points"}]
+    },
+    {
+      "stable_key": "ta.additional_travelers",
+      "category": "memberships",
+      "title": "Additional Travelers",
+      "content": "Дополнительные путешественники получают доступ и могут бронировать, но не становятся владельцами основной подписки.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Additional Travelers",
+      "tags": ["additional travelers", "elite"],
+      "related": [{"relation_type": "available_with", "item_key": "ta.membership"}]
+    },
+    {
+      "stable_key": "ta.support",
+      "category": "travel_platform",
+      "title": "Travel Advantage Support",
+      "content": "Поддержка по туристическим вопросам и инфраструктуре бронирований.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Support и booking infrastructure / Travel Advantage support",
+      "tags": ["booking support", "travel support"],
+      "related": [{"relation_type": "distinct_from", "item_key": "mwr.support"}]
+    },
+    {
+      "stable_key": "mwr.support",
+      "category": "ambassador_compensation",
+      "title": "MWR Life Support",
+      "content": "Поддержка по вопросам деятельности Ambassadors.",
+      "source_key": "ta.product_structure.advisor_brief.v1",
+      "source_ref": "Support и booking infrastructure / MWR Life support",
+      "tags": ["ambassador support", "mwr support"],
+      "related": [{"relation_type": "distinct_from", "item_key": "ta.support"}]
+    }
+  ],
+  "facts": [
+    {"stable_key":"ta.platform.type.ota","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_type","subject_type":"platform","subject_key":"travel_advantage","value_text":"OTA / Online Travel Agency","source_ref":"Travel Advantage и MWR Life / Travel Advantage / тип"},
+    {"stable_key":"ta.platform.use.search_booking","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_use","subject_type":"platform","subject_key":"travel_advantage","value_text":"Поиск и бронирование туристических услуг участниками","source_ref":"Travel Advantage и MWR Life / Travel Advantage / использование"},
+    {"stable_key":"mwr.life.system_type","item_key":"mwr.life","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"system_type","subject_type":"organization","subject_key":"mwr_life","value_text":"Бизнес- и партнёрская система","source_ref":"Travel Advantage и MWR Life / MWR Life / тип"},
+    {"stable_key":"mwr.compensation.owner","item_key":"mwr.compensation_plan","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"plan_owner","subject_type":"compensation_plan","subject_key":"mwr_life_compensation_plan","value_text":"MWR Life","source_ref":"Travel Advantage и MWR Life / разграничение"},
+
+    {"stable_key":"ta.category.hotels","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"hotels","value_text":"Отели","source_ref":"Категории Travel Advantage / отели"},
+    {"stable_key":"ta.category.resorts","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"resorts","value_text":"Курорты","source_ref":"Категории Travel Advantage / курорты"},
+    {"stable_key":"ta.category.flights","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"flights","value_text":"Авиабилеты","source_ref":"Категории Travel Advantage / авиабилеты"},
+    {"stable_key":"ta.category.car_rental","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"car_rental","value_text":"Аренда автомобилей","source_ref":"Категории Travel Advantage / аренда автомобилей"},
+    {"stable_key":"ta.category.transfers","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"transfers","value_text":"Трансферы","source_ref":"Категории Travel Advantage / трансферы"},
+    {"stable_key":"ta.category.entertainment","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"entertainment","value_text":"Развлечения","source_ref":"Категории Travel Advantage / развлечения"},
+    {"stable_key":"ta.category.cruises","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"cruises","value_text":"Круизы","source_ref":"Категории Travel Advantage / круизы"},
+    {"stable_key":"ta.category.apartments","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"apartments","value_text":"Апартаменты","source_ref":"Категории Travel Advantage / апартаменты"},
+    {"stable_key":"ta.category.event_tickets","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"event_tickets","value_text":"Билеты на мероприятия","source_ref":"Категории Travel Advantage / билеты на мероприятия"},
+    {"stable_key":"ta.category.ground_transport","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"ground_transport","value_text":"Наземный транспорт","source_ref":"Категории Travel Advantage / наземный транспорт"},
+    {"stable_key":"ta.category.hot_deals","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"hot_deals","value_text":"Hot Deals","source_ref":"Категории Travel Advantage / Hot Deals"},
+    {"stable_key":"ta.category.life_experiences","item_key":"ta.platform","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"platform_service_category","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"service_category","qualifier_value":"life_experiences","value_text":"Life Experiences","source_ref":"Категории Travel Advantage / Life Experiences"},
+
+    {"stable_key":"ta.membership.vip.total_price.usd","item_key":"ta.membership","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"membership_total_price","subject_type":"membership","subject_key":"membership.vip","value_number":19.97,"currency":"USD","source_ref":"Membership / VIP / общая стоимость"},
+    {"stable_key":"ta.membership.elite.total_price.usd","item_key":"ta.membership","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"membership_total_price","subject_type":"membership","subject_key":"membership.elite","value_number":338.97,"currency":"USD","source_ref":"Membership / Elite / общая стоимость"},
+    {"stable_key":"ta.membership.elite_turbo.total_price.usd","item_key":"ta.membership","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"membership_total_price","subject_type":"membership","subject_key":"membership.elite_turbo","value_number":598.97,"currency":"USD","source_ref":"Membership / Elite Turbo / общая стоимость"},
+    {"stable_key":"ta.membership.vip.definition","item_key":"ta.membership","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"membership_definition","subject_type":"membership","subject_key":"membership.vip","value_text":"Базовый платный доступ","source_ref":"Membership / VIP / описание"},
+    {"stable_key":"ta.membership.elite.definition","item_key":"ta.membership","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"membership_definition","subject_type":"membership","subject_key":"membership.elite","value_text":"Более высокий уровень с расширенными возможностями и Loyalty Points","source_ref":"Membership / Elite / описание"},
+    {"stable_key":"ta.membership.elite_turbo.definition","item_key":"ta.membership","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"membership_definition","subject_type":"membership","subject_key":"membership.elite_turbo","value_text":"Elite с дополнительными Turbo-преимуществами","source_ref":"Membership / Elite Turbo / описание"},
+    {"stable_key":"ta.membership.turbo.relationship","item_key":"ta.membership","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"membership_relationship","subject_type":"membership_addon","subject_key":"membership.turbo","value_text":"Дополнение к Elite, а не самостоятельная базовая подписка","source_ref":"Membership / Turbo / отношение к Elite"},
+
+    {"stable_key":"ta.life_experience.definition","item_key":"ta.life_experiences","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"life_experience_definition","subject_type":"travel_product","subject_key":"life_experience","value_text":"Организованное путешествие на определённые даты","source_ref":"Life Experiences / определение"},
+    {"stable_key":"ta.life_experience.possible_components","item_key":"ta.life_experiences","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"possible_components","subject_type":"travel_product","subject_key":"life_experience","value_text":"Может продолжаться несколько дней и включать отель, активности, встречи участников и host","condition_text":"Состав зависит от конкретного предложения.","source_ref":"Life Experiences / возможный состав"},
+    {"stable_key":"ta.life_experience.flight_default","item_key":"ta.life_experiences","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"flight_inclusion_rule","subject_type":"travel_product","subject_key":"life_experience","value_text":"Обычно не входит","condition_text":"Если условия конкретного предложения не говорят иначе.","source_ref":"Life Experiences / перелёт"},
+    {"stable_key":"ta.life_experience.loyalty_redemption.after_12_months","item_key":"ta.life_experiences","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_redemption_limit","subject_type":"travel_product","subject_key":"life_experience","qualifier_key":"membership_duration_min_months","qualifier_value":"12","value_number":100,"unit":"percent","condition_text":"Возможность использования накопленных Loyalty Points после 12 месяцев членства.","source_ref":"Life Experiences / Loyalty Points / после 12 месяцев"},
+    {"stable_key":"ta.life_experience.loyalty_redemption.before_12_months","item_key":"ta.life_experiences","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_redemption_rule","subject_type":"travel_product","subject_key":"life_experience","qualifier_key":"membership_duration_max_months","qualifier_value":"11","value_text":"Действует ограничение","condition_text":"Размер ограничения в материале не указан.","source_ref":"Life Experiences / Loyalty Points / до 12 месяцев"},
+    {"stable_key":"ta.life_experience.loyalty_redemption.early_exception","item_key":"ta.life_experiences","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_redemption_exception","subject_type":"travel_product","subject_key":"life_experience","value_text":"Отдельное предложение может разрешать 100% раньше","condition_text":"Только если это прямо предусмотрено конкретным предложением.","source_ref":"Life Experiences / Loyalty Points / исключение предложения"},
+
+    {"stable_key":"ta.loyalty_points.not_money","item_key":"ta.loyalty_points","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_property","subject_type":"benefit","subject_key":"loyalty_points","qualifier_key":"property","qualifier_value":"not_money","value_text":"Не деньги","source_ref":"Loyalty Points / не деньги"},
+    {"stable_key":"ta.loyalty_points.not_cashback","item_key":"ta.loyalty_points","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_property","subject_type":"benefit","subject_key":"loyalty_points","qualifier_key":"property","qualifier_value":"not_cashback","value_text":"Не cashback","source_ref":"Loyalty Points / не cashback"},
+    {"stable_key":"ta.loyalty_points.account_accumulation","item_key":"ta.loyalty_points","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_property","subject_type":"benefit","subject_key":"loyalty_points","qualifier_key":"property","qualifier_value":"account_accumulation","value_text":"Накапливаются в аккаунте","source_ref":"Loyalty Points / накопление"},
+    {"stable_key":"ta.loyalty_points.offer_limited_use","item_key":"ta.loyalty_points","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_use_rule","subject_type":"benefit","subject_key":"loyalty_points","value_text":"Применяются только там, где предложение разрешает использование","source_ref":"Loyalty Points / применение"},
+    {"stable_key":"ta.loyalty_points.no_cash_exchange","item_key":"ta.loyalty_points","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_exchange_rule","subject_type":"benefit","subject_key":"loyalty_points","value_text":"Нельзя обменять на наличные","source_ref":"Loyalty Points / обмен"},
+    {"stable_key":"ta.loyalty_points.membership_relation","item_key":"ta.loyalty_points","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"loyalty_points_source_relation","subject_type":"benefit","subject_key":"loyalty_points","value_text":"Связаны прежде всего с членством и продлением","source_ref":"Loyalty Points / связь с членством"},
+
+    {"stable_key":"ta.travel_credits.platform_relation","item_key":"ta.travel_credits","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"travel_credits_source_relation","subject_type":"benefit","subject_key":"travel_credits","value_text":"Связаны преимущественно с использованием платформы и бронированиями","source_ref":"Travel Credits / происхождение"},
+    {"stable_key":"ta.travel_credits.service_dependent","item_key":"ta.travel_credits","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"travel_credits_amount_rule","subject_type":"benefit","subject_key":"travel_credits","value_text":"Количество зависит от конкретного сервиса","source_ref":"Travel Credits / количество"},
+    {"stable_key":"ta.travel_credits.pre_booking_display","item_key":"ta.travel_credits","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"travel_credits_display_rule","subject_type":"benefit","subject_key":"travel_credits","value_text":"Отображаются перед бронированием","source_ref":"Travel Credits / отображение"},
+    {"stable_key":"ta.travel_credits.conversion.100_to_1_usd","item_key":"ta.travel_credits","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"travel_credits_conversion_rate","subject_type":"benefit","subject_key":"travel_credits","qualifier_key":"travel_credits","qualifier_value":"100","value_number":1,"currency":"USD","condition_text":"Возможное уменьшение стоимости подходящего бронирования.","source_ref":"Travel Credits / conversion rate / 100 Travel Credits = 1 USD"},
+    {"stable_key":"ta.points_and_credits.combined_use","item_key":"ta.travel_credits","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"combined_benefit_use_rule","subject_type":"benefit_pair","subject_key":"loyalty_points_and_travel_credits","value_text":"Некоторые предложения могут разрешать совместное использование","condition_text":"Только если это допускает конкретное предложение.","source_ref":"Travel Credits / совместное использование"},
+
+    {"stable_key":"ta.elite.additional_travelers.limit","item_key":"ta.additional_travelers","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"additional_travelers_limit","subject_type":"membership","subject_key":"membership.elite","value_number":4,"unit":"travelers","condition_text":"До четырёх дополнительных путешественников.","source_ref":"Additional Travelers / Elite / лимит"},
+    {"stable_key":"ta.additional_travelers.access","item_key":"ta.additional_travelers","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"additional_traveler_capability","subject_type":"account_role","subject_key":"additional_traveler","qualifier_key":"capability","qualifier_value":"access","value_text":"Получают доступ","source_ref":"Additional Travelers / доступ"},
+    {"stable_key":"ta.additional_travelers.booking","item_key":"ta.additional_travelers","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"additional_traveler_capability","subject_type":"account_role","subject_key":"additional_traveler","qualifier_key":"capability","qualifier_value":"independent_booking","value_text":"Могут самостоятельно бронировать","source_ref":"Additional Travelers / бронирование"},
+    {"stable_key":"ta.additional_travelers.not_subscription_owner","item_key":"ta.additional_travelers","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"additional_traveler_restriction","subject_type":"account_role","subject_key":"additional_traveler","qualifier_key":"restriction","qualifier_value":"not_subscription_owner","value_text":"Не становятся владельцами основной подписки","source_ref":"Additional Travelers / владение подпиской"},
+    {"stable_key":"ta.additional_travelers.no_own_loyalty_points","item_key":"ta.additional_travelers","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"additional_traveler_restriction","subject_type":"account_role","subject_key":"additional_traveler","qualifier_key":"restriction","qualifier_value":"no_own_loyalty_points_by_presence","value_text":"Не получают собственные Loyalty Points только из-за нахождения в аккаунте участника","source_ref":"Additional Travelers / Loyalty Points"},
+
+    {"stable_key":"ta.support.scope","item_key":"ta.support","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"support_scope","subject_type":"support","subject_key":"travel_advantage_support","value_text":"Туристические вопросы","source_ref":"Support и booking infrastructure / Travel Advantage support"},
+    {"stable_key":"mwr.support.scope","item_key":"mwr.support","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"support_scope","subject_type":"support","subject_key":"mwr_life_support","value_text":"Вопросы деятельности Ambassadors","source_ref":"Support и booking infrastructure / MWR Life support"},
+    {"stable_key":"ta.booking.alternative_inventory","item_key":"ta.support","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"booking_infrastructure_capability","subject_type":"platform","subject_key":"travel_advantage","qualifier_key":"capability","qualifier_value":"alternative_inventory","value_text":"Платформа может искать альтернативный inventory","source_ref":"Support и booking infrastructure / alternative inventory"},
+    {"stable_key":"ta.booking.additional_verification","item_key":"ta.support","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"booking_verification_rule","subject_type":"booking","subject_key":"travel_advantage_booking","value_text":"Некоторые бронирования могут проходить дополнительную проверку","source_ref":"Support и booking infrastructure / дополнительная проверка"},
+    {"stable_key":"ta.support.multizone_multilanguage","item_key":"ta.support","source_key":"ta.product_structure.advisor_brief.v1","fact_type":"support_availability","subject_type":"support","subject_key":"travel_advantage_support","value_text":"Работает в нескольких часовых поясах и на нескольких языках","source_ref":"Support и booking infrastructure / доступность поддержки"}
+  ],
+  "examples": []
+}
