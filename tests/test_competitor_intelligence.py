@@ -129,7 +129,8 @@ def test_intelligence_round_trip_and_selected_opportunity_uses_content_factory(t
     provider.generate_draft.assert_called_once()
     source_text = provider.generate_draft.call_args.kwargs["source_text"]
     assert restored.opportunities[0].source_url in source_text
-    assert "не копируя источник" in source_text
+    assert "не рекламируй" in source_text
+    assert "проверяйте срок акции, условия, направление и даты" in source_text
     assert "Оригинальный материал" in callback.message.answers[-1][0]
 
 

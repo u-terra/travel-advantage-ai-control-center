@@ -450,15 +450,12 @@ async def create_from_competitor_opportunity(callback: CallbackQuery,
     if opportunity is None:
         return
     profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
-    task = (
-        "Создай оригинальный пост по конкурентному сигналу, не копируя источник.\n"
-        f"Тема: {opportunity.topic}\nКлючевой тезис: {opportunity.key_thesis}\n"
-        f"Угол: {opportunity.own_post_angle}\nПочему важно аудитории: {opportunity.audience_value}\n"
-        f"Публичный источник (только provenance): {opportunity.source_title} — {opportunity.source_url}\n"
-        f"Связь с Travel Advantage из verified KB: {opportunity.travel_advantage_link or 'не подтверждена'}"
-    )
-    spec = MaterialOrchestrationService().build_free_text_generation_spec(
-        workspace_context.workspace_id, task, profile,
+    spec = MaterialOrchestrationService().build_competitor_signal_generation_spec(
+        workspace_context.workspace_id, profile,
+        competitor_signal=opportunity.topic, key_thesis=opportunity.key_thesis,
+        own_post_angle=opportunity.own_post_angle, audience_value=opportunity.audience_value,
+        source_title=opportunity.source_title, source_url=opportunity.source_url,
+        travel_advantage_link=opportunity.travel_advantage_link,
     )
     request = build_provider_generation_request(spec, limit=6000)
     draft = await asyncio.to_thread(llm_provider.generate_draft,

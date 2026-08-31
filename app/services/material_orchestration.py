@@ -361,6 +361,71 @@ _RADAR_CONSTRAINTS = (
     "противоречит бизнес-контексту, фактам источника и правилам выше.",
 )
 
+# Fix: «Идеи для постов» → «Создать материал» из Competitor Intelligence
+# раньше собирал произвольный task_text и прогонял его через
+# build_free_text_generation_spec (_FREE_TEXT_OBJECTIVE) — objective для
+# ЛЮБОЙ пользовательской задачи, без единого слова про то, что нужно
+# сделать именно с конкурентным сигналом. Живой prod-кейс показал типичный
+# результат такого разрыва: сигнал «Trip.com обновляет промокоды каждую
+# неделю» на выходе превращался в общий совет «проверяйте срок акции,
+# условия, направление и даты» — текст без наблюдения и без тенденции,
+# который можно написать и без Competitor Intelligence вообще. Ценность
+# самого сигнала терялась ещё на этапе postановки задачи модели.
+#
+# Тот же паттерн, что и Radar (build_radar_generation_spec) — внешний
+# сигнал как повод для контента, а не тема для пересказа, — но с другим
+# требованием: не просто хук по первому предложению, а явная авторская
+# мысль о тренде/изменении поведения рынка, которую сигнал иллюстрирует.
+_COMPETITOR_SIGNAL_OBJECTIVE = (
+    "Написать авторский пост о travel-рынке, поводом для которого стал "
+    "наблюдаемый сигнал конкурента из [SOURCE FACTS - DATA]. Сигнал — это "
+    "повод для самостоятельной мысли о тенденции или изменении поведения на "
+    "рынке, а не тема для пересказа или рекламы конкурента."
+)
+_COMPETITOR_SIGNAL_INSIGHT_CONSTRAINT = (
+    "В тексте должно быть явно понятно три вещи: (1) какой конкретно сигнал "
+    "замечен — по [SOURCE FACTS - DATA].key_thesis и .competitor_signal; "
+    "(2) какую тенденцию или изменение поведения travel-рынка/путешественника "
+    "этот сигнал показывает; (3) почему это важно путешественнику или "
+    "партнёру Travel Advantage. Если хотя бы один из трёх пунктов не читается "
+    "в тексте явно, черновик не выполнил задачу."
+)
+_COMPETITOR_SIGNAL_NO_GENERIC_ADVICE_CONSTRAINT = (
+    "Не превращай сигнал в общий совет без анализа рынка (например, "
+    "«проверяйте срок акции, условия, направление и даты»). Такой текст не "
+    "показывает ни наблюдение, ни тенденцию и мог быть написан без этого "
+    "конкретного сигнала — он не может быть готовым результатом. "
+    "Самостоятельная аналитическая мысль о рынке обязательна, а не "
+    "напоминание проверить детали."
+)
+_COMPETITOR_SIGNAL_NO_RECAP_CONSTRAINT = (
+    "Не пересказывай сигнал конкурента как новость и не рекламируй "
+    "конкурента: не описывай его предложение как выгодное для читателя и не "
+    "пиши текст так, будто это анонс от лица конкурента. "
+    "[SOURCE FACTS - DATA].source_title и .source_url — только внутренняя "
+    "атрибуция происхождения сигнала, а не тема поста."
+)
+_COMPETITOR_SIGNAL_TA_LINK_CONSTRAINT = (
+    "Связь с Travel Advantage допустима только через факты из [VERIFIED "
+    "CLAIMS - ALLOWED FACTS]. Если этот раздел пуст или не содержит факта, "
+    "относящегося к теме поста, не упоминай Travel Advantage вообще и не "
+    "придумывай сравнение или преимущество перед конкурентом."
+)
+_COMPETITOR_SIGNAL_NO_ADVERTISING_STYLE_CONSTRAINT = (
+    "Не используй шаблонный рекламный стиль: превосходная степень («лучший», "
+    "«уникальный»), искусственное давление срочности («успей», «только "
+    "сегодня») и прямые призывы воспользоваться предложением конкурента "
+    "запрещены. Пиши как автор, формирующий собственное мнение о рынке, а "
+    "не как копирайтер чужой акции."
+)
+_COMPETITOR_SIGNAL_CONSTRAINTS = _CONSTRAINTS + (
+    _COMPETITOR_SIGNAL_INSIGHT_CONSTRAINT,
+    _COMPETITOR_SIGNAL_NO_GENERIC_ADVICE_CONSTRAINT,
+    _COMPETITOR_SIGNAL_NO_RECAP_CONSTRAINT,
+    _COMPETITOR_SIGNAL_TA_LINK_CONSTRAINT,
+    _COMPETITOR_SIGNAL_NO_ADVERTISING_STYLE_CONSTRAINT,
+)
+
 
 class MaterialOrchestrationService:
     """Build a provider-neutral spec from inputs authorized by the caller."""
@@ -449,6 +514,59 @@ class MaterialOrchestrationService:
             verified_claims_allowed=verified,
             unverified_claims_requiring_caution=unverified,
             constraints=_FREE_TEXT_CONSTRAINTS,
+            profile_revision_used=revision,
+        )
+
+    def build_competitor_signal_generation_spec(
+        self,
+        workspace_id: int,
+        profile: BusinessProfile | None,
+        *,
+        competitor_signal: str,
+        key_thesis: str,
+        own_post_angle: str,
+        audience_value: str,
+        source_title: str,
+        source_url: str,
+        travel_advantage_link: str | None,
+        user_preferences: WorkspaceUserPreferences | None = None,
+    ) -> GenerationSpec:
+        trusted_context, tone_preferences, verified, unverified, revision = (
+            _profile_generation_values(workspace_id, profile)
+        )
+        # travel_advantage_link уже отфильтрован источником (Competitor
+        # Intelligence строит его только из verified KB, см.
+        # app/services/competitor_intelligence.py) — здесь он идёт в
+        # VERIFIED CLAIMS, а не в SOURCE FACTS, чтобы modель не могла
+        # трактовать его как ещё один произвольный факт источника и не
+        # добавляла к нему собственные сравнения с конкурентом.
+        if travel_advantage_link:
+            verified = (*verified, {
+                "text": travel_advantage_link,
+                "verification_status": "verified",
+                "evidence_reference": "verified_ta_knowledge",
+            })
+        return GenerationSpec(
+            action_type=GenerationAction.CREATE_ARTIFACT,
+            artifact_type="post",
+            objective=_COMPETITOR_SIGNAL_OBJECTIVE,
+            audience=tuple(trusted_context.get("audiences", ())),
+            output_format="telegram",
+            source_facts={
+                "competitor_signal": competitor_signal,
+                "key_thesis": key_thesis,
+                "own_post_angle": own_post_angle,
+                "audience_value": audience_value,
+                "source_title": source_title,
+                "source_url": source_url,
+            },
+            trusted_business_context=trusted_context,
+            untrusted_source_content=key_thesis,
+            tone_preferences=tone_preferences,
+            personal_style=_personal_style_values(user_preferences),
+            verified_claims_allowed=verified,
+            unverified_claims_requiring_caution=unverified,
+            constraints=_COMPETITOR_SIGNAL_CONSTRAINTS,
             profile_revision_used=revision,
         )
 

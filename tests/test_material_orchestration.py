@@ -989,3 +989,40 @@ def test_adversarial_lexically_similar_unrelated_claim_is_not_confirmed():
     )
     assert remaining == (disputed,)
     assert promoted == ()
+
+
+# --- Fix: Competitor Intelligence → «Создать материал» больше не проходит
+# через generic build_free_text_generation_spec (объективно "выполнить
+# задачу пользователя" без единого слова про рынок/тенденцию) — живой
+# prod-кейс показал, что сигнал "Trip.com обновляет промокоды каждую
+# неделю" превращался в общий совет "проверяйте срок акции, условия,
+# направление и даты", который не нёс ценности самого сигнала.
+
+def test_competitor_signal_spec_demands_market_insight_not_generic_advice():
+    spec = MaterialOrchestrationService().build_competitor_signal_generation_spec(
+        10, profile(),
+        competitor_signal="loyalty и promotions: Latest Trip.com Promo Codes Flight Discounts",
+        key_thesis="Latest Trip.com Promo Codes, Flight Discounts & Hotel Savings (Weekly Update)",
+        own_post_angle=(
+            "Объясняем аудитории, как находить и проверять предложения "
+            "вроде «Trip.com Promo Codes», не копируя рекламный текст конкурента"
+        ),
+        audience_value="Полезно путешественникам, планирующим бронирование заранее.",
+        source_title="Trip.com travelogues", source_url="https://www.trip.com/blog",
+        travel_advantage_link="Travel Advantage — OTA-платформа. [источник: verified TA knowledge]",
+    )
+    assert "тенденци" in spec.objective.lower()
+    assert "повод для самостоятельной мысли" in spec.objective.lower()
+    joined_constraints = " ".join(spec.constraints)
+    assert "проверяйте срок акции, условия, направление и даты" in joined_constraints
+    assert "не может быть готовым результатом" in joined_constraints
+    assert "не рекламируй" in joined_constraints
+    assert spec.source_facts["key_thesis"] == (
+        "Latest Trip.com Promo Codes, Flight Discounts & Hotel Savings (Weekly Update)"
+    )
+    assert spec.untrusted_source_content == spec.source_facts["key_thesis"]
+    ta_claims = [c for c in spec.verified_claims_allowed if c["evidence_reference"] == "verified_ta_knowledge"]
+    assert len(ta_claims) == 1 and "verified TA knowledge" in ta_claims[0]["text"]
+    # Constraint must not leak into unrelated flows.
+    assert spec.constraints != radar_spec(profile()).constraints
+    assert spec.constraints != build(profile()).constraints
