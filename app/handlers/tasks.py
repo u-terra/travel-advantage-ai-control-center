@@ -1052,7 +1052,7 @@ async def _maybe_send_draft(
         )
         heading = _CLIENT_REPLY_HEADING
 
-    provider_request = build_provider_generation_request(spec)
+    provider_request = build_provider_generation_request(spec, limit=6000)
     draft = await asyncio.to_thread(
         provider.generate_draft,
         source_text=provider_request.source_text,

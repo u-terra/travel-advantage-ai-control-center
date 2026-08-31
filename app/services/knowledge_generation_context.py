@@ -9,10 +9,10 @@ from typing import Any, Mapping
 from app.domain.knowledge import KnowledgeFact
 from app.services.knowledge_service import KnowledgeBundle
 
-_MAX_ITEMS = 3
-_MAX_FACTS = 12
-_MAX_ITEM_CONTENT_CHARS = 180
-_MAX_VERIFIED_CLAIMS = 10
+_MAX_ITEMS = 2
+_MAX_FACTS = 5
+_MAX_ITEM_CONTENT_CHARS = 80
+_MAX_VERIFIED_CLAIMS = 1
 _COMPENSATION_FACT_TYPES = frozenset({
     "builder_bonus_rank_amount", "differential_builder_rule",
     "member_bonus", "compensation_component_count", "monthly_income_amount",
@@ -95,8 +95,9 @@ def _priority_facts(
         "compensation", "guarantee",
     )
     prioritized = (
-        *facts[:5],
+        *facts[:1],
         *(fact for fact in facts if any(marker in fact.stable_key for marker in priority_markers)),
+        *facts[1:],
     )
     result: list[KnowledgeFact] = []
     seen: set[str] = set()
