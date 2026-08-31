@@ -22,7 +22,11 @@ from app.planner.fetch import FetchedPublicSource, PublicSourceFetchError
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.partner_repository import PartnerRepository, empty_business_context
 from app.repositories.workspace_signal_repository import WorkspaceSignalRecord
-from app.services.competitor_discovery import CompetitorDiscoveryService
+from app.services.competitor_discovery import (
+    _CURATED_MARKET_SOURCES,
+    CompetitorDiscoveryService,
+    _brand_slug_candidates,
+)
 from app.services.llm.models import SourceAnalysisPayload
 from tests.llm_fakes import FakeLLMProvider
 from tests.test_journal_handlers import Callback, business_profile, context, profile_repository
@@ -282,3 +286,178 @@ def test_telegram_flow_discover_then_add_enables_existing_competitor_card(tmp_pa
 
     refreshed = run(competitor_repo.get_candidate_for_workspace(workspace.id, candidate.candidate_id))
     assert refreshed.status is CandidateStatus.ADDED
+
+
+# --- Travel Market Discovery Sources: curated industry-news listing pages
+# fix the coverage gap (WorkspaceSignalRepository alone has almost no
+# industry/startup/OTA material - see module docstring in
+# app/services/competitor_discovery.py). Each fact extracted from a curated
+# page is only trusted as an addable 🔴/🟠 competitor if a guessed company
+# domain actually, independently verifies via the existing fetcher AND
+# looks travel-relevant itself; otherwise it becomes (at most one, per
+# curated page, to avoid canonical_domain collisions since upsert_candidate
+# derives the domain from discovered_url) a 🔵 market-signal candidate.
+
+def _curated_fetcher(overrides: dict[str, FetchedPublicSource]):
+    def fetch(url: str) -> FetchedPublicSource:
+        if url in overrides:
+            return overrides[url]
+        raise PublicSourceFetchError("blocked")
+    return fetch
+
+
+def test_brand_slug_candidates_orders_by_appearance_and_skips_generic_words():
+    candidates = _brand_slug_candidates("Ryanair approves Fliggy as OTA partner in China")
+    assert candidates[:2] == ("ryanair", "fliggy")
+
+
+def test_brand_slug_candidates_empty_for_no_capitalized_entities():
+    assert _brand_slug_candidates("the new travel trend this year") == ()
+
+
+def test_curated_source_verified_entity_becomes_addable_direct_competitor(tmp_path: Path):
+    partners = PartnerRepository(tmp_path / "db.sqlite3")
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    competitor_repo = CompetitorRepository(tmp_path / "db.sqlite3")
+    run(competitor_repo.init())
+
+    curated_url = _CURATED_MARKET_SOURCES[0][1]
+    listing_page = FetchedPublicSource(
+        url=curated_url, final_url=curated_url, title="Industry news",
+        text="listing page", content_type="text/html",
+    )
+    acme_page = FetchedPublicSource(
+        url="https://acme.com", final_url="https://acme.com", title="Acme Travel",
+        text="Acme Travel is a new hotel booking platform for independent travelers.",
+        content_type="text/html",
+    )
+    fetch = _curated_fetcher({curated_url: listing_page, "https://acme.com": acme_page})
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        summary="Acme Travel launches new hotel booking platform",
+        key_facts=("Acme Travel launches new hotel booking platform",),
+        disputed_claims=(), audience_value="", target_audiences=(), content_angles=(),
+        recommended_formats=(), warnings=(),
+    ))
+    signals = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
+
+    service = CompetitorDiscoveryService(signals, competitor_repo, provider, fetcher=fetch)
+    candidates = run(service.discover(workspace.id))
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.classification is CandidateClassification.DIRECT_COMPETITOR
+    assert candidate.canonical_domain == "acme.com"
+    assert candidate.discovered_url == "https://acme.com"
+    assert candidate.source_url == curated_url  # provenance: where the signal was found
+    assert candidate.evidence and candidate.why_it_matters
+
+
+def test_curated_source_unverified_facts_collapse_to_one_market_signal_per_page(tmp_path: Path):
+    partners = PartnerRepository(tmp_path / "db.sqlite3")
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    competitor_repo = CompetitorRepository(tmp_path / "db.sqlite3")
+    run(competitor_repo.init())
+
+    curated_url = _CURATED_MARKET_SOURCES[0][1]
+    listing_page = FetchedPublicSource(
+        url=curated_url, final_url=curated_url, title="Industry news",
+        text="listing page", content_type="text/html",
+    )
+    # Every guessed domain fetch fails - nothing here is independently
+    # verifiable as a real standalone competitor site.
+    fetch = _curated_fetcher({curated_url: listing_page})
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        summary="s",
+        key_facts=(
+            "Zylo Travel launches new hotel booking platform",
+            "Novo Rewards adds new loyalty program for travelers",
+        ),
+        disputed_claims=(), audience_value="", target_audiences=(), content_angles=(),
+        recommended_formats=(), warnings=(),
+    ))
+    signals = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
+
+    service = CompetitorDiscoveryService(signals, competitor_repo, provider, fetcher=fetch)
+    candidates = run(service.discover(workspace.id))
+
+    assert len(candidates) == 1  # not two - collapsed to one per curated page
+    candidate = candidates[0]
+    assert candidate.classification is CandidateClassification.MARKET_SIGNAL
+    assert candidate.canonical_domain == canonical_domain(curated_url)
+    assert candidate.discovered_url == curated_url  # honest provenance, no guessed URL
+    # the stronger (direct-competitor-keyword) fact wins over the plain
+    # market-signal-only one
+    assert "Zylo" in candidate.description
+
+
+def test_curated_source_rejects_verified_domain_that_is_not_travel_relevant(tmp_path: Path):
+    partners = PartnerRepository(tmp_path / "db.sqlite3")
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    competitor_repo = CompetitorRepository(tmp_path / "db.sqlite3")
+    run(competitor_repo.init())
+
+    curated_url = _CURATED_MARKET_SOURCES[0][1]
+    listing_page = FetchedPublicSource(
+        url=curated_url, final_url=curated_url, title="Industry news",
+        text="listing page", content_type="text/html",
+    )
+    # "Zylo" happens to be a real, fetchable domain - but an unrelated
+    # (non-travel) business, so it must not be trusted as a competitor.
+    unrelated_page = FetchedPublicSource(
+        url="https://zylo.com", final_url="https://zylo.com", title="Zylo Finance",
+        text="Zylo helps businesses manage software subscriptions and spend.",
+        content_type="text/html",
+    )
+    fetch = _curated_fetcher({curated_url: listing_page, "https://zylo.com": unrelated_page})
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        summary="s", key_facts=("Zylo launches new hotel booking platform for agencies",),
+        disputed_claims=(), audience_value="", target_audiences=(), content_angles=(),
+        recommended_formats=(), warnings=(),
+    ))
+    signals = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
+
+    service = CompetitorDiscoveryService(signals, competitor_repo, provider, fetcher=fetch)
+    candidates = run(service.discover(workspace.id))
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.canonical_domain != "zylo.com"
+    assert candidate.classification is CandidateClassification.MARKET_SIGNAL
+
+
+def test_curated_source_skips_already_known_competitor_domain(tmp_path: Path):
+    """Real prod case: Trip.com is already a saved competitor - a curated
+    industry-news mention of it must not resurface it as a new candidate."""
+    partners = PartnerRepository(tmp_path / "db.sqlite3")
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    competitor_repo = CompetitorRepository(tmp_path / "db.sqlite3")
+    run(competitor_repo.init())
+    run(competitor_repo.add_competitor(
+        workspace.id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
+    ))
+
+    curated_url = _CURATED_MARKET_SOURCES[0][1]
+    listing_page = FetchedPublicSource(
+        url=curated_url, final_url=curated_url, title="Industry news",
+        text="listing page", content_type="text/html",
+    )
+    trip_page = FetchedPublicSource(
+        url="https://trip.com", final_url="https://trip.com", title="Trip.com",
+        text="Trip.com is a travel booking platform for flights and hotels.",
+        content_type="text/html",
+    )
+    fetch = _curated_fetcher({curated_url: listing_page, "https://trip.com": trip_page})
+    provider = FakeLLMProvider(analysis=SourceAnalysisPayload(
+        summary="s", key_facts=("Trip expands hotel booking platform in Europe",),
+        disputed_claims=(), audience_value="", target_audiences=(), content_angles=(),
+        recommended_formats=(), warnings=(),
+    ))
+    signals = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
+
+    service = CompetitorDiscoveryService(signals, competitor_repo, provider, fetcher=fetch)
+    candidates = run(service.discover(workspace.id))
+    assert candidates == ()

@@ -1,14 +1,16 @@
-"""Competitor Discovery Radar: turns public market signals the workspace has
-already synced (Lead Radar / WorkspaceSignalRepository) into reviewable
+"""Competitor Discovery Radar: turns public market signals into reviewable
 CompetitorCandidate rows.
 
 Deliberately reuses existing infrastructure end to end instead of a second
 search/fetch/LLM/repository stack:
-  - signal source: WorkspaceSignalRepository (already-synced Radar signals,
-    scoped to the workspace's own active source subscriptions) - no new
-    search provider, no fake web search;
-  - page fetch: app.planner.fetch.fetch_public_source_sync, the same public
-    fetcher CompetitorIntelligenceService already uses;
+  - signal source #1: WorkspaceSignalRepository (already-synced Radar
+    signals, scoped to the workspace's own active source subscriptions);
+  - signal source #2: a small curated list of public travel-industry-news
+    LISTING pages (_CURATED_MARKET_SOURCES below) - see "coverage problem"
+    note further down for why source #1 alone is almost never enough;
+  - page fetch (both sources): app.planner.fetch.fetch_public_source_sync,
+    the same public fetcher CompetitorIntelligenceService already uses -
+    no new fetcher, no new crawler, no RSS/XML parser added;
   - page understanding: LLMProvider.analyze_source, the same LLM source
     analysis CompetitorIntelligenceService already uses;
   - storage: CompetitorRepository (same repository/table family as
@@ -20,6 +22,30 @@ order), not an LLM/ML classifier, and is generic travel-platform language -
 not hardcoded to Travel Advantage or any one business. Travel Advantage's
 verified Knowledge Base is intentionally never consulted here; that stays
 scoped to CompetitorIntelligenceService's own travel_advantage_link field.
+
+--- Coverage problem (why source #1 alone found nothing in production) ---
+WorkspaceSignalRepository only PROJECTS rows that already exist in the
+external "Travel Lead Radar" project's own leads.db (opened read-only, see
+workspace_signal_repository.py) - this repo has zero collector code
+(`IMPLEMENTED_COLLECTOR_PLATFORMS` in app/services/source_registry.py is an
+explicitly empty frozenset). Registering a new source in THIS repo's
+source_catalog does not make anything crawl it: the external project has to
+independently start monitoring the same URL and write to lead_signals
+before any local subscription can ever surface it. Today's actual seeded
+catalog (config/sources.json) is almost entirely destination/deals content
+(VK/Telegram travel-blog and booking-deal channels) plus two admin-owned
+product pages - essentially none of it is industry-news/startup/OTA-launch
+material, and even the few industry-flavored entries depend on the same
+external crawler actually publishing matching lead_signals rows.
+
+_CURATED_MARKET_SOURCES works around this without touching the external
+project, a new crawler, a new scheduler, or a new DB: each entry is a public
+listing page (verified reachable and text/html - RSS/Atom feeds are served
+as application/rss+xml and fetch_public_source_sync deliberately only
+accepts text/html or text/plain, so feed URLs are not usable here) fetched
+on-demand by the SAME existing fetcher, then read through the SAME
+analyze_source call already used everywhere else - just applied to a
+listing page instead of a single competitor's site.
 """
 
 from __future__ import annotations
@@ -99,6 +125,40 @@ _WHY_IT_MATTERS_TEMPLATES: dict[CandidateClassification, str] = {
     ),
 }
 
+# Verified by hand (2026-08-31): each URL actually fetches as real,
+# dated, headline-dense text/html via fetch_public_source_sync (not a
+# paywall/bot-wall/nav-only shell) - see the task's report for samples.
+# Priority coverage: travel industry news (TTG Media, Travel Weekly UK,
+# Travel Market Report, Business Traveller, Travel And Tour World),
+# travel-tech/AI in travel (Travolution Technology, Hotel Online),
+# OTA/booking industry (Travolution), loyalty/travel commerce (The Points
+# Guy). Startup launches/funding shows up inside Travolution Technology's
+# own coverage (e.g. "TravelX ... closes $45M Series A") rather than a
+# dedicated feed - no reliably fetchable dedicated startup-funding travel
+# source was found (Crunchbase/FinSMEs/TechCrunch all blocked the fetcher).
+_CURATED_MARKET_SOURCES: tuple[tuple[str, str], ...] = (
+    ("Travolution", "https://www.travolution.com/"),
+    ("Travolution — Technology", "https://www.travolution.com/travel-sectors/technology"),
+    ("Hotel Online", "https://hotel-online.com/"),
+    ("The Points Guy — News", "https://thepointsguy.com/news/"),
+    ("The Points Guy — Airline", "https://thepointsguy.com/airline/"),
+    ("TTG Media", "https://www.ttgmedia.com/news"),
+    ("Travel And Tour World", "https://www.travelandtourworld.com/"),
+    ("Travel Weekly UK", "https://www.travelweekly.co.uk/"),
+    ("Business Traveller", "https://www.businesstraveller.com/"),
+    ("Travel Market Report", "https://www.travelmarketreport.com/"),
+)
+_MAX_FACTS_PER_CURATED_SOURCE = 3
+
+# Filters out generic sentence-leading capitalized words that are not brand
+# names, so a headline like "New AI Travel Planner Launches in Asia" does
+# not get slugged as "new".
+_GENERIC_LEADING_WORDS = frozenset({
+    "the", "a", "an", "new", "top", "best", "how", "why", "what", "global",
+    "industry", "travel", "hotel", "hotels", "airline", "airlines", "world",
+    "this", "these", "major", "leading",
+})
+
 _CLASSIFICATION_PRIORITY = {
     CandidateClassification.DIRECT_COMPETITOR: 0,
     CandidateClassification.POTENTIAL_COMPETITOR: 1,
@@ -149,8 +209,131 @@ class CompetitorDiscoveryService:
                 built.append(candidate)
                 seen_domains.add(candidate.canonical_domain)
 
+        built.extend(await self._scan_curated_sources(workspace_id, known_domains, seen_domains))
+
         built.sort(key=_rank_key)
         return tuple(built[:_MAX_CANDIDATES_RETURNED])
+
+    async def _scan_curated_sources(
+        self, workspace_id: int, known_domains: set[str], seen_domains: set[str],
+    ) -> list[CompetitorCandidate]:
+        """Fixes the coverage gap: WorkspaceSignalRepository alone almost
+        never has industry-news/startup/OTA material (see module docstring),
+        so this reads a small curated list of real, fetchable travel-
+        industry listing pages through the exact same fetch+analyze pipeline
+        as _evaluate_signal above, just with the LLM's key_facts standing in
+        for individual market items instead of one signal = one item.
+
+        upsert_candidate() derives canonical_domain from discovered_url
+        internally (repository is out of scope to change here) - so a fact
+        that names a real, independently verifiable company becomes its own
+        candidate keyed by THAT company's own domain (no collision risk,
+        each is genuinely distinct). A fact that only names something we
+        cannot verify a standalone site for is never a competitor-candidate
+        - see _select_unverified_signal below."""
+        built: list[CompetitorCandidate] = []
+        for source_name, source_url in _CURATED_MARKET_SOURCES:
+            try:
+                page = await asyncio.to_thread(self._fetcher, source_url)
+            except PublicSourceFetchError:
+                continue
+            analysis = await asyncio.to_thread(
+                self._provider.analyze_source, source_text=page.text[:6_000],
+            )
+            if analysis is None:
+                continue
+
+            unverified_candidates: list[tuple[tuple[int, int], str, list[str]]] = []
+            for fact in analysis.key_facts[:_MAX_FACTS_PER_CURATED_SOURCE]:
+                haystack = fact.lower()
+                classification = _classify(haystack)
+                if classification is None:
+                    continue
+                matched = _matched_markers(haystack, classification)
+                slugs = (
+                    _brand_slug_candidates(fact)
+                    if classification is not CandidateClassification.MARKET_SIGNAL else ()
+                )
+
+                # A headline's FIRST capitalized word is often the already-
+                # known subject ("Ryanair approves Fliggy as OTA partner"),
+                # not the newer/more interesting entity later in the
+                # sentence ("Fliggy") - try each candidate in order rather
+                # than only the first, so a later entity that DOES verify
+                # is not missed just because an earlier one didn't.
+                verified_url: str | None = None
+                slug: str | None = None
+                for candidate_slug in slugs:
+                    try:
+                        verified = await asyncio.to_thread(
+                            self._fetcher, f"https://{candidate_slug}.com",
+                        )
+                    except PublicSourceFetchError:
+                        continue
+                    # A successful fetch alone is not enough: Title Case
+                    # headlines capitalize ordinary words too ("...Empower
+                    # Independent Hotels...") and some of those happen to be
+                    # real, unrelated companies' domains (empower.com is a
+                    # real fintech site, not a travel one). Require the
+                    # verified page to actually look travel-relevant itself
+                    # before trusting it as a competitor's own site.
+                    if not _looks_travel_relevant(f"{verified.title} {verified.text[:2000]}"):
+                        continue
+                    verified_url = verified.final_url
+                    slug = candidate_slug
+                    break
+
+                if verified_url is not None:
+                    domain = canonical_domain(verified_url)
+                    if not domain or domain in _EXCLUDED_DOMAINS:
+                        continue
+                    if domain in known_domains or domain in seen_domains:
+                        continue
+                    confidence = (
+                        CandidateConfidence.HIGH if len(matched) >= 2 else CandidateConfidence.MEDIUM
+                    )
+                    candidate = await self._competitors.upsert_candidate(
+                        workspace_id, name=slug.capitalize(), discovered_url=verified_url,
+                        source_title=f"{source_name}: {fact}"[:200], source_url=source_url,
+                        description=fact,
+                        evidence=(
+                            f'Сигнал упоминает: «{matched[0]}»', f'Источник: {source_name}',
+                        ),
+                        confidence=confidence, classification=classification,
+                        why_it_matters=_WHY_IT_MATTERS_TEMPLATES[classification].format(
+                            evidence=matched[0],
+                        ),
+                    )
+                    built.append(candidate)
+                    seen_domains.add(candidate.canonical_domain)
+                else:
+                    priority = (_CLASSIFICATION_PRIORITY[classification], -len(matched))
+                    unverified_candidates.append((priority, fact, matched))
+
+            # At most ONE market-signal candidate per curated page (real
+            # domain = the page itself, honest provenance) - keeps every
+            # fact this source couldn't independently verify from colliding
+            # on the same canonical_domain via the repository's upsert.
+            fallback = _select_unverified_signal(unverified_candidates)
+            if fallback is not None:
+                fact, matched = fallback
+                domain = canonical_domain(source_url)
+                if domain and domain not in _EXCLUDED_DOMAINS and \
+                        domain not in known_domains and domain not in seen_domains:
+                    candidate = await self._competitors.upsert_candidate(
+                        workspace_id, name=source_name, discovered_url=source_url,
+                        source_title=f"{source_name}: {fact}"[:200], source_url=source_url,
+                        description=fact,
+                        evidence=(f'Сигнал упоминает: «{matched[0]}»',),
+                        confidence=CandidateConfidence.MEDIUM,
+                        classification=CandidateClassification.MARKET_SIGNAL,
+                        why_it_matters=_WHY_IT_MATTERS_TEMPLATES[
+                            CandidateClassification.MARKET_SIGNAL
+                        ].format(evidence=matched[0]),
+                    )
+                    built.append(candidate)
+                    seen_domains.add(candidate.canonical_domain)
+        return built
 
     async def _evaluate_signal(
         self, workspace_id: int, record: WorkspaceSignalRecord,
@@ -228,3 +411,52 @@ def _rank_key(candidate: CompetitorCandidate) -> tuple[int, int]:
         _CLASSIFICATION_PRIORITY[candidate.classification],
         _CONFIDENCE_PRIORITY[candidate.confidence],
     )
+
+
+_TRAVEL_RELEVANCE_WORDS = (
+    "travel", "trip", "hotel", "flight", "book", "tour", "vacation",
+    "airline", "cruise", "destination", "itinerary", "resort", "vacat",
+    "путешеств", "тур", "отел", "авиа", "брониров", "поездк",
+)
+
+
+def _looks_travel_relevant(text: str) -> bool:
+    lowered = text.lower()
+    return any(word in lowered for word in _TRAVEL_RELEVANCE_WORDS)
+
+
+_MAX_BRAND_SLUG_CANDIDATES = 3
+
+
+def _brand_slug_candidates(text: str) -> tuple[str, ...]:
+    """Capitalized, non-generic words in a headline-like sentence, in
+    order of appearance - a cheap stand-in for named-entity recognition (no
+    ML classifier per spec). Each is only a domain-verification GUESS: a
+    candidate is trusted as a real company site only if
+    fetch_public_source_sync actually reaches https://{slug}.com - see
+    _scan_curated_sources. Multiple candidates (not just the first word)
+    matter because a headline's leading word is often the already-known
+    subject ("Ryanair approves Fliggy..."), not the newer entity the
+    sentence is actually about ("Fliggy")."""
+    seen: list[str] = []
+    for word in text.split():
+        core = word.strip(".,;:!?()\"'").replace("’s", "").replace("'s", "")
+        if core and core.isalpha() and len(core) > 2 and core[0].isupper():
+            lowered = core.lower()
+            if lowered not in _GENERIC_LEADING_WORDS and lowered not in seen:
+                seen.append(lowered)
+                if len(seen) >= _MAX_BRAND_SLUG_CANDIDATES:
+                    break
+    return tuple(seen)
+
+
+def _select_unverified_signal(
+    candidates: list[tuple[tuple[int, int], str, list[str]]],
+) -> tuple[str, list[str]] | None:
+    """Strongest fact among those a curated page offered but could not be
+    independently verified as a real company site - lowest priority tuple
+    (best classification, then most matched keywords) wins."""
+    if not candidates:
+        return None
+    _, fact, matched = min(candidates, key=lambda item: item[0])
+    return fact, matched
