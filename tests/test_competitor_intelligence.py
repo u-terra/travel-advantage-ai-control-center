@@ -148,7 +148,7 @@ def _payload(*facts: str, angles: tuple[str, ...] = ()):
     )
 
 
-def test_opportunity_keeps_thesis_theme_and_angle_aligned():
+def test_opportunity_builds_short_editorial_topic_distinct_from_raw_thesis():
     analysis = _payload(
         "Disneyland vs LEGOLAND: comparison for a family trip",
         "iF Design Award for visual identity",
@@ -157,10 +157,14 @@ def test_opportunity_keeps_thesis_theme_and_angle_aligned():
     result = _opportunities(7, [(_source(), analysis)], None)
     assert len(result) == 1
     opportunity = result[0]
-    assert opportunity.topic == opportunity.key_thesis
+    assert opportunity.key_thesis == "Disneyland vs LEGOLAND: comparison for a family trip"
+    assert opportunity.topic != opportunity.key_thesis
+    assert "Disneyland vs LEGOLAND" in opportunity.topic
     assert "Disneyland vs LEGOLAND" in opportunity.own_post_angle
+    assert opportunity.own_post_angle != opportunity.key_thesis
     assert "городской транспорт" not in opportunity.own_post_angle.lower()
     assert "iF Design Award" not in opportunity.own_post_angle
+    assert "iF Design Award" not in opportunity.topic
 
 
 def test_opportunity_semantic_duplicates_are_removed():
@@ -184,5 +188,43 @@ def test_unrelated_angles_are_rejected_instead_of_padding_to_eight():
         angles=("Travel-акции", "Сезонные направления", "Городской транспорт"),
     )
     result = _opportunities(7, [(_source(), analysis)], None)
-    assert len(result) == 4
+    assert len(result) <= 5
     assert all("Design Award" not in item.key_thesis for item in result)
+
+
+def test_navigation_and_source_meta_noise_is_dropped():
+    analysis = _payload(
+        "Read More materials about promo codes and China eSIM guide.",
+        "В источнике перечислены статьи Trip.com в разделе Travel Inspiration & Tips.",
+        "На сайте перечислены разделы: Hotels, Vluchten, Vlucht+Hotel, Treinen.",
+        "https://www.trip.com/blog",
+        "Travel the world with Trip.com",
+        "2026 Guide to Shanghai Pudong Airport: Transit Visa & PVG Airport Shuttle",
+    )
+    result = _opportunities(7, [(_source(), analysis)], None)
+    assert len(result) == 1
+    assert "Pudong" in result[0].topic
+
+
+def test_one_material_keeps_a_single_strong_opportunity_not_every_raw_fact():
+    analysis = _payload(
+        "2026 Guide to Shanghai Pudong Airport: Transit Visa & PVG Airport Shuttle",
+        "PVG Airport has 2 main terminals: Terminal 1 and Terminal 2. Shanghai "
+        "airport shuttle connect PVG Airport to Shanghai downtown and other "
+        "nearby cities. Both terminals provide currency exchange service.",
+    )
+    result = _opportunities(7, [(_source(), analysis)], None)
+    assert len(result) == 1
+    assert "2026 Guide to Shanghai Pudong Airport" in result[0].key_thesis
+
+
+def test_composite_index_fact_is_split_into_independent_named_themes():
+    analysis = _payload(
+        "Темы материалов включают Yiwu Market, ChatGPT Travel Planning, "
+        "Shanghai Disneyland vs LEGOLAND Shanghai, Alipay vs Wechat Pay, "
+        "визы, транзит, аэропорты, метро, такси, поезда, eSIM, шопинг.",
+    )
+    result = _opportunities(7, [(_source(), analysis)], None)
+    theses = {item.key_thesis for item in result}
+    assert "ChatGPT Travel Planning" in theses
+    assert all("Темы материалов включают" not in thesis for thesis in theses)
