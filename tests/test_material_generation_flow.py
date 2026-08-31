@@ -546,3 +546,63 @@ def test_provider_material_type_mapping_fails_closed_for_unmapped_artifact():
     )
     with pytest.raises(ValueError, match="не поддерживается"):
         build_provider_generation_request(spec)
+
+
+# --- Usage Cost & Subscription Foundation: this is the main Content
+# Factory generation flow the ledger is meant to cover first (see the Cost
+# Visibility report).
+
+def test_generation_records_real_usage_when_content_factory_returns_it(tmp_path):
+    from app.domain.usage import LLMUsage
+    from app.repositories.partner_repository import PartnerRepository
+    from app.repositories.usage_ledger_repository import UsageLedgerRepository
+
+    db_path = tmp_path / "db.sqlite3"
+    partners = PartnerRepository(db_path)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    ledger = UsageLedgerRepository(db_path)
+    run(ledger.init())
+
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies(workspace_id=workspace.id)
+    provider = FakeLLMProvider(draft=ContentDraft(
+        "Черновик", (), usage=LLMUsage(input_tokens=200, output_tokens=80, total_tokens=280),
+    ))
+    run(generate_source_material(
+        callback, partner, artifacts, analyses, provider, profiles,
+        usage_ledger_repository=ledger,
+    ))
+
+    summary = run(ledger.summary_for_workspace(workspace.id))
+    assert summary.total_calls == 1
+    assert summary.successful_calls == 1
+    assert summary.total_tokens == 280
+    module = summary.by_module[0]
+    assert module.module == "content_factory_post"
+
+
+def test_generation_failure_is_still_recorded_as_a_failed_call(tmp_path):
+    from app.domain.usage import UsageStatus
+    from app.repositories.partner_repository import PartnerRepository
+    from app.repositories.usage_ledger_repository import UsageLedgerRepository
+
+    db_path = tmp_path / "db.sqlite3"
+    partners = PartnerRepository(db_path)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    ledger = UsageLedgerRepository(db_path)
+    run(ledger.init())
+
+    callback = Callback("source_material_format:20:telegram")
+    partner, artifacts, analyses, profiles = dependencies(workspace_id=workspace.id)
+    provider = FakeLLMProvider(draft=None)
+    run(generate_source_material(
+        callback, partner, artifacts, analyses, provider, profiles,
+        usage_ledger_repository=ledger,
+    ))
+
+    events = run(ledger.list_for_workspace(workspace.id))
+    assert len(events) == 1
+    assert events[0].status is UsageStatus.FAILURE
+    assert events[0].total_tokens is None

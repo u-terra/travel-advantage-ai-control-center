@@ -175,3 +175,55 @@ def test_transport_failure_is_hidden_behind_none() -> None:
             source_text="x", material_type="market_offer",
             output_format="telegram", mode="ai",
         ) is None
+
+
+# --- Usage Cost & Subscription Foundation: Content Factory does not send
+# usage today (confirmed on production - see the Cost Visibility report),
+# but this parses it the moment it's added, without a code change here.
+
+def test_draft_carries_real_usage_when_content_factory_returns_it() -> None:
+    from app.domain.usage import LLMUsage
+
+    raw = {
+        "ok": True, "text": "Черновик", "warnings": [],
+        "usage": {"input_tokens": 120, "output_tokens": 45, "total_tokens": 165},
+    }
+    with patch("urllib.request.urlopen", return_value=Response(raw)):
+        draft = create_llm_provider("openai", content_factory_config=CONFIG).generate_draft(
+            source_text="Контекст", material_type="market_offer",
+            output_format="telegram", mode="ai",
+        )
+    assert draft.usage == LLMUsage(input_tokens=120, output_tokens=45, total_tokens=165)
+
+
+def test_draft_usage_is_none_when_content_factory_omits_it() -> None:
+    raw = {"ok": True, "text": "Черновик", "warnings": []}
+    with patch("urllib.request.urlopen", return_value=Response(raw)):
+        draft = create_llm_provider("openai", content_factory_config=CONFIG).generate_draft(
+            source_text="Контекст", material_type="market_offer",
+            output_format="telegram", mode="ai",
+        )
+    assert draft.usage is None  # honest gap, never estimated from text length
+
+
+def test_analysis_carries_real_usage_when_content_factory_returns_it() -> None:
+    from app.domain.usage import LLMUsage
+
+    raw = {
+        "ok": True,
+        "analysis": {
+            "summary": "Итог", "key_facts": [], "disputed_claims": [],
+            "audience_value": "Польза", "target_audiences": [],
+            "content_angles": [], "recommended_formats": [], "warnings": [],
+        },
+        "usage": {"input_tokens": 300, "output_tokens": 90},
+    }
+    config = ContentFactoryConfig(
+        "http://factory/internal/generate", "secret-token", 7.5,
+        "http://factory/internal/analyze-source",
+    )
+    with patch("urllib.request.urlopen", return_value=Response(raw)):
+        payload = create_llm_provider(
+            "openai", content_factory_config=config
+        ).analyze_source(source_text="Новость")
+    assert payload.usage == LLMUsage(input_tokens=300, output_tokens=90, total_tokens=None)

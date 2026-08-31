@@ -133,13 +133,14 @@ class CompetitorIntelligenceService:
             analysis = await asyncio.to_thread(
                 self._provider.analyze_source, source_text=source.text[:6_000],
             )
-            # Usage Cost & Subscription Foundation: Content Factory's HTTP
-            # transport doesn't return token usage, so this is a call-count/
-            # status record only - see app/services/usage_recorder.py.
+            # Usage Cost & Subscription Foundation: analysis.usage is real
+            # tokens if/when Content Factory's response includes them (see
+            # app/services/content_factory.py); today it's None.
             await record_llm_call(
                 self._usage_ledger, workspace_id=competitor.workspace_id,
                 telegram_user_id=None, module="competitor_intelligence",
                 provider=self._provider.name,
+                usage=analysis.usage if analysis is not None else None,
                 status=UsageStatus.SUCCESS if analysis is not None else UsageStatus.FAILURE,
             )
             if analysis is None:

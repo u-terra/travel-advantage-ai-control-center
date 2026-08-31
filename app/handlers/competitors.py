@@ -600,6 +600,7 @@ async def discover_new_competitors(
     workspace_signal_repository: WorkspaceSignalRepository | None,
     llm_provider: LLMProvider,
     partner_repository: PartnerRepository,
+    usage_ledger_repository: UsageLedgerRepository | None = None,
 ) -> None:
     await callback.answer()
     if callback.message is None or workspace_context is None:
@@ -613,6 +614,7 @@ async def discover_new_competitors(
 
     service = CompetitorDiscoveryService(
         workspace_signal_repository, competitor_repository, llm_provider,
+        usage_ledger_repository=usage_ledger_repository,
     )
     candidates = await service.discover(workspace_context.workspace_id, own_domain=own_domain)
     if not candidates:

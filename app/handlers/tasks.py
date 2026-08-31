@@ -12,6 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from app.cards import build_card
 from app.domain.orchestration import OutputFormat
 from app.domain.partners import WorkspaceContext
+from app.domain.usage import UsageStatus
 from app.domain.work import WorkSubjectValidationError, work_item_revision
 from app.handlers.menu import AwaitReplySubject, AwaitTask, BUTTON_HINTS
 from app.handlers.source_analysis import run_source_analysis
@@ -35,6 +36,7 @@ from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
+from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.routing.keywords import REWRITE_ACTION_KEYWORDS
@@ -52,6 +54,7 @@ from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.reference_resolver import ReferenceResolver, ResolvedActionContext
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
+from app.services.usage_recorder import record_llm_call
 from app.services.user_style import UserStyleService
 from app.storage import Journal
 from app.telegram_chunks import chunk_text
@@ -384,6 +387,7 @@ async def on_free_text(
     workspace_signal_repository: WorkspaceSignalRepository | None = None,
     lead_radar_config: LeadRadarConfig | None = None,
     reference_resolver: ReferenceResolver | None = None,
+    usage_ledger_repository: UsageLedgerRepository | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -462,6 +466,7 @@ async def on_free_text(
         conversation_state_repository=conversation_state_repository,
         state=state, v2_menu_enabled=v2_menu_enabled,
         reference_resolver=reference_resolver,
+        usage_ledger_repository=usage_ledger_repository,
     )
     await record_turn(
         state, role="assistant",
@@ -705,6 +710,7 @@ async def _maybe_send_module_result(
     state: FSMContext | None = None,
     v2_menu_enabled: bool = False,
     reference_resolver: ReferenceResolver | None = None,
+    usage_ledger_repository: UsageLedgerRepository | None = None,
 ) -> bool:
     # Slice 1: one turn-local retrieval after the existing route decision and
     # before any generation.  Known non-KB modules bypass even the resolver;
@@ -790,6 +796,7 @@ async def _maybe_send_module_result(
         conversation_state_repository=conversation_state_repository,
         reply_context=reply_context,
         knowledge_bundle=knowledge_bundle,
+        usage_ledger_repository=usage_ledger_repository,
     )
     return False
 
@@ -1041,6 +1048,7 @@ async def _maybe_send_draft(
     conversation_state_repository: ConversationStateRepository | None = None,
     reply_context: ReplyBridgeContext | None = None,
     knowledge_bundle: KnowledgeBundle | None = None,
+    usage_ledger_repository: UsageLedgerRepository | None = None,
 ) -> None:
     workspace_id = workspace_context.workspace_id
     # Radar UX / free-text fix: раньше сюда дополнительно требовалось буквальное
@@ -1101,6 +1109,18 @@ async def _maybe_send_draft(
         material_type=provider_request.material_type,
         output_format=provider_request.output_format,
         mode=_DRAFT_MODE,
+    )
+    # Usage Cost & Subscription Foundation: covers both the regular Content
+    # Factory post flow AND Travel Assistant grounded (knowledge_bundle)
+    # generation - they share this one call site. draft.usage is real
+    # tokens if/when Content Factory starts returning them (see
+    # app/services/content_factory.py); today it's None (honest gap).
+    await record_llm_call(
+        usage_ledger_repository, workspace_id=workspace_id,
+        telegram_user_id=workspace_context.telegram_user_id,
+        module="travel_assistant_grounded" if is_client_reply else "content_factory_post",
+        provider=provider.name, usage=draft.usage if draft is not None else None,
+        status=UsageStatus.SUCCESS if draft is not None else UsageStatus.FAILURE,
     )
     if draft is None:
         await message.answer(_DRAFT_FAILURE_MESSAGE)

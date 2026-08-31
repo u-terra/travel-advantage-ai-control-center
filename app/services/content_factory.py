@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.domain.content_intelligence import classification_from_payload
+from app.domain.usage import LLMUsage
 from app.services.classification_contract import (
     CLASSIFICATION_KEY,
     build_classification_request,
@@ -84,6 +85,34 @@ def _analysis_endpoint(config: ContentFactoryConfig) -> str | None:
         path = path[: -len("/internal/generate")] + "/internal/analyze-source"
         return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
     return None
+
+
+def _parse_usage(raw: object) -> LLMUsage | None:
+    """Usage Cost & Subscription Foundation: Content Factory's own OpenAI
+    adapter (/opt/travel_content_factory/ai_providers/openai_provider.py,
+    a separate deployment - not this repo) already receives real token
+    counts from the underlying Responses API but currently only logs them,
+    never returns them. This parses an optional top-level "usage" field
+    (sibling to "ok"/"text"/"analysis") the SAME shape OpenAI's own response
+    already has (input_tokens/output_tokens), so this side is ready the
+    moment that gap is closed - until then `raw` is always None here and
+    this returns None, never a guess."""
+    if not isinstance(raw, dict):
+        return None
+    input_tokens = raw.get("input_tokens")
+    output_tokens = raw.get("output_tokens")
+    total_tokens = raw.get("total_tokens")
+    if not isinstance(input_tokens, int):
+        input_tokens = None
+    if not isinstance(output_tokens, int):
+        output_tokens = None
+    if not isinstance(total_tokens, int):
+        total_tokens = None
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+    return LLMUsage(
+        input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens,
+    )
 
 
 def _string_list(value: object) -> tuple[str, ...] | None:
@@ -154,6 +183,7 @@ def analyze_source_sync(
         # Сломанная или отсутствующая классификация — это None, а не отказ от
         # разбора: текстовый анализ остаётся доступным владельцу.
         classification=classification_from_payload(analysis.get(CLASSIFICATION_KEY)),
+        usage=_parse_usage(data.get("usage")),
     )
 
 
@@ -402,4 +432,6 @@ def generate_draft_sync(
         for w in raw_warnings
         if isinstance(w, (str, int, float)) and str(w).strip()
     )
-    return ContentDraft(text=text.strip(), warnings=warnings)
+    return ContentDraft(
+        text=text.strip(), warnings=warnings, usage=_parse_usage(data.get("usage")),
+    )

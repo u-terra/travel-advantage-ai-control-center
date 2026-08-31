@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.domain.content_intelligence import MaterialClassification
+from app.domain.usage import LLMUsage
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,12 @@ class ContentDraft:
 
     text: str
     warnings: tuple[str, ...]
+    # Usage Cost & Subscription Foundation: real token counts if/when the
+    # underlying provider response includes them - see
+    # app.services.content_factory. None by default so every existing
+    # construction site (tests included) keeps working unchanged; never
+    # estimated from text length.
+    usage: LLMUsage | None = None
 
 
 @dataclass(frozen=True)
@@ -80,3 +87,6 @@ class SourceAnalysisPayload:
     # адаптеры провайдеров и их тесты продолжают работать без изменений,
     # а дубликата контракта разбора источника не появляется.
     classification: MaterialClassification | None = None
+    # Usage Cost & Subscription Foundation - same optional-extension
+    # convention as classification above. See ContentDraft.usage.
+    usage: LLMUsage | None = None

@@ -59,13 +59,16 @@ from app.domain.competitor_discovery import (
     CompetitorCandidate,
     canonical_domain,
 )
+from app.domain.usage import UsageStatus
 from app.planner.fetch import FetchedPublicSource, PublicSourceFetchError, fetch_public_source_sync
 from app.repositories.competitor_repository import CompetitorRepository
+from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.workspace_signal_repository import (
     WorkspaceSignalRecord,
     WorkspaceSignalRepository,
 )
 from app.services.llm.base import LLMProvider
+from app.services.usage_recorder import record_llm_call
 
 _MAX_SIGNALS_SCANNED = 30
 _MAX_CANDIDATES_RETURNED = 5
@@ -175,6 +178,7 @@ class CompetitorDiscoveryService:
         llm_provider: LLMProvider,
         *,
         fetcher: Callable[[str], FetchedPublicSource] | None = None,
+        usage_ledger_repository: UsageLedgerRepository | None = None,
     ) -> None:
         self._signals = workspace_signal_repository
         self._competitors = competitor_repository
@@ -183,6 +187,7 @@ class CompetitorDiscoveryService:
         # patch app.services.competitor_discovery.fetch_public_source_sync
         # without needing to thread a fake through every caller/handler.
         self._fetcher = fetcher or fetch_public_source_sync
+        self._usage_ledger = usage_ledger_repository
 
     async def discover(
         self, workspace_id: int, *, own_domain: str | None = None,
@@ -239,6 +244,12 @@ class CompetitorDiscoveryService:
                 continue
             analysis = await asyncio.to_thread(
                 self._provider.analyze_source, source_text=page.text[:6_000],
+            )
+            await record_llm_call(
+                self._usage_ledger, workspace_id=workspace_id, telegram_user_id=None,
+                module="competitor_discovery", provider=self._provider.name,
+                usage=analysis.usage if analysis is not None else None,
+                status=UsageStatus.SUCCESS if analysis is not None else UsageStatus.FAILURE,
             )
             if analysis is None:
                 continue
@@ -365,6 +376,12 @@ class CompetitorDiscoveryService:
         if source is not None:
             analysis = await asyncio.to_thread(
                 self._provider.analyze_source, source_text=source.text[:6_000],
+            )
+            await record_llm_call(
+                self._usage_ledger, workspace_id=workspace_id, telegram_user_id=None,
+                module="competitor_discovery", provider=self._provider.name,
+                usage=analysis.usage if analysis is not None else None,
+                status=UsageStatus.SUCCESS if analysis is not None else UsageStatus.FAILURE,
             )
             if analysis is not None:
                 description = analysis.summary or description

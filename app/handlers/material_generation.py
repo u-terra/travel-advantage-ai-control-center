@@ -203,14 +203,14 @@ async def generate_source_material(
         output_format=request.output_format,
         mode=_MODE,
     )
-    # Usage Cost & Subscription Foundation: Content Factory's HTTP transport
-    # does not return token usage (confirmed during the audit), so this is a
-    # call-count/status record only - token/cost fields stay None rather
-    # than being guessed. See app/services/usage_recorder.py.
+    # Usage Cost & Subscription Foundation: draft.usage is real tokens
+    # if/when Content Factory's response includes them (see
+    # app/services/content_factory.py); today it's None (honest gap, not
+    # estimated from text length). See app/services/usage_recorder.py.
     await record_llm_call(
         usage_ledger_repository, workspace_id=workspace_context.workspace_id,
         telegram_user_id=workspace_context.telegram_user_id, module="content_factory_post",
-        provider=llm_provider.name,
+        provider=llm_provider.name, usage=draft.usage if draft is not None else None,
         status=UsageStatus.SUCCESS if draft is not None else UsageStatus.FAILURE,
     )
     if draft is None:
