@@ -90,11 +90,13 @@ def _verified_claim_facts(
 def _priority_facts(
     facts: tuple[KnowledgeFact, ...], *, limit: int,
 ) -> tuple[KnowledgeFact, ...]:
+    core_definition_fact_types = ("platform_type", "platform_use")
     priority_markers = (
         "conversion", "transfer", "member_bonus", "builder_bonus",
         "compensation", "guarantee",
     )
     prioritized = (
+        *(fact for fact in facts if fact.fact_type in core_definition_fact_types),
         *facts[:1],
         *(fact for fact in facts if any(marker in fact.stable_key for marker in priority_markers)),
         *facts[1:],

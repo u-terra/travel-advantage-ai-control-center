@@ -57,6 +57,16 @@ def test_A_travel_advantage_official_facts_and_provenance_are_structured(tmp_pat
     assert question in untrusted
 
 
+def test_A_definition_prioritizes_core_product_facts_over_booking_details(tmp_path):
+    request = generate_for_question(tmp_path, "Что такое Travel Advantage?")
+    core_type = request.index("ta.platform.type.ota")
+    core_use = request.index("ta.platform.use.search_booking")
+    booking_detail = request.index("ta.booking.additional_verification")
+    assert core_type < booking_detail
+    assert core_use < booking_detail
+    assert "ta.best_price_guarantee.rate" not in request
+
+
 def test_B_points_and_credits_rules_are_both_grounded(tmp_path):
     request = generate_for_question(
         tmp_path, "Чем Loyalty Points отличаются от Travel Credits?",
