@@ -161,7 +161,15 @@ def route_text(task_text: str) -> RouteDecision:
     if packaging_score > 0:
         scores[Module.PARTNER_PACKAGING] = packaging_score
 
-    safety = detect_safety_level(text_lower)
+    # Same has_rewrite_action/has_check_action gate as the Safety keyword
+    # scoping above (lines 118-124): an explicit leading rewrite/paraphrase
+    # verb with no explicit check verb means the pasted material is the
+    # user's own source data, not a new claim for the bot to police — see
+    # HIGH_RISK_SAFETY_KEYWORDS in app/routing/safety.py for what still does
+    # trigger Safety in that case.
+    safety = detect_safety_level(
+        text_lower, high_risk_only=has_rewrite_action and not has_check_action,
+    )
     notes: list[str] = []
 
     if not scores:

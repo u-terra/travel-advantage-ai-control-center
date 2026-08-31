@@ -607,6 +607,40 @@ def test_free_text_general_task_without_plan_request_uses_telegram_output_format
     assert spec.output_format.value == "telegram"
 
 
+# --- Fix: "Explicit Rewrite must mean Rewrite" live prod bug — a dedicated
+# rewrite constraint at generation time (defense-in-depth alongside the
+# routing-level fix in app/routing/safety.py and app/routing/router.py):
+# rewrite/paraphrase commands must read as TEXT TRANSFORMATION, preserve the
+# user's own facts/numbers, and not degrade into a fact-check.
+
+def test_free_text_rewrite_command_gets_text_transformation_constraint():
+    text = (
+        "Нужно переписать пост чтобы не обвинили в плагиате: Это шок! "
+        "Экскурсия с частным гидом в Нидерландах за 1,5$ на человека... "
+        "Минимальная стоимость такой экскурсии на других платформах "
+        "17,5€=20.3$. Скидка с учетом примененных баллов лояльности -93%"
+    )
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, text, profile(),
+    )
+    joined = " ".join(spec.constraints)
+    assert "TEXT TRANSFORMATION" in joined
+    assert "не факт-чек и не анализ достоверности" in joined
+    assert "сохрани все факты, цифры и смысл исходника" in joined
+    # Полный исходник (с цифрами) остаётся нетронутым источником, а не
+    # заменяется пересказом/анализом на этапе построения spec.
+    assert spec.untrusted_source_content == text
+    assert "1,5$" in spec.untrusted_source_content
+    assert "-93%" in spec.untrusted_source_content
+
+
+def test_free_text_non_rewrite_task_does_not_get_rewrite_constraint():
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, "Напиши пост про наши услуги", profile(),
+    )
+    assert "TEXT TRANSFORMATION" not in " ".join(spec.constraints)
+
+
 def test_free_text_content_plan_request_uses_weekly_plan_output_format():
     text = (
         "Разработай стратегию ведения группы ВКонтакте. Нужны позиционирование, "

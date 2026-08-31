@@ -361,3 +361,52 @@ def test_rewrite_keyword_alone_without_quoted_content_is_unaffected():
     меняется (rewrite-глаголы и раньше вели в Content Factory через «пост»)."""
     d = route_text("Перепиши этот пост")
     assert d.primary_module is Module.CONTENT_FACTORY
+
+
+# --- Fix: "Explicit Rewrite must mean Rewrite" live prod bug. "Нужно
+# переписать пост..." (infinitive) was missing from REWRITE_ACTION_KEYWORDS
+# (only imperative "перепиши" was listed), so the leading-instruction Safety
+# scoping never engaged and detect_safety_level ran unscoped over the whole
+# pasted post - ordinary prices/discounts (МАNDATORY_SAFETY_KEYWORDS) turned a
+# rewrite into a fact-check. ---
+
+_REAL_PROD_DISCOUNT_POST = (
+    "Нужно переписать пост чтобы не обвинили в плагиате: Это шок! Экскурсия "
+    "с частным гидом в Нидерландах за 1,5$ на человека... Минимальная "
+    "стоимость такой экскурсии на других платформах 17,5€=20.3$. Скидка с "
+    "учетом примененных баллов лояльности -93%"
+)
+
+
+def test_real_production_plagiarism_rewrite_routes_to_content_factory_not_required_safety():
+    d = route_text(_REAL_PROD_DISCOUNT_POST)
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert d.secondary_modules == ()
+    assert not d.is_uncertain
+    assert d.safety_level is SafetyLevel.NOT_REQUIRED
+    assert d.task_text == _REAL_PROD_DISCOUNT_POST
+
+
+def test_infinitive_rewrite_verb_is_recognized_same_as_imperative():
+    imperative = route_text(f"Перепиши чтобы не было плагиата: {_NEUTRAL_QUOTED_POST}")
+    infinitive = route_text(f"Нужно переписать чтобы не было плагиата: {_NEUTRAL_QUOTED_POST}")
+    assert imperative.primary_module is infinitive.primary_module is Module.CONTENT_FACTORY
+    assert imperative.safety_level is infinitive.safety_level is SafetyLevel.NOT_REQUIRED
+
+
+def test_rewrite_of_genuinely_high_risk_claim_still_forces_mandatory_safety():
+    """Real high-risk Safety guards must not be disabled by rewrite framing."""
+    d = route_text(
+        "Переписать пост: Гарантированный доход 50000 рублей в месяц без риска!"
+    )
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert d.safety_level is SafetyLevel.MANDATORY
+
+
+def test_non_rewrite_discount_post_keeps_broad_mandatory_safety():
+    """Regression: the broad MANDATORY_SAFETY_KEYWORDS scan must be unchanged
+    for ordinary (non-rewrite) content-creation requests - only rewrite tasks
+    get the narrower high-risk-only check."""
+    d = route_text("Напиши пост про скидку 20% на отель")
+    assert d.primary_module is Module.CONTENT_FACTORY
+    assert d.safety_level is SafetyLevel.MANDATORY

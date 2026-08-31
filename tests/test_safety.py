@@ -75,3 +75,47 @@ def test_quoted_span_does_not_hide_mandatory_keyword_in_open_text() -> None:
     # встречается вне кавычек, поведение не меняется.
     text = 'группа «путешествуй легко», но у нас выгодный тариф для клиента'
     assert detect_safety_level(text) is SafetyLevel.MANDATORY
+
+
+# --- Fix: "Explicit Rewrite must mean Rewrite" live prod bug. A plain rewrite
+# of the user's own already-published post ("Экскурсия... за 1,5$... Скидка
+# ...-93%") was tripping MANDATORY via ordinary marketing vocabulary
+# (скидк/стоимост/цен) that appears in essentially any travel-deal post,
+# turning a text-transformation task into an unwanted fact-check. high_risk_only
+# narrows detection to genuinely high-risk claims only, for callers (the
+# router's has_rewrite_action gate) that already know this is a rewrite of
+# user-supplied source material, not a request to invent/verify new claims.
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "экскурсия с частным гидом за 1,5$ на человека",
+        "минимальная стоимость такой экскурсии на других платформах 17,5€",
+        "скидка с учётом баллов лояльности -93%",
+        "тарифы и бронирование отеля",
+        "оплата картой, доступность мест",
+        "сравнение с booking и airbnb",
+    ],
+)
+def test_high_risk_only_ignores_ordinary_price_and_discount_vocabulary(phrase: str) -> None:
+    assert detect_safety_level(phrase.lower(), high_risk_only=True) is SafetyLevel.NOT_REQUIRED
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "доход гарантирован уже через месяц",
+        "гарантированный доход 100% без риска",
+        "поставим точный диагноз по фото",
+        "юридическая консультация по вашему делу гарантирована",
+        "нелегальный въезд без визы",
+    ],
+)
+def test_high_risk_only_still_catches_genuinely_dangerous_claims(phrase: str) -> None:
+    assert detect_safety_level(phrase.lower(), high_risk_only=True) is SafetyLevel.MANDATORY
+
+
+def test_high_risk_only_does_not_change_default_behavior() -> None:
+    text = "скидка для клиента"
+    assert detect_safety_level(text) is SafetyLevel.MANDATORY
+    assert detect_safety_level(text, high_risk_only=False) is SafetyLevel.MANDATORY

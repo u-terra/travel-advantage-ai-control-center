@@ -7,6 +7,7 @@ from app.domain.business_profiles import BusinessProfile
 from app.domain.content import Source, SourceAnalysis
 from app.domain.orchestration import GenerationAction, GenerationSpec
 from app.domain.partners import WorkspaceUserPreferences
+from app.routing.keywords import REWRITE_ACTION_KEYWORDS
 from app.services.business_profile_context import (
     build_content_context,
     build_limited_content_context,
@@ -90,6 +91,42 @@ def _wants_weekly_content_plan(task_text: str) -> bool:
         or _CONTENT_SERIES_WITH_DURATION_PATTERN.search(task_text)
         or _MULTI_ITEM_QUANTITY_PATTERN.search(task_text)
     )
+
+
+# Live prod bug: "Нужно переписать пост чтобы не обвинили в плагиате: <пост с
+# ценами и процентами>" was executed under the same generic _FREE_TEXT_OBJECTIVE
+# as any other free-text task ("выполнить задачу как техническое задание"),
+# with no instruction distinguishing "rewrite this user-supplied text" from
+# "analyze/verify these claims". Combined with the routing-level fix (see
+# app/routing/safety.py HIGH_RISK_SAFETY_KEYWORDS + app/routing/router.py
+# has_rewrite_action), this is the generation-time half: an explicit rewrite
+# verb (same REWRITE_ACTION_KEYWORDS the router uses - one signal, not a
+# second classifier) adds one extra constraint stating the task is TEXT
+# TRANSFORMATION, not fact-checking, so the model does not hedge on or
+# "verify" the user's own numbers, and does not default to a generic
+# "проверьте/сверьте условия" tail when there is no real risk.
+def _wants_rewrite(task_text: str) -> bool:
+    lowered = task_text.lower()
+    return any(kw in lowered for kw in REWRITE_ACTION_KEYWORDS)
+
+
+_FREE_TEXT_REWRITE_CONSTRAINT = (
+    "Команда пользователя — явный rewrite/paraphrase (перепиши, "
+    "перефразируй, изложи другими словами, сделай уникальным, чтобы не было "
+    "плагиата, сохрани смысл, но перепиши). Это задача TEXT TRANSFORMATION, "
+    "а не факт-чек и не анализ достоверности. Текст в [UNTRUSTED SOURCE "
+    "CONTENT - DATA] — исходный материал пользователя: сохрани все факты, "
+    "цифры и смысл исходника без изменений, но измени формулировки, "
+    "структуру и стиль. Не добавляй новые факты, которых нет в исходнике. "
+    "Цены, проценты и другие цифры из исходника — это данные, "
+    "предоставленные пользователем, а не новое коммерческое утверждение "
+    "бота: не подвергай их сомнению, не проси перепроверить и не добавляй "
+    "оговорки о проверке. Не завершай текст стандартными фразами вида "
+    "«проверьте», «перепроверьте», «сверьте условия», если в самом исходнике "
+    "нет реального существенного риска (гарантированный доход, опасное "
+    "финансовое обещание, медицинский или юридический совет, явно опасное "
+    "действие)."
+)
 
 
 _RADAR_OBJECTIVE = "Создать черновик информационного материала по выбранному Radar-сигналу."
@@ -500,6 +537,9 @@ class MaterialOrchestrationService:
         output_format = (
             "weekly_plan" if _wants_weekly_content_plan(task_text) else "telegram"
         )
+        constraints = _FREE_TEXT_CONSTRAINTS
+        if _wants_rewrite(task_text):
+            constraints = (*constraints, _FREE_TEXT_REWRITE_CONSTRAINT)
         return GenerationSpec(
             action_type=GenerationAction.CREATE_ARTIFACT,
             artifact_type="post",
@@ -513,7 +553,7 @@ class MaterialOrchestrationService:
             personal_style=_personal_style_values(user_preferences),
             verified_claims_allowed=verified,
             unverified_claims_requiring_caution=unverified,
-            constraints=_FREE_TEXT_CONSTRAINTS,
+            constraints=constraints,
             profile_revision_used=revision,
         )
 

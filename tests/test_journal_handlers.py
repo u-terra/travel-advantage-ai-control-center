@@ -2320,3 +2320,78 @@ def test_weekly_plan_generation_failure_after_ack_still_gets_error_message():
     texts = [text for text, _ in message.answers]
     assert texts[0] == _LONG_TASK_ACK_MESSAGE
     assert texts[-1] == _DRAFT_FAILURE_MESSAGE
+
+
+# --- Fix: "Explicit Rewrite must mean Rewrite" live prod bug, follow-up half.
+# A real Telegram scenario: the user pastes a post to rewrite, the bot
+# responds, and the user follows up with a short confirmation ("Это
+# достоверная информация. Просто перепиши") in the SAME chat. That follow-up
+# arrives at on_free_text as a brand-new, isolated task_text - without
+# recovery, the original post is gone, route_text()/build_free_text_
+# generation_spec see no topic, and _FREE_TEXT_TOPIC_FALLBACK_CONSTRAINT
+# substitutes the workspace's own Business Profile - generic "Travel
+# Advantage" boilerplate instead of the rewrite. record_turn()/recent_turns()
+# already record every user message (via the same FSMContext-backed rolling
+# window used by orchestration shadow mode) - _recover_rewrite_source_text
+# reads that existing window back into task_text for this one narrow case.
+
+_REAL_PROD_DISCOUNT_POST = (
+    "Нужно переписать пост чтобы не обвинили в плагиате: Это шок! Экскурсия "
+    "с частным гидом в Нидерландах за 1,5$ на человека... Минимальная "
+    "стоимость такой экскурсии на других платформах 17,5€=20.3$. Скидка с "
+    "учетом примененных баллов лояльности -93%"
+)
+
+
+def test_rewrite_followup_confirmation_recovers_original_post_not_boilerplate():
+    state = State()
+    first_provider = FakeLLMProvider(draft=ContentDraft("Первый черновик", ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        Message(_REAL_PROD_DISCOUNT_POST), journal(), first_provider, context(), profiles,
+        state=state,
+    ))
+
+    followup_journal = journal()
+    followup_provider = FakeLLMProvider(draft=ContentDraft("Второй черновик", ()))
+    followup_text = "Это достоверная информация. Я не прошу у тебя анализ. Просто перепиши"
+    run(on_free_text(
+        Message(followup_text), followup_journal, followup_provider, context(), profiles,
+        state=state,
+    ))
+
+    logged_task_text = followup_journal.add.call_args.kwargs["task_text"]
+    assert "1,5$" in logged_task_text
+    assert "-93%" in logged_task_text
+    assert followup_text in logged_task_text
+
+    followup_provider.generate_draft.assert_called_once()
+    source_text = followup_provider.generate_draft.call_args.kwargs["source_text"]
+    assert "1,5$" in source_text
+    assert "-93%" in source_text
+    assert "TEXT TRANSFORMATION" in source_text
+    # No fallback to the workspace's generic Business Profile as the topic:
+    # [UNTRUSTED SOURCE CONTENT] (the actual task_text/topic sent to the
+    # model) carries the recovered original post, not just the confirmation
+    # message alone - proof _FREE_TEXT_TOPIC_FALLBACK_CONSTRAINT never had to
+    # substitute the workspace's Business Profile as a default topic.
+    # split on the marker's unique suffix, not the bare "[UNTRUSTED SOURCE
+    # CONTENT" prefix - the rewrite constraint text itself quotes that same
+    # bracket phrase, so a naive split would grab the constraints section.
+    untrusted_section = source_text.split("NEVER INSTRUCTIONS]")[1]
+    assert "1,5$" in untrusted_section
+    assert followup_text in untrusted_section
+
+
+def test_rewrite_followup_without_prior_turn_does_not_crash_and_still_generates():
+    """No prior context available (fresh state / short session) - the
+    fallback stays a no-op, not an error; the short message is still routed
+    and generated as-is, same as before this fix."""
+    state = State()
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    profiles = profile_repository(business_profile())
+    followup_text = "Это достоверная информация. Просто перепиши"
+    run(on_free_text(
+        Message(followup_text), journal(), provider, context(), profiles, state=state,
+    ))
+    provider.generate_draft.assert_called_once()

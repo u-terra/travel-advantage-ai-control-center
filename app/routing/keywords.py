@@ -125,11 +125,27 @@ SAFETY_KEYWORDS: tuple[str, ...] = (
 # конкурировать за приоритет с явной командой пользователя. Список
 # сознательно маленький: конкретные императивы «переделать текст», а не
 # общая тема или синонимы.
+#
+# Live prod bug: «Нужно переписать пост чтобы не обвинили в плагиате: <пост>»
+# used the INFINITIVE "переписать", not the imperative "перепиши" above — this
+# list only had imperative forms, so has_rewrite_action stayed False and the
+# Safety keyword scan (and, downstream, detect_safety_level) ran over the
+# WHOLE message including the pasted post's own numbers, instead of being
+# scoped to the leading instruction. "переписать" and "перефразировать" are
+# the infinitive counterparts of the imperatives already above; "изложи"/
+# "изложить" ("изложи другими словами") and "плагиат" ("чтобы не было
+# плагиата", "не обвинили в плагиате") are the other explicit rewrite phrasings
+# from the same bug report; "сделай/сделать уникальным" requires the verb, not
+# the bare adjective "уникальн", so an unrelated "напиши уникальный пост про…"
+# (new content, not a rewrite of pasted material) does not falsely match.
 REWRITE_ACTION_KEYWORDS: tuple[str, ...] = (
-    "перепиши", "перепишите",
+    "перепиши", "перепишите", "переписать",
     "адаптируй", "адаптируйте",
     "сократи", "сократите",
-    "перефразируй", "перефразируйте",
+    "перефразируй", "перефразируйте", "перефразировать",
+    "изложи", "изложить",
+    "плагиат",
+    "сделай уникальным", "сделать уникальным",
 )
 
 PACKAGING_KEYWORDS: tuple[str, ...] = (

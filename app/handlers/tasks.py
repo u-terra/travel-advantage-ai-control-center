@@ -22,7 +22,7 @@ from app.keyboards import (
     reply_confirm_keyboard,
     uncertain_route_publication_keyboard,
 )
-from app.orchestration.context import record_turn
+from app.orchestration.context import record_turn, recent_turns
 from app.orchestration.provider import OrchestrationLLMProvider
 from app.orchestration.shadow import run_shadow_orchestration
 from app.planner.context import PlannerExecutionContext
@@ -37,6 +37,7 @@ from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
+from app.routing.keywords import REWRITE_ACTION_KEYWORDS
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
@@ -322,6 +323,46 @@ async def on_task_after_button(
     )
 
 
+# Live prod bug: a Telegram follow-up like "Это достоверная информация. Я не
+# прошу у тебя анализ. Просто перепиши" (continuing an earlier rewrite
+# request in the same chat) arrives at on_free_text as a brand-new, isolated
+# task_text - the originally pasted post is nowhere in it. route_text()/
+# build_free_text_generation_spec then see only this short confirmation,
+# find no topic of their own, and _FREE_TEXT_TOPIC_FALLBACK_CONSTRAINT
+# (app/services/material_orchestration.py) substitutes the workspace's own
+# Business Profile as the default topic - generic "Travel Advantage"
+# boilerplate instead of the rewrite the user actually asked for.
+#
+# recent_turns()/record_turn() (app.orchestration.context) already exist and
+# already record every user message (see the call a few lines below) - this
+# only reads that existing rolling window BACK into task_text, and only for
+# a narrow case: a short message that itself asks for a rewrite/paraphrase
+# action but is too short to be a source post of its own, with an earlier,
+# substantially longer user turn available to be that source.
+_REWRITE_FOLLOWUP_MAX_LEN = 150
+_REWRITE_FOLLOWUP_MIN_SOURCE_LEN = 40
+
+
+def _looks_like_bare_rewrite_followup(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        len(text) <= _REWRITE_FOLLOWUP_MAX_LEN
+        and any(kw in lowered for kw in REWRITE_ACTION_KEYWORDS)
+    )
+
+
+async def _recover_rewrite_source_text(state: FSMContext | None, task_text: str) -> str:
+    if not _looks_like_bare_rewrite_followup(task_text):
+        return task_text
+    previous_user_turns = [turn for turn in await recent_turns(state) if turn.role == "user"]
+    if not previous_user_turns:
+        return task_text
+    previous = previous_user_turns[-1]
+    if len(previous.text) < _REWRITE_FOLLOWUP_MIN_SOURCE_LEN:
+        return task_text
+    return f"{previous.text}\n\n{task_text}"
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_free_text(
     message: Message,
@@ -388,6 +429,7 @@ async def on_free_text(
         # Controlled fallback: fall through to the existing router flow
         # below exactly as if Planner had never been attempted.
 
+    task_text = await _recover_rewrite_source_text(state, task_text)
     decision = route_text(task_text)
     await journal.add(
         workspace_context.workspace_id,
