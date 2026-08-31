@@ -51,6 +51,7 @@ from app.services.generation_request_builder import build_provider_generation_re
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.user_style import UserStyleService
 
 router = Router(name="competitors")
 log = logging.getLogger(__name__)
@@ -450,12 +451,19 @@ async def create_from_competitor_opportunity(callback: CallbackQuery,
     if opportunity is None:
         return
     profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
+    # Stage 3B1 parity: остальные Content Factory flow (material_generation.py,
+    # tasks.py) всегда подмешивают личный стиль ТЕКУЩЕГО пользователя через
+    # UserStyleService — без этого вызова build_competitor_signal_generation_spec
+    # получает user_preferences=None и молча теряет avoid_phrases/example_posts,
+    # даже если build_* сам умеет их принять.
+    user_preferences = await UserStyleService(partner_repository).get(workspace_context)
     spec = MaterialOrchestrationService().build_competitor_signal_generation_spec(
         workspace_context.workspace_id, profile,
         competitor_signal=opportunity.topic, key_thesis=opportunity.key_thesis,
         own_post_angle=opportunity.own_post_angle, audience_value=opportunity.audience_value,
         source_title=opportunity.source_title, source_url=opportunity.source_url,
         travel_advantage_link=opportunity.travel_advantage_link,
+        user_preferences=user_preferences,
     )
     request = build_provider_generation_request(spec, limit=6000)
     draft = await asyncio.to_thread(llm_provider.generate_draft,

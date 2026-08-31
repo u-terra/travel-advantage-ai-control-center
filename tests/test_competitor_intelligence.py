@@ -18,7 +18,9 @@ from app.services.competitor_intelligence import (
 from app.services.knowledge_service import KnowledgeBundle
 from app.services.llm.models import ContentDraft, SourceAnalysisPayload
 from tests.llm_fakes import FakeLLMProvider
-from tests.test_journal_handlers import Callback, business_profile, context, profile_repository
+from tests.test_journal_handlers import (
+    Callback, business_profile, context, profile_repository, user_preferences,
+)
 
 
 def run(coro):
@@ -132,6 +134,43 @@ def test_intelligence_round_trip_and_selected_opportunity_uses_content_factory(t
     assert "не рекламируй" in source_text
     assert "проверяйте срок акции, условия, направление и даты" in source_text
     assert "Оригинальный материал" in callback.message.answers[-1][0]
+
+
+def test_competitor_opportunity_draft_inherits_personal_style(tmp_path):
+    """Same Stage 3B1 parity as every other Content Factory flow
+    (material_generation.py, tasks.py): the current user's personal style
+    must reach the provider request, not just the workspace Business
+    Profile."""
+    partners = PartnerRepository(tmp_path / "db.sqlite3")
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    repository = CompetitorRepository(tmp_path / "db.sqlite3")
+    run(repository.init())
+    competitor = run(repository.add_competitor(
+        workspace.id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
+    ))
+    service, _, _ = _service()
+    intelligence = run(service.analyze(competitor))
+    run(repository.save_intelligence(workspace.id, intelligence))
+
+    callback = Callback()
+    callback.data = f"competitor:create:{competitor.id}:{intelligence.opportunities[0].id}"
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    profiles = profile_repository(business_profile(workspace.id))
+    profiles.get_user_preferences = AsyncMock(return_value=user_preferences(
+        telegram_user_id=100, workspace_id=workspace.id,
+        style_description="Пишу с юмором", example_posts=("Пример поста",),
+        avoid_phrases=("лучший тур",),
+    ))
+
+    run(create_from_competitor_opportunity(
+        callback, repository, context(workspace.id), provider, profiles,
+    ))
+    source_text = provider.generate_draft.call_args.kwargs["source_text"]
+    assert "[PERSONAL STYLE - DATA]" in source_text
+    assert "Пишу с юмором" in source_text
+    assert "Пример поста" in source_text
+    assert "лучший тур" in source_text
 
 
 def _source(title="Source"):
