@@ -22,15 +22,18 @@ from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
+from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.services.conversation_state_service import ConversationStateService
 from app.services.generation_request_builder import (
     SourceAnalysisRequestTooLargeError,
     build_source_analysis_provider_request,
 )
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.usage_recorder import record_llm_call
 from app.services.user_style import UserStyleService
 from app.services.llm.base import LLMProvider
 from app.domain.partners import WorkspaceContext
+from app.domain.usage import UsageStatus
 
 router = Router(name="material_generation")
 log = logging.getLogger(__name__)
@@ -149,6 +152,7 @@ async def generate_source_material(
     llm_provider: LLMProvider,
     partner_repository: PartnerRepository,
     conversation_state_repository: ConversationStateRepository | None = None,
+    usage_ledger_repository: UsageLedgerRepository | None = None,
 ) -> None:
     data = (callback.data or "").removeprefix(SOURCE_MATERIAL_FORMAT_PREFIX)
     parts = data.split(":")
@@ -198,6 +202,16 @@ async def generate_source_material(
         material_type=request.material_type,
         output_format=request.output_format,
         mode=_MODE,
+    )
+    # Usage Cost & Subscription Foundation: Content Factory's HTTP transport
+    # does not return token usage (confirmed during the audit), so this is a
+    # call-count/status record only - token/cost fields stay None rather
+    # than being guessed. See app/services/usage_recorder.py.
+    await record_llm_call(
+        usage_ledger_repository, workspace_id=workspace_context.workspace_id,
+        telegram_user_id=workspace_context.telegram_user_id, module="content_factory_post",
+        provider=llm_provider.name,
+        status=UsageStatus.SUCCESS if draft is not None else UsageStatus.FAILURE,
     )
     if draft is None:
         await callback.message.answer(_FAILURE)

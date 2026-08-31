@@ -213,6 +213,16 @@ def classify_sync(
             log.warning("orchestration_openai: empty content in response")
             return None
 
+        # Usage Cost & Subscription Foundation: this is the one live LLM
+        # path in the deployment that actually receives real token counts
+        # (Content Factory's HTTP transport does not - see the report).
+        # Log-only for now, same pattern already used by
+        # app/planner/openai_provider.py:222 - persisting it to the usage
+        # ledger needs request-level context (workspace_id/module) this
+        # low-level HTTP adapter doesn't have, without changing classify()'s
+        # documented "raw JSON or None, never raises" contract.
+        log.info("orchestration_openai: model=%s usage=%s", config.model, data.get("usage"))
+
         try:
             return json.loads(content)
         except ValueError:

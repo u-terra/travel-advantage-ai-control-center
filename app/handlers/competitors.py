@@ -49,6 +49,7 @@ from app.repositories.competitor_repository import (
 )
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
+from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.competitor_discovery import CompetitorDiscoveryService
 from app.services.competitor_intelligence import (
@@ -373,13 +374,16 @@ async def _refresh_competitor(
     callback: CallbackQuery, prefix: str, repository: CompetitorRepository,
     workspace_context: WorkspaceContext | None, provider: LLMProvider,
     knowledge_service: KnowledgeService,
+    usage_ledger_repository: UsageLedgerRepository | None = None,
 ) -> None:
     competitor = await _competitor_for_callback(callback, prefix, repository, workspace_context)
     if competitor is None or callback.message is None or workspace_context is None:
         return
     await callback.message.answer("Собираю публичные источники и готовлю внутренний анализ…")
     try:
-        intelligence = await CompetitorIntelligenceService(provider, knowledge_service).analyze(competitor)
+        intelligence = await CompetitorIntelligenceService(
+            provider, knowledge_service, usage_ledger_repository=usage_ledger_repository,
+        ).analyze(competitor)
     except CompetitorIntelligenceUnavailable as exc:
         await callback.message.answer(f"Не удалось обновить анализ: {exc}")
         return
@@ -393,19 +397,21 @@ async def _refresh_competitor(
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_ANALYZE_PREFIX))
 async def analyze_competitor(callback: CallbackQuery, competitor_repository: CompetitorRepository,
     workspace_context: WorkspaceContext | None, llm_provider: LLMProvider,
-    knowledge_service: KnowledgeService) -> None:
+    knowledge_service: KnowledgeService,
+    usage_ledger_repository: UsageLedgerRepository | None = None) -> None:
     await callback.answer()
     await _refresh_competitor(callback, COMPETITOR_ANALYZE_PREFIX, competitor_repository,
-        workspace_context, llm_provider, knowledge_service)
+        workspace_context, llm_provider, knowledge_service, usage_ledger_repository)
 
 
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_REFRESH_PREFIX))
 async def refresh_competitor(callback: CallbackQuery, competitor_repository: CompetitorRepository,
     workspace_context: WorkspaceContext | None, llm_provider: LLMProvider,
-    knowledge_service: KnowledgeService) -> None:
+    knowledge_service: KnowledgeService,
+    usage_ledger_repository: UsageLedgerRepository | None = None) -> None:
     await callback.answer()
     await _refresh_competitor(callback, COMPETITOR_REFRESH_PREFIX, competitor_repository,
-        workspace_context, llm_provider, knowledge_service)
+        workspace_context, llm_provider, knowledge_service, usage_ledger_repository)
 
 
 async def _snapshot(callback: CallbackQuery, prefix: str, repository: CompetitorRepository,

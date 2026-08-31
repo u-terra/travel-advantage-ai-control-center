@@ -12,10 +12,13 @@ from app.domain.competitor_intelligence import (
     ContentOpportunity,
 )
 from app.domain.competitors import Competitor
+from app.domain.usage import UsageStatus
 from app.planner.fetch import FetchedPublicSource, PublicSourceFetchError, fetch_public_source_sync
+from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
 from app.services.llm.models import SourceAnalysisPayload
+from app.services.usage_recorder import record_llm_call
 
 _MAX_SOURCES = 5
 _MAX_OPPORTUNITIES = 5
@@ -102,10 +105,12 @@ class CompetitorIntelligenceService:
         knowledge_service: KnowledgeService,
         *,
         fetcher: Callable[[str], FetchedPublicSource] = fetch_public_source_sync,
+        usage_ledger_repository: UsageLedgerRepository | None = None,
     ) -> None:
         self._provider = provider
         self._knowledge = knowledge_service
         self._fetcher = fetcher
+        self._usage_ledger = usage_ledger_repository
 
     async def analyze(self, competitor: Competitor) -> CompetitorIntelligence:
         discovered_at = datetime.now(timezone.utc).isoformat()
@@ -127,6 +132,15 @@ class CompetitorIntelligenceService:
         for source in fetched:
             analysis = await asyncio.to_thread(
                 self._provider.analyze_source, source_text=source.text[:6_000],
+            )
+            # Usage Cost & Subscription Foundation: Content Factory's HTTP
+            # transport doesn't return token usage, so this is a call-count/
+            # status record only - see app/services/usage_recorder.py.
+            await record_llm_call(
+                self._usage_ledger, workspace_id=competitor.workspace_id,
+                telegram_user_id=None, module="competitor_intelligence",
+                provider=self._provider.name,
+                status=UsageStatus.SUCCESS if analysis is not None else UsageStatus.FAILURE,
             )
             if analysis is None:
                 analysis = _fallback_analysis(source)

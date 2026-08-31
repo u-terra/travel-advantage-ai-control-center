@@ -26,6 +26,8 @@ from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.source_catalog_repository import SourceCatalogRepository
+from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.chat_serialization import ChatSerializationMiddleware
@@ -62,6 +64,8 @@ def _build_dispatcher(
     planner_max_llm_calls: int = DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN,
     reference_resolver: ReferenceResolver | None = None,
     knowledge_service: KnowledgeService | None = None,
+    usage_ledger_repository: UsageLedgerRepository | None = None,
+    subscription_repository: SubscriptionRepository | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -129,6 +133,11 @@ def _build_dispatcher(
     dp["planner_max_llm_calls"] = planner_max_llm_calls
     dp["reference_resolver"] = reference_resolver
     dp["knowledge_service"] = knowledge_service
+    # Usage Cost & Subscription Foundation - see app/domain/usage.py and
+    # app/domain/subscription.py. Optional/default-None like every other
+    # dependency here, so existing callers/tests are unaffected.
+    dp["usage_ledger_repository"] = usage_ledger_repository
+    dp["subscription_repository"] = subscription_repository
     return dp
 
 
@@ -185,6 +194,16 @@ async def _async_main() -> None:
 
     conversation_state_repository = ConversationStateRepository(settings.journal_db_path)
     await conversation_state_repository.init()
+
+    # Usage Cost & Subscription Foundation - see app/domain/usage.py and
+    # app/domain/subscription.py. subscription_repository.init() backfills
+    # every already-provisioned workspace as 'beta' - no existing test user
+    # loses access; this table is not read by the live access gate yet.
+    usage_ledger_repository = UsageLedgerRepository(settings.journal_db_path)
+    await usage_ledger_repository.init()
+
+    subscription_repository = SubscriptionRepository(settings.journal_db_path)
+    await subscription_repository.init()
 
     knowledge_repository = KnowledgeRepository()
     await knowledge_repository.init()
@@ -258,6 +277,8 @@ async def _async_main() -> None:
         planner_max_llm_calls=settings.planner_max_llm_calls,
         reference_resolver=reference_resolver,
         knowledge_service=knowledge_service,
+        usage_ledger_repository=usage_ledger_repository,
+        subscription_repository=subscription_repository,
     )
 
     await dp.start_polling(bot)
