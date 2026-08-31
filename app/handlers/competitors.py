@@ -478,7 +478,7 @@ async def _show_opportunities(message: Message, data) -> None:
             f"\n{index}. {item.topic}\nИсточник: {item.source_title}\n{item.source_url}\n"
             f"Тезис: {item.key_thesis}\nУгол: {item.own_post_angle}"
         )
-    await message.answer("\n".join(lines), reply_markup=competitor_opportunities_keyboard(
+    await message.answer("\n".join(lines)[:3900], reply_markup=competitor_opportunities_keyboard(
         data.competitor_id, tuple((x.id, x.topic) for x in data.opportunities),
     ), disable_web_page_preview=True)
 
