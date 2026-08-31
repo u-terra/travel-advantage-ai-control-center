@@ -17,6 +17,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
+from app.domain.competitor_discovery import CandidateClassification, CandidateStatus
 from app.domain.competitors import Competitor
 from app.domain.partners import WorkspaceContext
 from app.keyboards import (
@@ -30,7 +31,12 @@ from app.keyboards import (
     COMPETITOR_IDEAS_PREFIX,
     COMPETITOR_CREATE_PREFIX,
     COMPETITOR_REFRESH_PREFIX,
+    COMPETITOR_DISCOVERY_START,
+    COMPETITOR_DISCOVERY_VIEW_PREFIX,
+    COMPETITOR_DISCOVERY_ADD_PREFIX,
+    COMPETITOR_DISCOVERY_IGNORE_PREFIX,
     active_main_menu,
+    competitor_candidate_keyboard,
     competitor_card_keyboard,
     competitor_opportunities_keyboard,
     competitors_list_keyboard,
@@ -43,6 +49,8 @@ from app.repositories.competitor_repository import (
 )
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.partner_repository import PartnerRepository
+from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
+from app.services.competitor_discovery import CompetitorDiscoveryService
 from app.services.competitor_intelligence import (
     CompetitorIntelligenceService,
     CompetitorIntelligenceUnavailable,
@@ -502,3 +510,179 @@ def _render_analysis(data) -> str:
         f"• {s.title} — {s.final_url} (обнаружено {s.discovered_at[:10]})" for s in data.sources
     )
     return text[:3900]
+
+
+# --- Competitor Discovery Radar: turns already-synced public market signals
+# into reviewable CompetitorCandidate rows (see app/services/
+# competitor_discovery.py). Adding a candidate reuses the exact same
+# competitor_repository.add_competitor() call as the manual "➕ Добавить
+# конкурента" flow above, so the existing card (🔎 Анализ / 📰 Что нового /
+# 💡 Идеи для постов / ✍️ Создать материал / 🔄 Обновить) works immediately.
+
+_DISCOVERY_UNAVAILABLE = (
+    "Discovery недоступен: источник рыночных сигналов не подключён."
+)
+_DISCOVERY_EMPTY = (
+    "🌐 Competitor Discovery\n\n"
+    "Новых рыночных сигналов пока не найдено. Оркестратор проверит "
+    "источники ещё раз при следующем запуске."
+)
+_CANDIDATE_NOT_FOUND = "Кандидат не найден — возможно, он уже обработан."
+_CANDIDATE_ADDED = "✅ «{label}» добавлен в конкуренты."
+_CANDIDATE_IGNORED = "Скрыто. Больше не будет предложено."
+
+_CLASSIFICATION_EMOJI = {
+    CandidateClassification.DIRECT_COMPETITOR: "🔴",
+    CandidateClassification.POTENTIAL_COMPETITOR: "🟠",
+    CandidateClassification.MARKET_SIGNAL: "🔵",
+}
+_CLASSIFICATION_LABEL = {
+    CandidateClassification.DIRECT_COMPETITOR: "Прямой конкурент",
+    CandidateClassification.POTENTIAL_COMPETITOR: "Потенциальный конкурент",
+    CandidateClassification.MARKET_SIGNAL: "Рыночный сигнал",
+}
+
+
+def _render_candidate_card(candidate) -> str:
+    emoji = _CLASSIFICATION_EMOJI[candidate.classification]
+    label = _CLASSIFICATION_LABEL[candidate.classification]
+    return (
+        f"{emoji} {candidate.name} — {label}\n\n"
+        f"{candidate.description}\n\n"
+        f"Почему важно:\n{candidate.why_it_matters}\n\n"
+        f"Уверенность: {candidate.confidence.value}\n"
+        f"Источник: {candidate.source_title} — {candidate.source_url}\n"
+        f"Обнаружено: {candidate.discovered_at[:10]}"
+    )[:3900]
+
+
+def _render_candidate_detail(candidate) -> str:
+    label = _CLASSIFICATION_LABEL[candidate.classification]
+    lines = [
+        f"{_CLASSIFICATION_EMOJI[candidate.classification]} {candidate.name}",
+        "", candidate.description, "", "Признаки (evidence):",
+        *[f"• {item}" for item in candidate.evidence],
+        "", f"Почему классифицирован как «{label}»:", candidate.why_it_matters,
+        "", f"Уверенность: {candidate.confidence.value}",
+        f"Источник: {candidate.source_title}", candidate.source_url,
+        f"Домен: {candidate.canonical_domain}",
+        f"Обнаружено: {candidate.discovered_at[:10]}",
+    ]
+    return "\n".join(lines)[:3900]
+
+
+async def _candidate_for_callback(
+    callback: CallbackQuery, prefix: str, repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None,
+):
+    candidate_id = _callback_id(callback.data, prefix)
+    if workspace_context is None or candidate_id is None:
+        return None
+    candidate = await repository.get_candidate_for_workspace(
+        workspace_context.workspace_id, candidate_id,
+    )
+    if candidate is None and callback.message is not None:
+        await callback.message.answer(_CANDIDATE_NOT_FOUND)
+    return candidate
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data == COMPETITOR_DISCOVERY_START)
+async def discover_new_competitors(
+    callback: CallbackQuery,
+    competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None,
+    workspace_signal_repository: WorkspaceSignalRepository | None,
+    llm_provider: LLMProvider,
+    partner_repository: PartnerRepository,
+) -> None:
+    await callback.answer()
+    if callback.message is None or workspace_context is None:
+        return
+    if workspace_signal_repository is None:
+        await callback.message.answer(_DISCOVERY_UNAVAILABLE)
+        return
+
+    profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
+    own_domain = profile.context.public_contacts.get("website") if profile is not None else None
+
+    service = CompetitorDiscoveryService(
+        workspace_signal_repository, competitor_repository, llm_provider,
+    )
+    candidates = await service.discover(workspace_context.workspace_id, own_domain=own_domain)
+    if not candidates:
+        await callback.message.answer(_DISCOVERY_EMPTY)
+        return
+
+    await callback.message.answer(
+        f"🌐 Competitor Discovery\n\nНайдено {len(candidates)} новых рыночных сигналов."
+    )
+    for candidate in candidates:
+        offer_add = candidate.classification is not CandidateClassification.MARKET_SIGNAL
+        await callback.message.answer(
+            _render_candidate_card(candidate),
+            reply_markup=competitor_candidate_keyboard(candidate.candidate_id, offer_add=offer_add),
+            disable_web_page_preview=True,
+        )
+
+
+@router.callback_query(
+    MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_DISCOVERY_VIEW_PREFIX)
+)
+async def view_competitor_candidate(
+    callback: CallbackQuery,
+    competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None,
+) -> None:
+    await callback.answer()
+    candidate = await _candidate_for_callback(
+        callback, COMPETITOR_DISCOVERY_VIEW_PREFIX, competitor_repository, workspace_context,
+    )
+    if callback.message is None or candidate is None:
+        return
+    await callback.message.answer(_render_candidate_detail(candidate), disable_web_page_preview=True)
+
+
+@router.callback_query(
+    MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_DISCOVERY_ADD_PREFIX)
+)
+async def add_competitor_candidate(
+    callback: CallbackQuery,
+    competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None,
+) -> None:
+    await callback.answer()
+    candidate = await _candidate_for_callback(
+        callback, COMPETITOR_DISCOVERY_ADD_PREFIX, competitor_repository, workspace_context,
+    )
+    if callback.message is None or candidate is None or workspace_context is None:
+        return
+    competitor = await competitor_repository.add_competitor(
+        workspace_context.workspace_id, candidate.discovered_url, label=candidate.name,
+    )
+    await competitor_repository.update_candidate_status(
+        workspace_context.workspace_id, candidate.candidate_id, CandidateStatus.ADDED,
+    )
+    await callback.message.answer(
+        _CANDIDATE_ADDED.format(label=competitor.label),
+        reply_markup=competitor_card_keyboard(competitor.id),
+    )
+
+
+@router.callback_query(
+    MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_DISCOVERY_IGNORE_PREFIX)
+)
+async def ignore_competitor_candidate(
+    callback: CallbackQuery,
+    competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None,
+) -> None:
+    await callback.answer()
+    candidate = await _candidate_for_callback(
+        callback, COMPETITOR_DISCOVERY_IGNORE_PREFIX, competitor_repository, workspace_context,
+    )
+    if callback.message is None or candidate is None or workspace_context is None:
+        return
+    await competitor_repository.update_candidate_status(
+        workspace_context.workspace_id, candidate.candidate_id, CandidateStatus.IGNORED,
+    )
+    await callback.message.answer(_CANDIDATE_IGNORED)

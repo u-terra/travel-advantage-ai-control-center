@@ -83,6 +83,10 @@ COMPETITOR_NEWS_PREFIX = "competitor:news:"
 COMPETITOR_IDEAS_PREFIX = "competitor:ideas:"
 COMPETITOR_CREATE_PREFIX = "competitor:create:"
 COMPETITOR_REFRESH_PREFIX = "competitor:refresh:"
+COMPETITOR_DISCOVERY_START = "competitor_discovery:start"
+COMPETITOR_DISCOVERY_VIEW_PREFIX = "competitor_discovery:view:"
+COMPETITOR_DISCOVERY_ADD_PREFIX = "competitor_discovery:add:"
+COMPETITOR_DISCOVERY_IGNORE_PREFIX = "competitor_discovery:ignore:"
 MATERIAL_ENTRY_ANALYZE = "material_entry:analyze"
 MATERIAL_ENTRY_FIND_SIGNALS = "material_entry:find_signals"
 
@@ -487,7 +491,29 @@ def competitors_list_keyboard(
         text="➕ Добавить конкурента", callback_data=COMPETITOR_REGISTRY_ADD
     )])
     rows.append([InlineKeyboardButton(
+        text="🌐 Найти новых конкурентов", callback_data=COMPETITOR_DISCOVERY_START
+    )])
+    rows.append([InlineKeyboardButton(
         text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def competitor_candidate_keyboard(
+    candidate_id: int, *, offer_add: bool,
+) -> InlineKeyboardMarkup:
+    """offer_add=False for 🔵 Market Signal candidates - per spec §9, a
+    market signal is not itself proposed as a competitor to add."""
+    rows: list[list[InlineKeyboardButton]] = [[InlineKeyboardButton(
+        text="🔎 Изучить", callback_data=f"{COMPETITOR_DISCOVERY_VIEW_PREFIX}{candidate_id}",
+    )]]
+    if offer_add:
+        rows.append([InlineKeyboardButton(
+            text="➕ Добавить в конкуренты",
+            callback_data=f"{COMPETITOR_DISCOVERY_ADD_PREFIX}{candidate_id}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="🙈 Неинтересно", callback_data=f"{COMPETITOR_DISCOVERY_IGNORE_PREFIX}{candidate_id}",
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

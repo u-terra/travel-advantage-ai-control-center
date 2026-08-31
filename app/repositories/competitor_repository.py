@@ -14,6 +14,13 @@ from pathlib import Path
 
 import aiosqlite
 
+from app.domain.competitor_discovery import (
+    CandidateClassification,
+    CandidateConfidence,
+    CandidateStatus,
+    CompetitorCandidate,
+    canonical_domain,
+)
 from app.domain.competitors import Competitor
 from app.domain.competitor_intelligence import (
     CompetitorIntelligence,
@@ -43,6 +50,36 @@ CREATE TABLE IF NOT EXISTS competitor_intelligence_snapshots (
     payload_json TEXT NOT NULL,
     FOREIGN KEY (competitor_id) REFERENCES competitors(id)
 );
+
+-- Competitor Discovery Radar: candidates found from public market signals,
+-- before an owner promotes one into `competitors` (add_competitor below).
+-- UNIQUE(workspace_id, canonical_domain) is the dedup: nl.trip.com /
+-- www.trip.com / trip.com all upsert into the SAME row instead of spawning
+-- one candidate per locale/URL variant.
+CREATE TABLE IF NOT EXISTS competitor_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    canonical_domain TEXT NOT NULL,
+    discovered_url TEXT NOT NULL,
+    source_title TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    discovered_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    description TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    why_it_matters TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id),
+    UNIQUE (workspace_id, canonical_domain),
+    CHECK (length(trim(name)) > 0),
+    CHECK (length(trim(canonical_domain)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_competitor_candidates_workspace
+    ON competitor_candidates(workspace_id, id DESC);
 """
 
 _MAX_URL_LENGTH = 500
@@ -179,6 +216,110 @@ class CompetitorRepository:
         )
         return await cursor.fetchone()
 
+    async def known_domains_for_workspace(self, workspace_id: int) -> set[str]:
+        """Canonical domains of already-saved competitors - Discovery uses
+        this to skip a candidate that is already a known competitor (e.g.
+        Trip.com must not be re-proposed just because its URL string
+        differs from what was saved)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT url FROM competitors WHERE workspace_id = ?", (workspace_id,),
+            )
+            rows = await cursor.fetchall()
+        return {canonical_domain(row[0]) for row in rows}
+
+    async def upsert_candidate(
+        self, workspace_id: int, *, name: str, discovered_url: str,
+        source_title: str, source_url: str, description: str,
+        evidence: tuple[str, ...], confidence: CandidateConfidence,
+        classification: CandidateClassification, why_it_matters: str,
+    ) -> CompetitorCandidate:
+        """Insert a newly found candidate, or - if this canonical domain was
+        already seen for this workspace - refresh its evidence/last_seen
+        without creating a duplicate row and without resetting a status the
+        owner already set (reviewed/added/ignored stays as-is)."""
+        domain = canonical_domain(discovered_url)
+        now = _now()
+        evidence_json = json.dumps(list(evidence), ensure_ascii=False)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute(
+                "INSERT INTO competitor_candidates "
+                "(workspace_id, name, canonical_domain, discovered_url, source_title, "
+                "source_url, discovered_at, last_seen_at, description, evidence_json, "
+                "confidence, classification, why_it_matters, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new') "
+                "ON CONFLICT(workspace_id, canonical_domain) DO UPDATE SET "
+                "name=excluded.name, discovered_url=excluded.discovered_url, "
+                "source_title=excluded.source_title, source_url=excluded.source_url, "
+                "last_seen_at=excluded.last_seen_at, description=excluded.description, "
+                "evidence_json=excluded.evidence_json, confidence=excluded.confidence, "
+                "classification=excluded.classification, "
+                "why_it_matters=excluded.why_it_matters",
+                (
+                    workspace_id, name, domain, discovered_url, source_title, source_url,
+                    now, now, description, evidence_json,
+                    confidence.value, classification.value, why_it_matters,
+                ),
+            )
+            await db.commit()
+            cursor = await db.execute(
+                "SELECT * FROM competitor_candidates "
+                "WHERE workspace_id = ? AND canonical_domain = ?",
+                (workspace_id, domain),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Не удалось сохранить candidate")
+        return _candidate_from_row(row)
+
+    async def list_candidates_for_workspace(
+        self, workspace_id: int, *, status: str | None = None, limit: int = 20,
+    ) -> list[CompetitorCandidate]:
+        query = "SELECT * FROM competitor_candidates WHERE workspace_id = ?"
+        params: list[object] = [workspace_id]
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(_limit(limit))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, params)
+            rows = await cursor.fetchall()
+        return [_candidate_from_row(row) for row in rows]
+
+    async def get_candidate_for_workspace(
+        self, workspace_id: int, candidate_id: int,
+    ) -> CompetitorCandidate | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM competitor_candidates WHERE workspace_id = ? AND id = ?",
+                (workspace_id, candidate_id),
+            )
+            row = await cursor.fetchone()
+        return _candidate_from_row(row) if row is not None else None
+
+    async def update_candidate_status(
+        self, workspace_id: int, candidate_id: int, status: CandidateStatus,
+    ) -> CompetitorCandidate | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "UPDATE competitor_candidates SET status = ? "
+                "WHERE workspace_id = ? AND id = ?",
+                (status.value, workspace_id, candidate_id),
+            )
+            await db.commit()
+            cursor = await db.execute(
+                "SELECT * FROM competitor_candidates WHERE workspace_id = ? AND id = ?",
+                (workspace_id, candidate_id),
+            )
+            row = await cursor.fetchone()
+        return _candidate_from_row(row) if row is not None else None
+
 
 def _validate_address(url: str) -> str:
     address = (url or "").strip()
@@ -221,6 +362,25 @@ def _from_row(row: aiosqlite.Row) -> Competitor:
         url=row["url"],
         label=row["label"],
         created_at=row["created_at"],
+    )
+
+
+def _candidate_from_row(row: aiosqlite.Row) -> CompetitorCandidate:
+    return CompetitorCandidate(
+        candidate_id=row["id"],
+        workspace_id=row["workspace_id"],
+        name=row["name"],
+        canonical_domain=row["canonical_domain"],
+        discovered_url=row["discovered_url"],
+        source_title=row["source_title"],
+        source_url=row["source_url"],
+        discovered_at=row["discovered_at"],
+        description=row["description"],
+        evidence=tuple(json.loads(row["evidence_json"])),
+        confidence=CandidateConfidence(row["confidence"]),
+        classification=CandidateClassification(row["classification"]),
+        why_it_matters=row["why_it_matters"],
+        status=CandidateStatus(row["status"]),
     )
 
 
