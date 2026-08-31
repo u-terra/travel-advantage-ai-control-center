@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -23,7 +24,15 @@ from app.keyboards import (
     BTN_V2_MAIN_MENU,
     COMPETITOR_REGISTRY_ADD,
     COMPETITOR_REGISTRY_RENAME_PREFIX,
+    COMPETITOR_OPEN_PREFIX,
+    COMPETITOR_ANALYZE_PREFIX,
+    COMPETITOR_NEWS_PREFIX,
+    COMPETITOR_IDEAS_PREFIX,
+    COMPETITOR_CREATE_PREFIX,
+    COMPETITOR_REFRESH_PREFIX,
     active_main_menu,
+    competitor_card_keyboard,
+    competitor_opportunities_keyboard,
     competitors_list_keyboard,
     v2_back_keyboard,
 )
@@ -33,6 +42,15 @@ from app.repositories.competitor_repository import (
     CompetitorRepository,
 )
 from app.repositories.conversation_state_repository import ConversationStateRepository
+from app.repositories.partner_repository import PartnerRepository
+from app.services.competitor_intelligence import (
+    CompetitorIntelligenceService,
+    CompetitorIntelligenceUnavailable,
+)
+from app.services.generation_request_builder import build_provider_generation_request
+from app.services.knowledge_service import KnowledgeService
+from app.services.llm.base import LLMProvider
+from app.services.material_orchestration import MaterialOrchestrationService
 
 router = Router(name="competitors")
 log = logging.getLogger(__name__)
@@ -58,6 +76,7 @@ _SAVED = (
 _RENAME_PROMPT = "Как назвать этого конкурента? Например: ТурКлуб"
 _RENAME_NOT_FOUND = "Не удалось найти конкурента — возможно, он уже удалён."
 _RENAME_SAVED = "Название сохранено."
+_INTELLIGENCE_MISSING = "Сначала нажмите «🔎 Анализ конкурента» или «🔄 Обновить»."
 
 
 class AddCompetitor(StatesGroup):
@@ -303,3 +322,178 @@ async def _answer_rename_question_if_active(
             )
     except Exception:
         log.warning("competitors: conversation state bookkeeping failed for rename answer")
+
+
+def _callback_id(data: str | None, prefix: str) -> int | None:
+    raw = (data or "").removeprefix(prefix).split(":", 1)[0]
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+
+async def _competitor_for_callback(
+    callback: CallbackQuery, prefix: str, repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None,
+) -> Competitor | None:
+    competitor_id = _callback_id(callback.data, prefix)
+    if workspace_context is None or competitor_id is None:
+        return None
+    return await repository.get_for_workspace(workspace_context.workspace_id, competitor_id)
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_OPEN_PREFIX))
+async def open_competitor(
+    callback: CallbackQuery, competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None,
+) -> None:
+    await callback.answer()
+    competitor = await _competitor_for_callback(
+        callback, COMPETITOR_OPEN_PREFIX, competitor_repository, workspace_context,
+    )
+    if competitor is None or callback.message is None:
+        return
+    snapshot = await competitor_repository.get_intelligence(
+        competitor.workspace_id, competitor.id,
+    )
+    status = "анализ ещё не выполнялся" if snapshot is None else f"обновлено {snapshot.analyzed_at[:16]} UTC"
+    await callback.message.answer(
+        f"🎯 {competitor.label}\n{competitor.url}\n\nCompetitor Intelligence: {status}",
+        reply_markup=competitor_card_keyboard(competitor.id), disable_web_page_preview=True,
+    )
+
+
+async def _refresh_competitor(
+    callback: CallbackQuery, prefix: str, repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None, provider: LLMProvider,
+    knowledge_service: KnowledgeService,
+) -> None:
+    competitor = await _competitor_for_callback(callback, prefix, repository, workspace_context)
+    if competitor is None or callback.message is None or workspace_context is None:
+        return
+    await callback.message.answer("Собираю публичные источники и готовлю внутренний анализ…")
+    try:
+        intelligence = await CompetitorIntelligenceService(provider, knowledge_service).analyze(competitor)
+    except CompetitorIntelligenceUnavailable as exc:
+        await callback.message.answer(f"Не удалось обновить анализ: {exc}")
+        return
+    await repository.save_intelligence(workspace_context.workspace_id, intelligence)
+    await callback.message.answer(
+        _render_analysis(intelligence), reply_markup=competitor_card_keyboard(competitor.id),
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_ANALYZE_PREFIX))
+async def analyze_competitor(callback: CallbackQuery, competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None, llm_provider: LLMProvider,
+    knowledge_service: KnowledgeService) -> None:
+    await callback.answer()
+    await _refresh_competitor(callback, COMPETITOR_ANALYZE_PREFIX, competitor_repository,
+        workspace_context, llm_provider, knowledge_service)
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_REFRESH_PREFIX))
+async def refresh_competitor(callback: CallbackQuery, competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None, llm_provider: LLMProvider,
+    knowledge_service: KnowledgeService) -> None:
+    await callback.answer()
+    await _refresh_competitor(callback, COMPETITOR_REFRESH_PREFIX, competitor_repository,
+        workspace_context, llm_provider, knowledge_service)
+
+
+async def _snapshot(callback: CallbackQuery, prefix: str, repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None):
+    competitor = await _competitor_for_callback(callback, prefix, repository, workspace_context)
+    if competitor is None or workspace_context is None:
+        return None, None
+    return competitor, await repository.get_intelligence(workspace_context.workspace_id, competitor.id)
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_NEWS_PREFIX))
+async def competitor_news(callback: CallbackQuery, competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None) -> None:
+    await callback.answer()
+    competitor, data = await _snapshot(callback, COMPETITOR_NEWS_PREFIX, competitor_repository, workspace_context)
+    if callback.message is None or competitor is None:
+        return
+    if data is None:
+        await callback.message.answer(_INTELLIGENCE_MISSING); return
+    lines = ["📰 Свежие сигналы", *[f"• {x}" for x in data.fresh_signals]]
+    lines.extend(f"• {s.title}\n{s.final_url}\nобнаружено: {s.discovered_at[:10]}" for s in data.sources)
+    await callback.message.answer("\n\n".join(lines), disable_web_page_preview=True)
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_IDEAS_PREFIX))
+async def competitor_ideas(callback: CallbackQuery, competitor_repository: CompetitorRepository,
+    workspace_context: WorkspaceContext | None) -> None:
+    await callback.answer()
+    competitor, data = await _snapshot(callback, COMPETITOR_IDEAS_PREFIX, competitor_repository, workspace_context)
+    if callback.message is None or competitor is None:
+        return
+    if data is None:
+        await callback.message.answer(_INTELLIGENCE_MISSING); return
+    await _show_opportunities(callback.message, data)
+
+
+@router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_CREATE_PREFIX))
+async def create_from_competitor_opportunity(callback: CallbackQuery,
+    competitor_repository: CompetitorRepository, workspace_context: WorkspaceContext | None,
+    llm_provider: LLMProvider, partner_repository: PartnerRepository) -> None:
+    await callback.answer()
+    competitor, data = await _snapshot(callback, COMPETITOR_CREATE_PREFIX, competitor_repository, workspace_context)
+    if callback.message is None or competitor is None or workspace_context is None:
+        return
+    if data is None:
+        await callback.message.answer(_INTELLIGENCE_MISSING); return
+    parts = (callback.data or "").removeprefix(COMPETITOR_CREATE_PREFIX).split(":", 1)
+    if len(parts) == 1:
+        await _show_opportunities(callback.message, data); return
+    opportunity = next((x for x in data.opportunities if x.id == parts[1]), None)
+    if opportunity is None:
+        return
+    profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
+    task = (
+        "Создай оригинальный пост по конкурентному сигналу, не копируя источник.\n"
+        f"Тема: {opportunity.topic}\nКлючевой тезис: {opportunity.key_thesis}\n"
+        f"Угол: {opportunity.own_post_angle}\nПочему важно аудитории: {opportunity.audience_value}\n"
+        f"Публичный источник (только provenance): {opportunity.source_title} — {opportunity.source_url}\n"
+        f"Связь с Travel Advantage из verified KB: {opportunity.travel_advantage_link or 'не подтверждена'}"
+    )
+    spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        workspace_context.workspace_id, task, profile,
+    )
+    request = build_provider_generation_request(spec, limit=6000)
+    draft = await asyncio.to_thread(llm_provider.generate_draft,
+        source_text=request.source_text, material_type=request.material_type,
+        output_format=request.output_format, mode="ai")
+    if draft is None:
+        await callback.message.answer("Не удалось получить черновик автоматически."); return
+    await callback.message.answer(
+        "📝 Черновик по content opportunity — только для ручной проверки\n\n" + draft.text
+    )
+
+
+async def _show_opportunities(message: Message, data) -> None:
+    lines = ["💡 Content opportunities"]
+    for index, item in enumerate(data.opportunities, 1):
+        lines.append(
+            f"\n{index}. {item.topic}\nИсточник: {item.source_title}\n{item.source_url}\n"
+            f"Тезис: {item.key_thesis}\nУгол: {item.own_post_angle}"
+        )
+    await message.answer("\n".join(lines), reply_markup=competitor_opportunities_keyboard(
+        data.competitor_id, tuple((x.id, x.topic) for x in data.opportunities),
+    ), disable_web_page_preview=True)
+
+
+def _render_analysis(data) -> str:
+    def section(title, values):
+        return "" if not values else "\n\n" + title + "\n" + "\n".join(f"• {x}" for x in values)
+    text = f"🔎 Анализ: {data.competitor_label}"
+    text += section("Позиционирование", data.positioning)
+    text += section("Продукты и направления", (*data.products, *data.destinations_and_categories))
+    text += section("Акции и механики", (*data.promotions, *data.loyalty_mechanics))
+    text += section("Сервис и UX", data.service_and_ux)
+    text += section("Сильные стороны", data.strengths)
+    text += section("Travel Advantage — только verified KB", data.travel_advantage_comparison)
+    text += "\n\nИсточники / provenance\n" + "\n".join(
+        f"• {s.title} — {s.final_url} (обнаружено {s.discovered_at[:10]})" for s in data.sources
+    )
+    return text[:3900]

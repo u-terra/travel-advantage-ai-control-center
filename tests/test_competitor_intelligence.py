@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from app.domain.competitor_intelligence import CompetitorIntelligence
+from app.domain.competitors import Competitor
+from app.handlers.competitors import create_from_competitor_opportunity
+from app.keyboards import COMPETITOR_OPEN_PREFIX, competitors_list_keyboard
+from app.planner.fetch import FetchedPublicSource, PublicSourceFetchError
+from app.repositories.competitor_repository import CompetitorRepository
+from app.repositories.partner_repository import PartnerRepository
+from app.services.competitor_intelligence import CompetitorIntelligenceService
+from app.services.knowledge_service import KnowledgeBundle
+from app.services.llm.models import ContentDraft, SourceAnalysisPayload
+from tests.llm_fakes import FakeLLMProvider
+from tests.test_journal_handlers import Callback, business_profile, context, profile_repository
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def _analysis() -> SourceAnalysisPayload:
+    return SourceAnalysisPayload(
+        summary="Глобальная OTA-платформа объединяет бронирования и travel content.",
+        key_facts=(
+            "Flights, hotels, trains and attractions are available in one app.",
+            "Member deals and Trip Coins support loyalty.",
+            "Seasonal destination guides connect inspiration with booking.",
+        ),
+        disputed_claims=(), audience_value="Помогает путешественникам выбрать идею и спланировать поездку.",
+        target_audiences=("путешественники",),
+        content_angles=(
+            "Как выбирать направление по сезону",
+            "Что проверить перед самостоятельным бронированием",
+        ),
+        recommended_formats=("post",), warnings=(),
+    )
+
+
+def _knowledge() -> KnowledgeBundle:
+    item = SimpleNamespace(
+        content="OTA-платформа для поиска и бронирования туристических услуг.",
+        source_ref="verified TA knowledge", stable_key="ta.platform",
+    )
+    return KnowledgeBundle(
+        question="Travel Advantage", primary_items=(item,), related_items=(),
+        facts=(), compliance_facts=(), examples=(), sources=(),
+        potentially_ambiguous=False, ambiguity_reasons=(), missing_definitions=(),
+    )
+
+
+def _service(*, analysis=_analysis()):
+    calls = []
+    def fetch(url: str):
+        calls.append(url)
+        if "loyalty" in url:
+            raise PublicSourceFetchError("blocked")
+        return FetchedPublicSource(
+            url=url, final_url=url, title=f"Public source {len(calls)}",
+            text="Aug 28, 2026 Travel inspiration, member deals, flights and hotels " * 4,
+            content_type="text/html",
+        )
+    provider = FakeLLMProvider(analysis=analysis)
+    knowledge = SimpleNamespace(retrieve=AsyncMock(return_value=_knowledge()))
+    return CompetitorIntelligenceService(provider, knowledge, fetcher=fetch), provider, calls
+
+
+def test_trip_com_vertical_slice_has_provenance_and_five_opportunities():
+    service, provider, calls = _service()
+    competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
+
+    result = run(service.analyze(competitor))
+
+    assert result.competitor_id == 7
+    assert len(result.sources) == 4
+    assert result.sources[0].url == "https://nl.trip.com/?locale=nl-nl"
+    assert all(source.discovered_at for source in result.sources)
+    assert len(result.opportunities) >= 5
+    assert all(item.competitor_id == 7 and item.source_url for item in result.opportunities)
+    assert all(item.travel_advantage_link and "verified TA knowledge" in item.travel_advantage_link for item in result.opportunities)
+    assert provider.analyze_source.call_count == 4
+    assert "https://www.trip.com/blog" in calls
+
+
+def test_existing_competitor_list_opens_saved_entity():
+    keyboard = competitors_list_keyboard(((7, "Trip.com"),))
+    button = keyboard.inline_keyboard[0][0]
+    assert button.text == "🎯 Trip.com"
+    assert button.callback_data == f"{COMPETITOR_OPEN_PREFIX}7"
+
+
+def test_provider_failure_keeps_real_sources_and_content_opportunities():
+    service, _, _ = _service(analysis=None)
+    competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
+    result = run(service.analyze(competitor))
+    assert len(result.sources) == 4
+    assert len(result.opportunities) >= 5
+    assert all(item.topic for item in result.opportunities)
+
+
+def test_intelligence_round_trip_and_selected_opportunity_uses_content_factory(tmp_path):
+    partners = PartnerRepository(tmp_path / "db.sqlite3")
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    repository = CompetitorRepository(tmp_path / "db.sqlite3")
+    run(repository.init())
+    competitor = run(repository.add_competitor(
+        workspace.id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
+    ))
+    service, _, _ = _service()
+    intelligence: CompetitorIntelligence = run(service.analyze(competitor))
+    run(repository.save_intelligence(workspace.id, intelligence))
+    restored = run(repository.get_intelligence(workspace.id, competitor.id))
+    assert restored is not None and len(restored.opportunities) >= 5
+
+    callback = Callback()
+    callback.data = f"competitor:create:{competitor.id}:{restored.opportunities[0].id}"
+    provider = FakeLLMProvider(draft=ContentDraft("Оригинальный материал", ()))
+    run(create_from_competitor_opportunity(
+        callback, repository, context(workspace.id), provider,
+        profile_repository(business_profile(workspace.id)),
+    ))
+    provider.generate_draft.assert_called_once()
+    source_text = provider.generate_draft.call_args.kwargs["source_text"]
+    assert restored.opportunities[0].source_url in source_text
+    assert "не копируя источник" in source_text
+    assert "Оригинальный материал" in callback.message.answers[-1][0]

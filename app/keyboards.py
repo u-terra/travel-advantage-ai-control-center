@@ -77,6 +77,12 @@ COMPETITOR_REGISTRY_ADD = "competitor_registry:add"
 # Stage 3.2: minimal rename action - callback_data carries the competitor id
 # so the handler can look it up scoped to the caller's own workspace.
 COMPETITOR_REGISTRY_RENAME_PREFIX = "competitor_registry:rename:"
+COMPETITOR_OPEN_PREFIX = "competitor:open:"
+COMPETITOR_ANALYZE_PREFIX = "competitor:analyze:"
+COMPETITOR_NEWS_PREFIX = "competitor:news:"
+COMPETITOR_IDEAS_PREFIX = "competitor:ideas:"
+COMPETITOR_CREATE_PREFIX = "competitor:create:"
+COMPETITOR_REFRESH_PREFIX = "competitor:refresh:"
 MATERIAL_ENTRY_ANALYZE = "material_entry:analyze"
 MATERIAL_ENTRY_FIND_SIGNALS = "material_entry:find_signals"
 
@@ -469,13 +475,11 @@ def material_entry_keyboard() -> InlineKeyboardMarkup:
 def competitors_list_keyboard(
     competitors: tuple[tuple[int, str], ...] = (),
 ) -> InlineKeyboardMarkup:
-    """Принимает готовые пары (id, подпись для кнопки «Назвать») — клавиатура
-    не знает про Competitor. Без аргументов ведёт себя как раньше (только
-    «Добавить»/«Главное меню») — существующий пустой сценарий не меняется."""
+    """Workspace competitor list; each saved entity opens its working card."""
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(
-            text=f"✏️ Назвать: {label}",
-            callback_data=f"{COMPETITOR_REGISTRY_RENAME_PREFIX}{competitor_id}",
+            text=f"🎯 {label}",
+            callback_data=f"{COMPETITOR_OPEN_PREFIX}{competitor_id}",
         )]
         for competitor_id, label in competitors
     ]
@@ -486,6 +490,29 @@ def competitors_list_keyboard(
         text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def competitor_card_keyboard(competitor_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Анализ конкурента", callback_data=f"{COMPETITOR_ANALYZE_PREFIX}{competitor_id}")],
+        [InlineKeyboardButton(text="📰 Что нового", callback_data=f"{COMPETITOR_NEWS_PREFIX}{competitor_id}")],
+        [InlineKeyboardButton(text="💡 Идеи для постов", callback_data=f"{COMPETITOR_IDEAS_PREFIX}{competitor_id}")],
+        [InlineKeyboardButton(text=BTN_V2_CREATE_MATERIAL, callback_data=f"{COMPETITOR_CREATE_PREFIX}{competitor_id}")],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"{COMPETITOR_REFRESH_PREFIX}{competitor_id}")],
+        [InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"{COMPETITOR_REGISTRY_RENAME_PREFIX}{competitor_id}")],
+    ])
+
+
+def competitor_opportunities_keyboard(
+    competitor_id: int, opportunities: tuple[tuple[str, str], ...],
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"✍️ {label[:45]}",
+            callback_data=f"{COMPETITOR_CREATE_PREFIX}{competitor_id}:{opportunity_id}",
+        )]
+        for opportunity_id, label in opportunities
+    ])
 
 
 def daily_action_keyboard(work_item_id: int, bucket: str) -> InlineKeyboardMarkup:

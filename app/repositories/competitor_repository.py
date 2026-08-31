@@ -7,12 +7,19 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import aiosqlite
 
 from app.domain.competitors import Competitor
+from app.domain.competitor_intelligence import (
+    CompetitorIntelligence,
+    CompetitorSourceEvidence,
+    ContentOpportunity,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS competitors (
@@ -28,6 +35,14 @@ CREATE TABLE IF NOT EXISTS competitors (
 
 CREATE INDEX IF NOT EXISTS idx_competitors_workspace
     ON competitors(workspace_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS competitor_intelligence_snapshots (
+    competitor_id INTEGER PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    analyzed_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    FOREIGN KEY (competitor_id) REFERENCES competitors(id)
+);
 """
 
 _MAX_URL_LENGTH = 500
@@ -110,6 +125,50 @@ class CompetitorRepository:
             rows = await cursor.fetchall()
         return [_from_row(row) for row in rows]
 
+    async def get_for_workspace(
+        self, workspace_id: int, competitor_id: int,
+    ) -> Competitor | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await self._row(db, workspace_id, competitor_id)
+        return _from_row(row) if row is not None else None
+
+    async def save_intelligence(
+        self, workspace_id: int, intelligence: CompetitorIntelligence,
+    ) -> None:
+        payload = json.dumps(asdict(intelligence), ensure_ascii=False)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            cursor = await db.execute(
+                "UPDATE competitor_intelligence_snapshots SET analyzed_at=?, payload_json=? "
+                "WHERE workspace_id=? AND competitor_id=?",
+                (intelligence.analyzed_at, payload, workspace_id, intelligence.competitor_id),
+            )
+            if cursor.rowcount == 0:
+                await db.execute(
+                    "INSERT INTO competitor_intelligence_snapshots "
+                    "(competitor_id, workspace_id, analyzed_at, payload_json) "
+                    "SELECT id, workspace_id, ?, ? FROM competitors "
+                    "WHERE id=? AND workspace_id=?",
+                    (intelligence.analyzed_at, payload, intelligence.competitor_id, workspace_id),
+                )
+            await db.commit()
+
+    async def get_intelligence(
+        self, workspace_id: int, competitor_id: int,
+    ) -> CompetitorIntelligence | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT payload_json FROM competitor_intelligence_snapshots "
+                "WHERE workspace_id=? AND competitor_id=?",
+                (workspace_id, competitor_id),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return _intelligence_from_json(row["payload_json"])
+
     @staticmethod
     async def _row(
         db: aiosqlite.Connection, workspace_id: int, competitor_id: int
@@ -163,3 +222,16 @@ def _from_row(row: aiosqlite.Row) -> Competitor:
         label=row["label"],
         created_at=row["created_at"],
     )
+
+
+def _intelligence_from_json(raw: str) -> CompetitorIntelligence:
+    data = json.loads(raw)
+    data["sources"] = tuple(CompetitorSourceEvidence(**item) for item in data["sources"])
+    data["opportunities"] = tuple(ContentOpportunity(**item) for item in data["opportunities"])
+    for key in (
+        "positioning", "products", "destinations_and_categories", "promotions",
+        "loyalty_mechanics", "service_and_ux", "strengths",
+        "travel_advantage_comparison", "fresh_signals",
+    ):
+        data[key] = tuple(data[key])
+    return CompetitorIntelligence(**data)

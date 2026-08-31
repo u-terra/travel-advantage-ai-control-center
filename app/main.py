@@ -61,6 +61,7 @@ def _build_dispatcher(
     planner_allowed_telegram_user_ids: frozenset[int] = frozenset(),
     planner_max_llm_calls: int = DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN,
     reference_resolver: ReferenceResolver | None = None,
+    knowledge_service: KnowledgeService | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -127,6 +128,7 @@ def _build_dispatcher(
     dp["planner_allowed_telegram_user_ids"] = planner_allowed_telegram_user_ids
     dp["planner_max_llm_calls"] = planner_max_llm_calls
     dp["reference_resolver"] = reference_resolver
+    dp["knowledge_service"] = knowledge_service
     return dp
 
 
@@ -186,7 +188,8 @@ async def _async_main() -> None:
 
     knowledge_repository = KnowledgeRepository()
     await knowledge_repository.init()
-    reference_resolver = ReferenceResolver(KnowledgeService(knowledge_repository))
+    knowledge_service = KnowledgeService(knowledge_repository)
+    reference_resolver = ReferenceResolver(knowledge_service)
 
     content_factory_config = ContentFactoryConfig(
         url=settings.content_factory_url,
@@ -254,6 +257,7 @@ async def _async_main() -> None:
         planner_allowed_telegram_user_ids=settings.planner_allowed_telegram_user_ids,
         planner_max_llm_calls=settings.planner_max_llm_calls,
         reference_resolver=reference_resolver,
+        knowledge_service=knowledge_service,
     )
 
     await dp.start_polling(bot)
