@@ -11,7 +11,10 @@ from app.keyboards import COMPETITOR_OPEN_PREFIX, competitors_list_keyboard
 from app.planner.fetch import FetchedPublicSource, PublicSourceFetchError
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.partner_repository import PartnerRepository
-from app.services.competitor_intelligence import CompetitorIntelligenceService
+from app.services.competitor_intelligence import (
+    CompetitorIntelligenceService,
+    _opportunities,
+)
 from app.services.knowledge_service import KnowledgeBundle
 from app.services.llm.models import ContentDraft, SourceAnalysisPayload
 from tests.llm_fakes import FakeLLMProvider
@@ -68,7 +71,7 @@ def _service(*, analysis=_analysis()):
     return CompetitorIntelligenceService(provider, knowledge, fetcher=fetch), provider, calls
 
 
-def test_trip_com_vertical_slice_has_provenance_and_five_opportunities():
+def test_trip_com_vertical_slice_has_provenance_and_aligned_opportunities():
     service, provider, calls = _service()
     competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
 
@@ -78,7 +81,7 @@ def test_trip_com_vertical_slice_has_provenance_and_five_opportunities():
     assert len(result.sources) == 4
     assert result.sources[0].url == "https://nl.trip.com/?locale=nl-nl"
     assert all(source.discovered_at for source in result.sources)
-    assert len(result.opportunities) >= 5
+    assert len(result.opportunities) == 3
     assert all(item.competitor_id == 7 and item.source_url for item in result.opportunities)
     assert all(item.travel_advantage_link and "verified TA knowledge" in item.travel_advantage_link for item in result.opportunities)
     assert provider.analyze_source.call_count == 4
@@ -97,7 +100,7 @@ def test_provider_failure_keeps_real_sources_and_content_opportunities():
     competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
     result = run(service.analyze(competitor))
     assert len(result.sources) == 4
-    assert len(result.opportunities) >= 5
+    assert len(result.opportunities) == 1
     assert all(item.topic for item in result.opportunities)
 
 
@@ -114,7 +117,7 @@ def test_intelligence_round_trip_and_selected_opportunity_uses_content_factory(t
     intelligence: CompetitorIntelligence = run(service.analyze(competitor))
     run(repository.save_intelligence(workspace.id, intelligence))
     restored = run(repository.get_intelligence(workspace.id, competitor.id))
-    assert restored is not None and len(restored.opportunities) >= 5
+    assert restored is not None and len(restored.opportunities) == 3
 
     callback = Callback()
     callback.data = f"competitor:create:{competitor.id}:{restored.opportunities[0].id}"
@@ -128,3 +131,58 @@ def test_intelligence_round_trip_and_selected_opportunity_uses_content_factory(t
     assert restored.opportunities[0].source_url in source_text
     assert "не копируя источник" in source_text
     assert "Оригинальный материал" in callback.message.answers[-1][0]
+
+
+def _source(title="Source"):
+    return FetchedPublicSource(
+        url="https://example.com/source", final_url="https://example.com/source",
+        title=title, text="Aug 28, 2026", content_type="text/html",
+    )
+
+
+def _payload(*facts: str, angles: tuple[str, ...] = ()):
+    return SourceAnalysisPayload(
+        summary="Competitor source", key_facts=facts, disputed_claims=(),
+        audience_value="Полезно путешественникам", target_audiences=(),
+        content_angles=angles, recommended_formats=("post",), warnings=(),
+    )
+
+
+def test_opportunity_keeps_thesis_theme_and_angle_aligned():
+    analysis = _payload(
+        "Disneyland vs LEGOLAND: comparison for a family trip",
+        "iF Design Award for visual identity",
+        angles=("Городской транспорт", "Travel-акции", "Сезонные направления"),
+    )
+    result = _opportunities(7, [(_source(), analysis)], None)
+    assert len(result) == 1
+    opportunity = result[0]
+    assert opportunity.topic == opportunity.key_thesis
+    assert "Disneyland vs LEGOLAND" in opportunity.own_post_angle
+    assert "городской транспорт" not in opportunity.own_post_angle.lower()
+    assert "iF Design Award" not in opportunity.own_post_angle
+
+
+def test_opportunity_semantic_duplicates_are_removed():
+    analysis = _payload(
+        "Travel demand grows 70% in football host cities",
+        "Football host cities see 70% growth in travel demand",
+        "Airport transit guide for international travelers",
+    )
+    result = _opportunities(7, [(_source(), analysis)], None)
+    assert len(result) == 2
+    assert sum("70%" in item.key_thesis for item in result) == 1
+
+
+def test_unrelated_angles_are_rejected_instead_of_padding_to_eight():
+    analysis = _payload(
+        "New destination guide for family resorts",
+        "AI travel app adds hotel search",
+        "Member rewards and seasonal travel discounts",
+        "Booking demand increases for city trips",
+        "iF Design Award for corporate typography",
+        angles=("Travel-акции", "Сезонные направления", "Городской транспорт"),
+    )
+    result = _opportunities(7, [(_source(), analysis)], None)
+    assert len(result) == 4
+    assert all("Design Award" not in item.key_thesis for item in result)

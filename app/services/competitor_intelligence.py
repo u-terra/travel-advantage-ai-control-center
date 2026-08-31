@@ -19,6 +19,20 @@ from app.services.llm.models import SourceAnalysisPayload
 
 _MAX_SOURCES = 5
 _MAX_OPPORTUNITIES = 8
+_OPPORTUNITY_CATEGORIES = (
+    ("travel trends", ("trend", "traveler", "traveller", "tourism", "booking data")),
+    ("направления", ("destination", "city", "country", "disneyland", "legoland", "resort")),
+    ("практический travel guide", ("guide", "visa", "airport", "transit", "itinerary", "tips", "passport", "how to")),
+    ("AI и технологии в travel", (" ai ", "chatgpt", "technology", "digital", "biometric", "esim", "app")),
+    ("loyalty и promotions", ("loyal", "member", "reward", "coin", "promo", "discount", "deal", "coupon", "sale")),
+    ("customer UX", ("support", "payment", "cancel", "refund", "search", "booking", "flexib")),
+    ("новый продукт или сервис", ("launch", "new product", "new service", "new feature", "introduc")),
+    ("изменение спроса", ("demand", "surge", "growth", "increase", "decrease", "year-on-year")),
+)
+_DEDUP_STOP_WORDS = frozenset({
+    "the", "and", "for", "with", "from", "this", "that", "trip", "com",
+    "как", "что", "для", "или", "это", "при", "про",
+})
 _DATE_RE = re.compile(
     r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+20\d{2}\b",
     re.IGNORECASE,
@@ -184,31 +198,58 @@ def _matching(facts: tuple[str, ...], *keywords: str) -> tuple[str, ...]:
 
 
 def _opportunities(competitor_id: int, analyses, ta_link: str | None) -> tuple[ContentOpportunity, ...]:
-    result: list[ContentOpportunity] = []
-    candidates = [(
-        source, analysis, tuple(dict.fromkeys((
-            *analysis.content_angles, *analysis.key_facts, analysis.summary,
-        )))
-    ) for source, analysis in analyses]
-    depth = 0
-    while len(result) < _MAX_OPPORTUNITIES:
-        added = False
-        for source, analysis, angles in candidates:
-            if depth >= len(angles):
+    ranked: list[tuple[int, int, FetchedPublicSource, SourceAnalysisPayload, str, str]] = []
+    sequence = 0
+    for source, analysis in analyses:
+        theses = analysis.key_facts or (analysis.summary,)
+        for thesis in theses:
+            category = _opportunity_category(thesis)
+            if category is None:
                 continue
-            added = True
-            angle = angles[depth]
-            thesis = analysis.key_facts[len(result) % len(analysis.key_facts)] if analysis.key_facts else analysis.summary
-            result.append(ContentOpportunity(
-                id=f"opp-{len(result) + 1}", competitor_id=competitor_id,
-                topic=angle, source_title=source.title or source.final_url,
-                source_url=source.final_url, freshness=_freshness(source.text),
-                key_thesis=thesis, audience_value=analysis.audience_value,
-                own_post_angle=angle, travel_advantage_link=ta_link,
-            ))
-            if len(result) == _MAX_OPPORTUNITIES:
-                return tuple(result)
-        if not added:
+            category_index, category_name = category
+            ranked.append((category_index, sequence, source, analysis, thesis, category_name))
+            sequence += 1
+    ranked.sort(key=lambda item: (item[0], item[1]))
+
+    result: list[ContentOpportunity] = []
+    fingerprints: list[frozenset[str]] = []
+    for _, _, source, analysis, thesis, category_name in ranked:
+        fingerprint = _semantic_fingerprint(thesis)
+        if not fingerprint or any(_semantic_duplicate(fingerprint, seen) for seen in fingerprints):
+            continue
+        fingerprints.append(fingerprint)
+        clean_thesis = " ".join(thesis.split())
+        angle = (
+            f"{category_name}: что этот конкретный сигнал меняет для путешественника — "
+            f"{clean_thesis}"
+        )
+        result.append(ContentOpportunity(
+            id=f"opp-{len(result) + 1}", competitor_id=competitor_id,
+            topic=clean_thesis, source_title=source.title or source.final_url,
+            source_url=source.final_url, freshness=_freshness(source.text),
+            key_thesis=clean_thesis, audience_value=analysis.audience_value,
+            own_post_angle=angle, travel_advantage_link=ta_link,
+        ))
+        if len(result) == _MAX_OPPORTUNITIES:
             break
-        depth += 1
     return tuple(result)
+
+
+def _opportunity_category(thesis: str) -> tuple[int, str] | None:
+    normalized = f" {thesis.lower()} "
+    for index, (category, markers) in enumerate(_OPPORTUNITY_CATEGORIES):
+        if any(marker in normalized for marker in markers):
+            return index, category
+    return None
+
+
+def _semantic_fingerprint(value: str) -> frozenset[str]:
+    tokens = re.findall(r"[0-9a-zа-яё]+", value.lower())
+    return frozenset(token for token in tokens if len(token) > 2 and token not in _DEDUP_STOP_WORDS)
+
+
+def _semantic_duplicate(first: frozenset[str], second: frozenset[str]) -> bool:
+    if first == second:
+        return True
+    union = first | second
+    return bool(union) and len(first & second) / len(union) >= 0.60
