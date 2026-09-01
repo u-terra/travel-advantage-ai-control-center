@@ -1,0 +1,9 @@
+# Reproducible dependencies for the web Orchestrator (app/web_api.py).
+# Deliberately kept in the same environment as the bot (no separate
+# .venv-web) - this just adds the extra packages app/web_api.py needs
+# on top of the project's base dependencies.
+-r requirements.txt
+
+fastapi==0.115.0
+uvicorn==0.32.0
+markdown==3.7

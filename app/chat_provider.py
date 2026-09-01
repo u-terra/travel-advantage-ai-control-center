@@ -34,6 +34,7 @@ class OpenAIChatProvider:
         history: list[dict[str, str]] | None = None,
         knowledge_context: str | None = None,
         personal_style: str | None = None,
+        workspace_memory: str | None = None,
     ) -> ChatResult:
         input_items: list[dict[str, str]] = []
 
@@ -97,6 +98,16 @@ class OpenAIChatProvider:
                 "Не придумывай отсутствующие факты и отделяй данные от своих выводов."
                 "\n\n"
                 + knowledge_context
+            )
+
+        if workspace_memory:
+            instructions += (
+                "\n\nWORKSPACE MEMORY (рабочий контекст проекта):\n"
+                + workspace_memory.strip()
+                + "\nЭто рабочая память проекта: текущие приоритеты, договорённости, "
+                "статус задач. Она НЕ является источником проверенных фактов о "
+                "Travel Advantage или MWR Life — для проверенных фактов используй "
+                "только базу знаний выше."
             )
 
         payload = {

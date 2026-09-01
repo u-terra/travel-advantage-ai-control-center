@@ -18,6 +18,7 @@ from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
+from app.repositories.workspace_memory_repository import WorkspaceMemoryRepository
 from app.services.competitor_intelligence import (
     CompetitorIntelligenceService,
     CompetitorIntelligenceUnavailable,
@@ -44,10 +45,14 @@ knowledge_repository = KnowledgeRepository()
 usage_ledger_repository = UsageLedgerRepository(settings.journal_db_path)
 competitor_repository = CompetitorRepository(settings.journal_db_path)
 partner_repository = PartnerRepository(settings.journal_db_path)
+workspace_memory_repository = WorkspaceMemoryRepository(settings.journal_db_path)
 
 # Temporary until web authentication is implemented.
 WEB_WORKSPACE_ID = 1
 WEB_TELEGRAM_USER_ID = 586249067
+
+# Верхняя граница объёма workspace memory, передаваемого в промпт.
+MAX_WORKSPACE_MEMORY_CHARS = 6000
 
 knowledge_service = KnowledgeService(
     knowledge_repository,
@@ -89,6 +94,7 @@ async def startup() -> None:
     await usage_ledger_repository.init()
     await competitor_repository.init()
     await partner_repository.init()
+    await workspace_memory_repository.init()
 
 
 def _fact_value(fact) -> str:
@@ -321,6 +327,16 @@ async def chat(request: ChatRequest):
             else ""
         )
 
+        memory_record = await workspace_memory_repository.get(WEB_WORKSPACE_ID)
+        workspace_memory_text = (
+            memory_record.summary.strip() if memory_record is not None else ""
+        )
+
+        if len(workspace_memory_text) > MAX_WORKSPACE_MEMORY_CHARS:
+            workspace_memory_text = (
+                workspace_memory_text[:MAX_WORKSPACE_MEMORY_CHARS] + "…"
+            )
+
         try:
             chat_result = await asyncio.to_thread(
                 chat_provider.generate,
@@ -328,6 +344,7 @@ async def chat(request: ChatRequest):
                 history=request.history[-12:],
                 knowledge_context=knowledge_context,
                 personal_style=personal_style,
+                workspace_memory=workspace_memory_text,
             )
         except Exception:
             await record_llm_call(

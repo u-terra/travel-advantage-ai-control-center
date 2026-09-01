@@ -32,9 +32,16 @@ def test_estimate_cost_returns_none_when_tokens_unavailable():
     assert estimate_cost_usd("openai", "gpt-4o-mini", None, None) is None
 
 
-def test_pricing_table_ships_empty_by_default():
-    """Real rates must be filled in deliberately, not silently assumed."""
-    assert PROVIDER_MODEL_PRICING_USD_PER_1K_TOKENS == {}
+def test_pricing_table_contains_only_deliberately_priced_models():
+    """Rates must be filled in deliberately, not silently assumed.
+
+    ("openai", "gpt-5.6-terra") is the one model priced so far - it backs
+    web_chat (app/chat_provider.py). Every other (provider, model) pair
+    must stay absent rather than being guessed.
+    """
+    assert PROVIDER_MODEL_PRICING_USD_PER_1K_TOKENS == {
+        ("openai", "gpt-5.6-terra"): (0.002, 0.012),
+    }
 
 
 def test_estimate_cost_computes_correctly_once_a_rate_is_provided(monkeypatch):
