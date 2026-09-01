@@ -260,6 +260,31 @@ async def health():
     }
 
 
+@app.get("/api/competitors")
+async def list_competitors():
+    try:
+        competitors = await competitor_repository.list_for_workspace(WEB_WORKSPACE_ID)
+        last_analyzed = await competitor_repository.list_intelligence_dates_for_workspace(
+            WEB_WORKSPACE_ID
+        )
+
+        return {
+            "competitors": [
+                {
+                    "id": competitor.id,
+                    "label": competitor.label,
+                    "domain": canonical_domain(competitor.url),
+                    "url": competitor.url,
+                    "last_analyzed_at": last_analyzed.get(competitor.id),
+                }
+                for competitor in competitors
+            ]
+        }
+
+    except Exception:
+        return {"error": "Не удалось загрузить список конкурентов."}
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     message = request.message.strip()

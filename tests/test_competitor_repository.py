@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from app.domain.competitor_intelligence import CompetitorIntelligence
 from app.repositories.competitor_repository import (
     CompetitorAddressError,
     CompetitorLabelError,
     CompetitorRepository,
 )
 from app.repositories.partner_repository import PartnerRepository, empty_business_context
+
+
+def _intelligence(competitor_id: int, analyzed_at: str) -> CompetitorIntelligence:
+    return CompetitorIntelligence(
+        competitor_id=competitor_id, competitor_label="Test", analyzed_at=analyzed_at,
+        positioning=(), products=(), destinations_and_categories=(), promotions=(),
+        loyalty_mechanics=(), service_and_ux=(), strengths=(),
+        travel_advantage_comparison=(), fresh_signals=(), sources=(), opportunities=(),
+    )
 
 
 def _run(coro: Any) -> Any:
@@ -191,3 +202,102 @@ def test_update_label_collapses_whitespace(tmp_path: Path) -> None:
 
     updated = _run(repository.update_label(workspace_a, competitor.id, "  Тур   Клуб  "))
     assert updated.label == "Тур Клуб"
+
+
+# ── list_intelligence_dates_for_workspace: cheap last-snapshot lookup for UI ──
+
+def test_intelligence_dates_empty_when_nothing_analyzed_yet(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+
+    assert _run(repository.list_intelligence_dates_for_workspace(workspace_a)) == {}
+
+
+def test_intelligence_dates_returns_analyzed_at_per_competitor(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    a = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+    b = _run(repository.add_competitor(workspace_a, "https://competitor-b.example.com"))
+    _run(repository.save_intelligence(workspace_a, _intelligence(a.id, "2026-01-01T00:00:00+00:00")))
+
+    dates = _run(repository.list_intelligence_dates_for_workspace(workspace_a))
+
+    assert dates == {a.id: "2026-01-01T00:00:00+00:00"}
+    assert b.id not in dates
+
+
+def test_intelligence_dates_updates_on_re_analysis(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    a = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+    _run(repository.save_intelligence(workspace_a, _intelligence(a.id, "2026-01-01T00:00:00+00:00")))
+    _run(repository.save_intelligence(workspace_a, _intelligence(a.id, "2026-02-01T00:00:00+00:00")))
+
+    dates = _run(repository.list_intelligence_dates_for_workspace(workspace_a))
+    assert dates == {a.id: "2026-02-01T00:00:00+00:00"}
+
+
+def test_intelligence_dates_picks_max_regardless_of_row_order(tmp_path: Path) -> None:
+    """list_intelligence_dates_for_workspace() must return the MAX(analyzed_at)
+    per competitor_id, not whatever row SQLite happens to return last.
+
+    competitor_id is a single-column PRIMARY KEY on
+    competitor_intelligence_snapshots today, so save_intelligence() can only
+    ever leave one row per competitor - true multi-row history isn't
+    reachable through the repository's own API. To still verify the
+    query's GROUP BY/MAX logic itself (not the schema's uniqueness
+    constraint) is what guarantees correctness, this test recreates just
+    that one table without the PRIMARY KEY restriction and inserts several
+    rows for the SAME competitor out of chronological order.
+    """
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+
+    with sqlite3.connect(db_path) as db:
+        db.execute("DROP TABLE competitor_intelligence_snapshots")
+        db.execute(
+            "CREATE TABLE competitor_intelligence_snapshots ("
+            "row_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "competitor_id INTEGER NOT NULL, workspace_id INTEGER NOT NULL, "
+            "analyzed_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
+        )
+        # Insertion order deliberately does NOT match chronological order,
+        # and the maximum date is neither the first nor the last row inserted.
+        for analyzed_at in (
+            "2026-01-15T00:00:00+00:00",
+            "2026-03-20T00:00:00+00:00",
+            "2026-02-10T00:00:00+00:00",
+        ):
+            db.execute(
+                "INSERT INTO competitor_intelligence_snapshots "
+                "(competitor_id, workspace_id, analyzed_at, payload_json) "
+                "VALUES (?, ?, ?, '{}')",
+                (competitor.id, workspace_a, analyzed_at),
+            )
+        db.commit()
+
+    dates = _run(repository.list_intelligence_dates_for_workspace(workspace_a))
+    assert dates == {competitor.id: "2026-03-20T00:00:00+00:00"}
+
+
+def test_intelligence_dates_isolated_by_workspace(tmp_path: Path) -> None:
+    db_path, workspace_a, workspace_b = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    a = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+    b = _run(repository.add_competitor(workspace_b, "https://competitor-b.example.com"))
+    _run(repository.save_intelligence(workspace_a, _intelligence(a.id, "2026-01-01T00:00:00+00:00")))
+    _run(repository.save_intelligence(workspace_b, _intelligence(b.id, "2026-03-01T00:00:00+00:00")))
+
+    assert _run(repository.list_intelligence_dates_for_workspace(workspace_a)) == {
+        a.id: "2026-01-01T00:00:00+00:00",
+    }
+    assert _run(repository.list_intelligence_dates_for_workspace(workspace_b)) == {
+        b.id: "2026-03-01T00:00:00+00:00",
+    }

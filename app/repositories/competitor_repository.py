@@ -206,6 +206,30 @@ class CompetitorRepository:
             return None
         return _intelligence_from_json(row["payload_json"])
 
+    async def list_intelligence_dates_for_workspace(
+        self, workspace_id: int,
+    ) -> dict[int, str]:
+        """competitor_id -> most recent analyzed_at for competitors that
+        already have a saved Competitor Intelligence snapshot. Cheap listing
+        lookup (no payload_json parsing) for UI cards - see get_intelligence()
+        for the full snapshot.
+
+        competitor_id is currently a single-column PRIMARY KEY on
+        competitor_intelligence_snapshots, so save_intelligence() can only
+        ever leave one row per competitor - but the query still aggregates
+        with MAX(analyzed_at) GROUP BY competitor_id rather than trusting
+        that invariant, so the result stays correct (and independent of
+        SQLite's row order) even if that constraint is ever relaxed."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT competitor_id, MAX(analyzed_at) FROM "
+                "competitor_intelligence_snapshots WHERE workspace_id = ? "
+                "GROUP BY competitor_id",
+                (workspace_id,),
+            )
+            rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows}
+
     @staticmethod
     async def _row(
         db: aiosqlite.Connection, workspace_id: int, competitor_id: int

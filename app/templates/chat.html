@@ -663,6 +663,173 @@ textarea {
     margin: 14px 0 0;
 }
 
+/* ---------- competitors (first real vertical slice) ---------- */
+
+.competitors-view {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 32px 24px 40px;
+}
+
+.competitors-head { margin-bottom: 22px; }
+
+.competitors-head h2 {
+    font-size: 21px;
+    margin: 0 0 6px;
+}
+
+.competitors-head p {
+    color: var(--text-muted);
+    font-size: 14.5px;
+    margin: 0;
+}
+
+.competitors-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 14px;
+}
+
+.competitor-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px 18px 16px;
+    box-shadow: 0 4px 14px rgba(16, 24, 40, .045);
+    transition: box-shadow .15s ease, border-color .15s ease;
+}
+
+.competitor-card:hover {
+    border-color: var(--teal);
+    box-shadow: 0 14px 30px rgba(16, 24, 40, .09);
+}
+
+.competitor-card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.competitor-avatar {
+    flex: 0 0 auto;
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: var(--teal-soft);
+    color: var(--teal-dark);
+    font-size: 15px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.competitor-info { min-width: 0; }
+
+.competitor-name {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+
+.competitor-domain {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+.competitor-meta {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.competitor-meta .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--border);
+    flex: 0 0 auto;
+}
+
+.competitor-meta.analyzed .dot { background: var(--teal); }
+
+.competitor-analyze-btn {
+    align-self: flex-start;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    border-radius: 9px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+
+.competitor-analyze-btn:hover {
+    border-color: var(--teal);
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+}
+
+.competitor-analyze-btn:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+}
+
+.competitors-loading {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 14.5px;
+    padding: 70px 20px;
+}
+
+.competitors-spinner {
+    width: 22px;
+    height: 22px;
+    margin: 0 auto 16px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    border-top-color: var(--teal);
+    animation: spin .8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.state-card {
+    max-width: 460px;
+    margin: 36px auto 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 32px 30px;
+    text-align: center;
+    box-shadow: 0 6px 20px rgba(16, 24, 40, .05);
+}
+
+.state-card h3 {
+    font-size: 16.5px;
+    margin: 0 0 8px;
+}
+
+.state-card p {
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1.6;
+    margin: 0;
+}
+
+.state-card .new-chat { margin-top: 16px; }
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 960px) {
@@ -938,29 +1105,12 @@ textarea {
             </section>
 
             <section class="view" id="view-competitors">
-                <div class="placeholder-view">
-                    <div class="placeholder-card">
-                        <div class="placeholder-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
-                                 stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="12" cy="12" r="8"/>
-                                <circle cx="12" cy="12" r="4"/>
-                                <circle cx="12" cy="12" r=".6" fill="currentColor" stroke="none"/>
-                            </svg>
-                        </div>
-                        <span class="badge-soon">Раздел подключается</span>
+                <div class="competitors-view">
+                    <div class="competitors-head">
                         <h2>Конкуренты</h2>
-                        <p>
-                            Здесь появится рабочий экран Competitor Intelligence: карточки
-                            отслеживаемых конкурентов, свежие сигналы по публичным источникам
-                            и сравнение позиционирования.
-                        </p>
-                        <ul>
-                            <li>Список конкурентов и статус последнего анализа</li>
-                            <li>Свежие Competitor Intelligence отчёты</li>
-                            <li>Быстрый запуск анализа из карточки конкурента</li>
-                        </ul>
+                        <p>Сохранённые конкуренты рабочего пространства и статус последнего анализа.</p>
                     </div>
+                    <div id="competitorsState"></div>
                 </div>
             </section>
 
@@ -1291,6 +1441,174 @@ message.addEventListener("input", () => {
         Math.min(message.scrollHeight, 180) + "px";
 });
 
+/* ---------- competitors ---------- */
+
+const competitorsState = document.getElementById("competitorsState");
+
+function renderCompetitorsLoading() {
+    competitorsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "competitors-loading";
+
+    const spinner = document.createElement("div");
+    spinner.className = "competitors-spinner";
+
+    wrap.appendChild(spinner);
+    wrap.appendChild(document.createTextNode("Загружаем список конкурентов…"));
+    competitorsState.appendChild(wrap);
+}
+
+function renderCompetitorsEmpty() {
+    competitorsState.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Пока нет сохранённых конкурентов";
+
+    const text = document.createElement("p");
+    text.textContent =
+        "Добавление конкурентов пока делается в Telegram-боте. Как только " +
+        "они появятся в рабочем пространстве, здесь будет их список и " +
+        "статус последнего анализа.";
+
+    card.appendChild(title);
+    card.appendChild(text);
+    competitorsState.appendChild(card);
+}
+
+function renderCompetitorsError() {
+    competitorsState.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Не удалось загрузить список конкурентов";
+
+    const text = document.createElement("p");
+    text.textContent = "Проверьте соединение и попробуйте ещё раз.";
+
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "new-chat";
+    retry.textContent = "Повторить";
+    retry.addEventListener("click", loadCompetitors);
+
+    card.appendChild(title);
+    card.appendChild(text);
+    card.appendChild(retry);
+    competitorsState.appendChild(card);
+}
+
+function formatAnalyzedAt(value) {
+    if (!value) return "Ещё не анализировался";
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Ещё не анализировался";
+
+    return "Анализ: " + date.toLocaleDateString("ru-RU", {
+        day: "2-digit", month: "2-digit", year: "numeric"
+    });
+}
+
+function renderCompetitorsList(items) {
+    competitorsState.innerHTML = "";
+
+    const grid = document.createElement("div");
+    grid.className = "competitors-grid";
+
+    items.forEach(item => {
+        const card = document.createElement("div");
+        card.className = "competitor-card";
+
+        const top = document.createElement("div");
+        top.className = "competitor-card-top";
+
+        const avatar = document.createElement("div");
+        avatar.className = "competitor-avatar";
+        avatar.textContent = (item.label || item.domain || "?").trim().charAt(0).toUpperCase();
+
+        const info = document.createElement("div");
+        info.className = "competitor-info";
+
+        const name = document.createElement("div");
+        name.className = "competitor-name";
+        name.textContent = item.label;
+
+        const domain = document.createElement("div");
+        domain.className = "competitor-domain";
+        domain.textContent = item.domain || item.url;
+
+        info.appendChild(name);
+        info.appendChild(domain);
+        top.appendChild(avatar);
+        top.appendChild(info);
+
+        const meta = document.createElement("div");
+        meta.className = "competitor-meta" + (item.last_analyzed_at ? " analyzed" : "");
+
+        const dot = document.createElement("span");
+        dot.className = "dot";
+
+        meta.appendChild(dot);
+        meta.appendChild(document.createTextNode(formatAnalyzedAt(item.last_analyzed_at)));
+
+        const analyzeBtn = document.createElement("button");
+        analyzeBtn.type = "button";
+        analyzeBtn.className = "competitor-analyze-btn";
+        analyzeBtn.textContent = "Анализировать";
+        analyzeBtn.addEventListener("click", () => {
+            const target =
+                item.label && item.label !== item.url
+                    ? item.label
+                    : (item.domain || item.url);
+
+            const prompt = "Проанализируй конкурента " + target;
+
+            activateView("assistant");
+            message.value = prompt;
+            message.dispatchEvent(new Event("input"));
+            message.focus();
+            message.setSelectionRange(prompt.length, prompt.length);
+        });
+
+        card.appendChild(top);
+        card.appendChild(meta);
+        card.appendChild(analyzeBtn);
+        grid.appendChild(card);
+    });
+
+    competitorsState.appendChild(grid);
+}
+
+async function loadCompetitors() {
+    renderCompetitorsLoading();
+
+    try {
+        const response = await fetch("/api/competitors");
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderCompetitorsError();
+            return;
+        }
+
+        const items = Array.isArray(data.competitors) ? data.competitors : [];
+
+        if (items.length === 0) {
+            renderCompetitorsEmpty();
+        } else {
+            renderCompetitorsList(items);
+        }
+
+    } catch (_) {
+        renderCompetitorsError();
+    }
+}
+
 document.querySelectorAll(".quick-card").forEach(card => {
     card.addEventListener("click", () => {
         const prompt = card.dataset.prompt || "";
@@ -1339,6 +1657,8 @@ function activateView(key) {
 
     if (key === "assistant") {
         message.focus();
+    } else if (key === "competitors") {
+        loadCompetitors();
     }
 }
 
