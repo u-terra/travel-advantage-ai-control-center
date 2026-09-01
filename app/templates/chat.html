@@ -1514,6 +1514,29 @@ function formatAnalyzedAt(value) {
     });
 }
 
+const KNOWN_DOMAIN_DISPLAY_NAMES = {
+    "vk.ru": "VK",
+    "vk.com": "VK"
+};
+
+function humanizeDomain(domain) {
+    if (!domain) return "";
+
+    const known = KNOWN_DOMAIN_DISPLAY_NAMES[domain.toLowerCase()];
+    if (known) return known;
+
+    return domain.charAt(0).toUpperCase() + domain.slice(1);
+}
+
+function competitorDisplayName(item) {
+    const looksLikeUrl =
+        !item.label || item.label === item.url || /^https?:\/\//i.test(item.label);
+
+    return looksLikeUrl
+        ? humanizeDomain(item.domain || item.url)
+        : item.label;
+}
+
 function renderCompetitorsList(items) {
     competitorsState.innerHTML = "";
 
@@ -1527,16 +1550,18 @@ function renderCompetitorsList(items) {
         const top = document.createElement("div");
         top.className = "competitor-card-top";
 
+        const displayName = competitorDisplayName(item);
+
         const avatar = document.createElement("div");
         avatar.className = "competitor-avatar";
-        avatar.textContent = (item.label || item.domain || "?").trim().charAt(0).toUpperCase();
+        avatar.textContent = (displayName || "?").trim().charAt(0).toUpperCase();
 
         const info = document.createElement("div");
         info.className = "competitor-info";
 
         const name = document.createElement("div");
         name.className = "competitor-name";
-        name.textContent = item.label;
+        name.textContent = displayName;
 
         const domain = document.createElement("div");
         domain.className = "competitor-domain";
@@ -1559,7 +1584,7 @@ function renderCompetitorsList(items) {
         const analyzeBtn = document.createElement("button");
         analyzeBtn.type = "button";
         analyzeBtn.className = "competitor-analyze-btn";
-        analyzeBtn.textContent = "Анализировать";
+        analyzeBtn.textContent = item.last_analyzed_at ? "Обновить анализ" : "Анализировать";
         analyzeBtn.addEventListener("click", () => {
             const target =
                 item.label && item.label !== item.url
