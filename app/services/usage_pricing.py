@@ -25,7 +25,9 @@ from __future__ import annotations
 #   - Whatever model backs the internal Travel Content Factory HTTP service
 #     (app/services/content_factory.py) - unknown from this repo, and that
 #     service does not return token usage at all today (see report).
-PROVIDER_MODEL_PRICING_USD_PER_1K_TOKENS: dict[tuple[str, str], tuple[float, float]] = {}
+PROVIDER_MODEL_PRICING_USD_PER_1K_TOKENS: dict[tuple[str, str], tuple[float, float]] = {
+    ("openai", "gpt-5.6-terra"): (0.002, 0.012),
+}
 
 
 def estimate_cost_usd(

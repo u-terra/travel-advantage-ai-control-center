@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Travel AI Orchestrator</title>
+<style>
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+    font-family: Arial, sans-serif;
+    background: #f5f6f8;
+    color: #172033;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+}
+
+header {
+    height: 64px;
+    flex: 0 0 64px;
+    background: white;
+    border-bottom: 1px solid #e2e6ea;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 28px;
+}
+
+.logo {
+    font-size: 19px;
+    font-weight: 700;
+}
+
+.new-chat {
+    border: 1px solid #d6dbe1;
+    background: white;
+    color: #172033;
+    border-radius: 9px;
+    padding: 9px 14px;
+    cursor: pointer;
+}
+
+.chat-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 30px 20px 180px;
+}
+
+.chat {
+    width: 100%;
+    max-width: 940px;
+    margin: 0 auto;
+}
+
+.welcome {
+    text-align: center;
+    padding: 45px 20px 25px;
+}
+
+.welcome h1 {
+    font-size: 32px;
+    margin: 0 0 10px;
+}
+
+.welcome p {
+    color: #697381;
+    font-size: 17px;
+}
+
+.message {
+    margin: 22px 0;
+    line-height: 1.65;
+    font-size: 16px;
+}
+
+.message.user {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.user-bubble {
+    max-width: 75%;
+    background: #e8edf3;
+    border-radius: 18px 18px 5px 18px;
+    padding: 13px 17px;
+    white-space: pre-wrap;
+}
+
+.assistant-bubble {
+    background: white;
+    border: 1px solid #e2e6ea;
+    border-radius: 18px;
+    padding: 24px 28px;
+    box-shadow: 0 4px 18px rgba(0,0,0,.035);
+}
+
+.assistant-bubble h1 { font-size: 27px; margin: 28px 0 14px; }
+.assistant-bubble h2 { font-size: 22px; margin: 26px 0 12px; }
+.assistant-bubble h3 { font-size: 18px; margin: 22px 0 10px; }
+
+.assistant-bubble p {
+    margin: 11px 0;
+}
+
+.assistant-bubble ul,
+.assistant-bubble ol {
+    padding-left: 26px;
+}
+
+.assistant-bubble li {
+    margin: 7px 0;
+}
+
+.assistant-bubble blockquote {
+    margin: 18px 0;
+    padding: 10px 16px;
+    border-left: 4px solid #9ba6b2;
+    background: #f7f8fa;
+}
+
+.assistant-bubble table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0;
+    display: block;
+    overflow-x: auto;
+}
+
+.assistant-bubble th,
+.assistant-bubble td {
+    padding: 10px 12px;
+    border: 1px solid #dfe3e8;
+    text-align: left;
+    vertical-align: top;
+}
+
+.assistant-bubble th {
+    background: #f5f7f9;
+}
+
+.thinking {
+    color: #78828e;
+}
+
+.composer-wrap {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 18px 20px 24px;
+    background: linear-gradient(
+        to top,
+        #f5f6f8 75%,
+        rgba(245,246,248,0)
+    );
+}
+
+.composer {
+    max-width: 940px;
+    margin: 0 auto;
+    background: white;
+    border: 1px solid #dfe4e8;
+    border-radius: 18px;
+    padding: 14px 14px 12px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.08);
+}
+
+textarea {
+    display: block;
+    width: 100%;
+    min-height: 54px;
+    max-height: 180px;
+    border: 0;
+    outline: none;
+    resize: none;
+    padding: 5px 6px;
+    font: inherit;
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+.composer-actions {
+    margin-top: 8px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.send {
+    border: 0;
+    background: #172033;
+    color: white;
+    border-radius: 10px;
+    padding: 10px 18px;
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.send:disabled {
+    opacity: .5;
+    cursor: wait;
+}
+
+@media (max-width: 700px) {
+    header { padding: 0 16px; }
+    .chat-scroll { padding-left: 12px; padding-right: 12px; }
+    .assistant-bubble { padding: 18px; }
+    .user-bubble { max-width: 90%; }
+    .welcome h1 { font-size: 26px; }
+}
+</style>
+</head>
+
+<body>
+
+<header>
+    <div class="logo">Travel AI Orchestrator</div>
+    <button class="new-chat" id="newChat">Новый диалог</button>
+</header>
+
+<div class="chat-scroll" id="scroll">
+    <div class="chat" id="chat">
+        <div class="welcome" id="welcome">
+            <h1>Спросите Оркестратор</h1>
+            <p>Рынок, конкуренты, путешествия и рабочие задачи.</p>
+        </div>
+    </div>
+</div>
+
+<div class="composer-wrap">
+    <div class="composer">
+        <textarea
+            id="message"
+            rows="1"
+            placeholder="Напишите вопрос или задачу..."
+        ></textarea>
+        <div class="composer-actions">
+            <button class="send" id="send">Отправить</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const chat = document.getElementById("chat");
+const scrollBox = document.getElementById("scroll");
+const message = document.getElementById("message");
+const send = document.getElementById("send");
+const welcome = document.getElementById("welcome");
+const newChat = document.getElementById("newChat");
+
+let history = [];
+
+try {
+    const stored = JSON.parse(
+        sessionStorage.getItem("ta_chat_history") || "[]"
+    );
+    if (Array.isArray(stored)) history = stored;
+} catch (_) {
+    history = [];
+}
+
+function scrollBottom() {
+    requestAnimationFrame(() => {
+        scrollBox.scrollTop = scrollBox.scrollHeight;
+    });
+}
+
+function addUser(text) {
+    welcome.style.display = "none";
+
+    const row = document.createElement("div");
+    row.className = "message user";
+
+    const bubble = document.createElement("div");
+    bubble.className = "user-bubble";
+    bubble.textContent = text;
+
+    row.appendChild(bubble);
+    chat.appendChild(row);
+    scrollBottom();
+}
+
+function addAssistant(html, plainText) {
+    welcome.style.display = "none";
+
+    const row = document.createElement("div");
+    row.className = "message assistant";
+
+    const bubble = document.createElement("div");
+    bubble.className = "assistant-bubble";
+
+    if (html) {
+        bubble.innerHTML = html;
+    } else {
+        bubble.textContent = plainText || "";
+    }
+
+    row.appendChild(bubble);
+    chat.appendChild(row);
+    scrollBottom();
+
+    return bubble;
+}
+
+function saveHistory() {
+    sessionStorage.setItem(
+        "ta_chat_history",
+        JSON.stringify(history.slice(-12))
+    );
+}
+
+function restoreHistory() {
+    if (!history.length) return;
+
+    welcome.style.display = "none";
+
+    for (const item of history) {
+        if (item.role === "user") {
+            addUser(item.content);
+        } else if (item.role === "assistant") {
+            addAssistant(item.html || "", item.content);
+        }
+    }
+}
+
+async function submitMessage() {
+    const text = message.value.trim();
+    if (!text || send.disabled) return;
+
+    const apiHistory = history.map(item => ({
+        role: item.role,
+        content: item.content
+    }));
+
+    addUser(text);
+
+    message.value = "";
+    message.style.height = "auto";
+    message.focus();
+
+    send.disabled = true;
+
+    const thinking = addAssistant("", "Анализирую…");
+    thinking.classList.add("thinking");
+
+    try {
+        const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                message: text,
+                history: apiHistory
+            })
+        });
+
+        const data = await response.json();
+
+        if (!data.answer) {
+            thinking.textContent =
+                data.error || "Не удалось получить ответ.";
+            return;
+        }
+
+        thinking.classList.remove("thinking");
+        thinking.innerHTML =
+            data.answer_html || data.answer;
+
+        history.push({
+            role: "user",
+            content: text
+        });
+
+        history.push({
+            role: "assistant",
+            content: data.answer,
+            html: data.answer_html || ""
+        });
+
+        history = history.slice(-12);
+        saveHistory();
+        scrollBottom();
+
+    } catch (_) {
+        thinking.textContent =
+            "Ошибка соединения с Оркестратором.";
+    } finally {
+        send.disabled = false;
+        message.focus();
+    }
+}
+
+send.addEventListener("click", submitMessage);
+
+message.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        submitMessage();
+    }
+});
+
+message.addEventListener("input", () => {
+    message.style.height = "auto";
+    message.style.height =
+        Math.min(message.scrollHeight, 180) + "px";
+});
+
+newChat.addEventListener("click", () => {
+    history = [];
+    sessionStorage.removeItem("ta_chat_history");
+
+    chat.querySelectorAll(".message").forEach(
+        element => element.remove()
+    );
+
+    welcome.style.display = "block";
+    message.value = "";
+    message.focus();
+});
+
+restoreHistory();
+scrollBottom();
+message.focus();
+</script>
+
+</body>
+</html>
