@@ -7,75 +7,456 @@
 <style>
 * { box-sizing: border-box; }
 
+:root {
+    --navy-950: #0a0f1c;
+    --navy-900: #0d1424;
+    --navy-800: #131c30;
+    --navy-700: #1b2740;
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --teal-soft: rgba(23, 179, 163, .14);
+    --teal-soft-strong: rgba(23, 179, 163, .22);
+    --amber: #e3a24c;
+    --amber-soft: rgba(227, 162, 76, .16);
+    --bg: #f4f6fa;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+    --sidebar-text: #c4cede;
+    --sidebar-text-dim: #8792ac;
+    --sidebar-border: rgba(255, 255, 255, .07);
+}
+
 html, body {
     margin: 0;
     height: 100%;
-    font-family: Arial, sans-serif;
-    background: #f5f6f8;
-    color: #172033;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
 }
 
-body {
+button, textarea { font-family: inherit; }
+
+/* ---------- shell layout ---------- */
+
+.app-shell {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 12, 20, .45);
+    z-index: 40;
+}
+
+.overlay.show { display: block; }
+
+/* ---------- sidebar ---------- */
+
+.sidebar {
+    width: 280px;
+    flex: 0 0 280px;
+    background: var(--sidebar-grad);
+    color: var(--sidebar-text);
     display: flex;
     flex-direction: column;
+    padding: 22px 14px 16px;
+    overflow-y: auto;
+    z-index: 50;
 }
 
-header {
-    height: 64px;
-    flex: 0 0 64px;
-    background: white;
-    border-bottom: 1px solid #e2e6ea;
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 4px 10px 22px;
+    border-bottom: 1px solid var(--sidebar-border);
+    margin-bottom: 16px;
+}
+
+.brand-mark {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--teal) 0%, #3fd1c4 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 16px rgba(23, 179, 163, .35);
+}
+
+.brand-mark svg { width: 18px; height: 18px; }
+
+.brand-text .name {
+    font-size: 15px;
+    font-weight: 700;
+    color: #f2f5fa;
+    line-height: 1.25;
+}
+
+.brand-text .sub {
+    font-size: 12px;
+    color: var(--sidebar-text-dim);
+}
+
+.nav-group-label {
+    font-size: 11px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--sidebar-text-dim);
+    padding: 14px 12px 6px;
+}
+
+.nav {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--sidebar-text-dim);
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 14.5px;
+    text-align: left;
+    cursor: pointer;
+    transition: background .15s ease, color .15s ease;
+}
+
+.nav-item svg {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+}
+
+.nav-item:hover {
+    background: rgba(255, 255, 255, .06);
+    color: #e7ecf5;
+}
+
+.nav-item:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+}
+
+.nav-item.active {
+    background: var(--teal-soft-strong);
+    color: #ecfbf9;
+}
+
+.nav-item.active svg { stroke: var(--teal); }
+
+.sidebar-footer {
+    margin-top: auto;
+    padding: 14px 12px 4px;
+    border-top: 1px solid var(--sidebar-border);
+    font-size: 12px;
+    color: var(--sidebar-text-dim);
+}
+
+.sidebar-footer strong { color: var(--sidebar-text); font-weight: 600; }
+
+/* ---------- main column ---------- */
+
+.main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.topbar {
+    flex: 0 0 66px;
+    height: 66px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 28px;
+    padding: 0 26px;
+    gap: 16px;
 }
 
-.logo {
-    font-size: 19px;
+.topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+}
+
+.hamburger {
+    display: none;
+    border: 1px solid var(--border);
+    background: var(--card);
+    border-radius: 9px;
+    width: 38px;
+    height: 38px;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.hamburger svg { width: 18px; height: 18px; }
+
+.section-heading h1 {
+    font-size: 18px;
     font-weight: 700;
+    margin: 0;
+    line-height: 1.3;
+}
+
+.section-heading p {
+    margin: 1px 0 0;
+    font-size: 12.5px;
+    color: var(--text-muted);
+}
+
+.topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 0 0 auto;
+}
+
+.status-pill {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 12px 6px 10px;
+}
+
+.status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--teal);
+    box-shadow: 0 0 0 0 rgba(23, 179, 163, .5);
+    animation: pulse 2.2s infinite;
+}
+
+@keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(23, 179, 163, .45); }
+    70%  { box-shadow: 0 0 0 6px rgba(23, 179, 163, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(23, 179, 163, 0); }
 }
 
 .new-chat {
-    border: 1px solid #d6dbe1;
-    background: white;
-    color: #172033;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
     border-radius: 9px;
     padding: 9px 14px;
+    font-size: 13.5px;
+    font-weight: 600;
     cursor: pointer;
+    transition: border-color .15s ease, color .15s ease, background .15s ease;
 }
 
+.new-chat:hover {
+    border-color: var(--teal);
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+}
+
+/* ---------- views ---------- */
+
+.views {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+.view {
+    display: none;
+    height: 100%;
+    overflow-y: auto;
+}
+
+.view.active { display: block; }
+
+#view-assistant.active {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+}
+
+/* ---------- assistant background art (subtle, no photos/clichés) ---------- */
+
+.assistant-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+    background:
+        radial-gradient(560px 420px at 90% -8%, rgba(23, 179, 163, .10), transparent 60%),
+        radial-gradient(520px 420px at 2% 106%, rgba(13, 20, 36, .05), transparent 60%);
+}
+
+.assistant-bg svg {
+    width: 100%;
+    height: 100%;
+    opacity: .4;
+}
+
+/* ---------- assistant / chat ---------- */
+
 .chat-scroll {
+    position: relative;
+    z-index: 1;
     flex: 1;
     overflow-y: auto;
-    padding: 30px 20px 180px;
+    padding: 28px 24px 20px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(102, 114, 138, .35) transparent;
+}
+
+.chat-scroll::-webkit-scrollbar { width: 8px; }
+.chat-scroll::-webkit-scrollbar-track { background: transparent; }
+
+.chat-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(102, 114, 138, .3);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+.chat-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(102, 114, 138, .5);
+    background-clip: padding-box;
 }
 
 .chat {
     width: 100%;
-    max-width: 940px;
+    max-width: 840px;
     margin: 0 auto;
 }
 
 .welcome {
+    max-width: 720px;
+    margin: 0 auto;
     text-align: center;
-    padding: 45px 20px 25px;
+    padding: 52px 20px 6px;
+}
+
+.welcome-eyebrow {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--teal-dark);
+    margin-bottom: 14px;
 }
 
 .welcome h1 {
-    font-size: 32px;
-    margin: 0 0 10px;
+    font-size: 33px;
+    font-weight: 700;
+    margin: 0 0 12px;
+    letter-spacing: -.015em;
 }
 
 .welcome p {
-    color: #697381;
-    font-size: 17px;
+    color: var(--text-muted);
+    font-size: 16px;
+    margin: 0 0 32px;
+}
+
+.quick-actions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+    text-align: left;
+}
+
+.quick-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px 18px 16px;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(16, 24, 40, .045);
+    transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+
+.quick-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--teal);
+    box-shadow: 0 16px 34px rgba(16, 24, 40, .10);
+}
+
+.quick-card:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+}
+
+.quick-card-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: var(--teal-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s ease;
+}
+
+.quick-card:hover .quick-card-icon { background: var(--teal-soft-strong); }
+
+.quick-card-icon svg {
+    width: 18px;
+    height: 18px;
+    stroke: var(--teal-dark);
+}
+
+.quick-card-title {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.quick-card-desc {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    line-height: 1.4;
 }
 
 .message {
-    margin: 22px 0;
+    margin: 20px 0;
     line-height: 1.65;
-    font-size: 16px;
+    font-size: 15.5px;
 }
 
 .message.user {
@@ -85,42 +466,40 @@ header {
 
 .user-bubble {
     max-width: 75%;
-    background: #e8edf3;
+    background: var(--teal-soft);
+    color: var(--text);
     border-radius: 18px 18px 5px 18px;
     padding: 13px 17px;
     white-space: pre-wrap;
 }
 
 .assistant-bubble {
-    background: white;
-    border: 1px solid #e2e6ea;
-    border-radius: 18px;
-    padding: 24px 28px;
-    box-shadow: 0 4px 18px rgba(0,0,0,.035);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 22px 26px;
+    box-shadow: 0 6px 20px rgba(16, 24, 40, .05);
 }
 
-.assistant-bubble h1 { font-size: 27px; margin: 28px 0 14px; }
-.assistant-bubble h2 { font-size: 22px; margin: 26px 0 12px; }
-.assistant-bubble h3 { font-size: 18px; margin: 22px 0 10px; }
+.assistant-bubble h1 { font-size: 26px; margin: 26px 0 14px; }
+.assistant-bubble h2 { font-size: 21px; margin: 24px 0 12px; }
+.assistant-bubble h3 { font-size: 17.5px; margin: 20px 0 10px; }
 
-.assistant-bubble p {
-    margin: 11px 0;
-}
+.assistant-bubble p { margin: 11px 0; }
 
 .assistant-bubble ul,
 .assistant-bubble ol {
     padding-left: 26px;
 }
 
-.assistant-bubble li {
-    margin: 7px 0;
-}
+.assistant-bubble li { margin: 7px 0; }
 
 .assistant-bubble blockquote {
     margin: 18px 0;
     padding: 10px 16px;
-    border-left: 4px solid #9ba6b2;
-    background: #f7f8fa;
+    border-left: 3px solid var(--teal);
+    background: var(--teal-soft);
+    border-radius: 0 8px 8px 0;
 }
 
 .assistant-bubble table {
@@ -134,112 +513,607 @@ header {
 .assistant-bubble th,
 .assistant-bubble td {
     padding: 10px 12px;
-    border: 1px solid #dfe3e8;
+    border: 1px solid var(--border);
     text-align: left;
     vertical-align: top;
 }
 
-.assistant-bubble th {
-    background: #f5f7f9;
-}
+.assistant-bubble th { background: var(--bg); }
 
-.thinking {
-    color: #78828e;
-}
+.thinking { color: var(--text-muted); }
 
 .composer-wrap {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    padding: 18px 20px 24px;
-    background: linear-gradient(
-        to top,
-        #f5f6f8 75%,
-        rgba(245,246,248,0)
-    );
+    position: relative;
+    z-index: 1;
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    background: var(--card);
+    padding: 8px 24px 12px;
 }
 
 .composer {
-    max-width: 940px;
+    max-width: 840px;
     margin: 0 auto;
-    background: white;
-    border: 1px solid #dfe4e8;
-    border-radius: 18px;
-    padding: 14px 14px 12px;
-    box-shadow: 0 8px 30px rgba(0,0,0,.08);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 6px 14px 6px;
+    box-shadow: 0 2px 10px rgba(16, 24, 40, .04);
+    transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.composer:focus-within {
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px var(--teal-soft);
+    background: var(--card);
 }
 
 textarea {
     display: block;
     width: 100%;
-    min-height: 54px;
+    min-height: 22px;
     max-height: 180px;
     border: 0;
     outline: none;
     resize: none;
-    padding: 5px 6px;
-    font: inherit;
-    font-size: 16px;
+    background: transparent;
+    padding: 4px 6px;
+    font-size: 15.5px;
     line-height: 1.5;
+    color: var(--text);
 }
 
 .composer-actions {
-    margin-top: 8px;
+    margin-top: 4px;
     display: flex;
     justify-content: flex-end;
 }
 
 .send {
     border: 0;
-    background: #172033;
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
     color: white;
     border-radius: 10px;
-    padding: 10px 18px;
-    font-size: 15px;
+    padding: 7px 16px;
+    font-size: 14.5px;
+    font-weight: 600;
     cursor: pointer;
+    box-shadow: 0 4px 14px rgba(15, 148, 136, .28);
+    transition: filter .15s ease, transform .1s ease, box-shadow .15s ease;
 }
+
+.send:hover {
+    filter: brightness(1.06);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(15, 148, 136, .34);
+}
+
+.send:active { transform: translateY(1px); box-shadow: 0 2px 8px rgba(15, 148, 136, .28); }
 
 .send:disabled {
     opacity: .5;
     cursor: wait;
+    filter: none;
 }
 
-@media (max-width: 700px) {
-    header { padding: 0 16px; }
-    .chat-scroll { padding-left: 12px; padding-right: 12px; }
+/* ---------- placeholder sections ---------- */
+
+.placeholder-view {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 48px 24px 40px;
+}
+
+.placeholder-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 36px 34px;
+    box-shadow: 0 6px 20px rgba(16, 24, 40, .05);
+}
+
+.placeholder-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    background: var(--teal-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 18px;
+}
+
+.placeholder-icon svg {
+    width: 22px;
+    height: 22px;
+    stroke: var(--teal-dark);
+}
+
+.badge-soon {
+    display: inline-block;
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: #8a5c14;
+    background: var(--amber-soft);
+    border: 1px solid rgba(227, 162, 76, .35);
+    border-radius: 999px;
+    padding: 4px 10px;
+    margin-bottom: 14px;
+}
+
+.placeholder-card h2 {
+    font-size: 22px;
+    margin: 0 0 12px;
+}
+
+.placeholder-card p {
+    color: var(--text-muted);
+    font-size: 15px;
+    line-height: 1.6;
+    margin: 0 0 10px;
+}
+
+.placeholder-card ul {
+    color: var(--text-muted);
+    font-size: 14.5px;
+    line-height: 1.7;
+    padding-left: 20px;
+    margin: 14px 0 0;
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 960px) {
+    .sidebar {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        transform: translateX(-100%);
+        transition: transform .22s ease;
+        box-shadow: 24px 0 60px rgba(0, 0, 0, .28);
+    }
+
+    .sidebar.open { transform: translateX(0); }
+
+    .hamburger { display: inline-flex; }
+
+    .topbar { padding: 0 16px; }
+    .status-pill span.status-label { display: none; }
+}
+
+@media (max-width: 640px) {
+    .topbar { padding: 0 14px; gap: 10px; }
+    .section-heading p { display: none; }
+    .chat-scroll { padding: 20px 14px 16px; }
+    .composer-wrap { padding: 8px 14px 12px; }
     .assistant-bubble { padding: 18px; }
     .user-bubble { max-width: 90%; }
-    .welcome h1 { font-size: 26px; }
+    .welcome { padding: 28px 4px 4px; }
+    .welcome h1 { font-size: 25px; }
+    .quick-actions { grid-template-columns: 1fr; }
+    .placeholder-view { padding: 28px 16px; }
+    .placeholder-card { padding: 26px 22px; }
+    .new-chat span.new-chat-label { display: none; }
 }
 </style>
 </head>
 
 <body>
 
-<header>
-    <div class="logo">Travel AI Orchestrator</div>
-    <button class="new-chat" id="newChat">Новый диалог</button>
-</header>
+<div class="app-shell">
 
-<div class="chat-scroll" id="scroll">
-    <div class="chat" id="chat">
-        <div class="welcome" id="welcome">
-            <h1>Спросите Оркестратор</h1>
-            <p>Рынок, конкуренты, путешествия и рабочие задачи.</p>
+    <div class="overlay" id="overlay"></div>
+
+    <aside class="sidebar" id="sidebar">
+        <div class="brand">
+            <div class="brand-mark">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2l2.6 6.6L21 11l-6.4 2.4L12 20l-2.6-6.6L3 11l6.4-2.4z"/>
+                </svg>
+            </div>
+            <div class="brand-text">
+                <div class="name">Travel AI Orchestrator</div>
+                <div class="sub">Рабочий кабинет партнёра</div>
+            </div>
         </div>
-    </div>
-</div>
 
-<div class="composer-wrap">
-    <div class="composer">
-        <textarea
-            id="message"
-            rows="1"
-            placeholder="Напишите вопрос или задачу..."
-        ></textarea>
-        <div class="composer-actions">
-            <button class="send" id="send">Отправить</button>
+        <div class="nav-group-label">Рабочее пространство</div>
+        <ul class="nav" id="nav">
+            <li>
+                <button class="nav-item active" data-view="assistant"
+                        data-title="Ассистент" data-subtitle="Рабочий чат с Оркестратором">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-4 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>
+                    </svg>
+                    Ассистент
+                </button>
+            </li>
+            <li>
+                <button class="nav-item" data-view="competitors"
+                        data-title="Конкуренты" data-subtitle="Competitor Intelligence и мониторинг рынка">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="8"/>
+                        <circle cx="12" cy="12" r="4"/>
+                        <circle cx="12" cy="12" r=".6" fill="currentColor" stroke="none"/>
+                    </svg>
+                    Конкуренты
+                </button>
+            </li>
+            <li>
+                <button class="nav-item" data-view="signals"
+                        data-title="Сигналы и идеи" data-subtitle="Радар рыночных сигналов и контент-идей">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                        <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/>
+                    </svg>
+                    Сигналы и идеи
+                </button>
+            </li>
+            <li>
+                <button class="nav-item" data-view="knowledge"
+                        data-title="База знаний" data-subtitle="Проверенные факты Travel Advantage и MWR Life">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 5.5C4 4.7 4.7 4 5.5 4H12v16H5.5C4.7 20 4 19.3 4 18.5v-13z"/>
+                        <path d="M20 5.5C20 4.7 19.3 4 18.5 4H12v16h6.5c.8 0 1.5-.7 1.5-1.5v-13z"/>
+                    </svg>
+                    База знаний
+                </button>
+            </li>
+            <li>
+                <button class="nav-item" data-view="materials"
+                        data-title="Материалы" data-subtitle="Тексты, черновики и контент-план">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z"/>
+                    </svg>
+                    Материалы
+                </button>
+            </li>
+            <li>
+                <button class="nav-item" data-view="history"
+                        data-title="История / Артефакты" data-subtitle="Архив диалогов и сохранённые ответы">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="8.5"/>
+                        <path d="M12 7.5V12l3 2"/>
+                    </svg>
+                    История / Артефакты
+                </button>
+            </li>
+            <li>
+                <button class="nav-item" data-view="profile"
+                        data-title="Профиль" data-subtitle="Бизнес-профиль и личный стиль общения">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="8.5" r="3.5"/>
+                        <path d="M4.5 20c1.2-3.8 4.2-6 7.5-6s6.3 2.2 7.5 6"/>
+                    </svg>
+                    Профиль
+                </button>
+            </li>
+            <li>
+                <button class="nav-item" data-view="settings"
+                        data-title="Настройки" data-subtitle="Параметры рабочего пространства">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 7h9M17 7h3M4 12h3M9 12h11M4 17h13M19 17h1"/>
+                        <circle cx="13" cy="7" r="2"/>
+                        <circle cx="6" cy="12" r="2"/>
+                        <circle cx="16" cy="17" r="2"/>
+                    </svg>
+                    Настройки
+                </button>
+            </li>
+        </ul>
+
+        <div class="sidebar-footer">
+            <strong>Web Orchestrator</strong> · Beta<br>
+            Основное рабочее пространство
+        </div>
+    </aside>
+
+    <div class="main">
+
+        <header class="topbar">
+            <div class="topbar-left">
+                <button class="hamburger" id="hamburger" aria-label="Открыть меню">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 6h16M4 12h16M4 18h16"/>
+                    </svg>
+                </button>
+                <div class="section-heading">
+                    <h1 id="sectionTitle">Ассистент</h1>
+                    <p id="sectionSubtitle">Рабочий чат с Оркестратором</p>
+                </div>
+            </div>
+            <div class="topbar-right">
+                <div class="status-pill">
+                    <span class="status-dot"></span>
+                    <span class="status-label">Orchestrator активен</span>
+                </div>
+                <button class="new-chat" id="newChat">
+                    <span class="new-chat-label">Новый диалог</span>
+                </button>
+            </div>
+        </header>
+
+        <div class="views" id="views">
+
+            <section class="view active" id="view-assistant">
+                <div class="assistant-bg" aria-hidden="true">
+                    <svg viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid slice"
+                         xmlns="http://www.w3.org/2000/svg">
+                        <path d="M30 640 C 210 540, 250 400, 410 380 S 630 270, 710 180 S 870 100, 970 60"
+                              fill="none" stroke="#17b3a3" stroke-width="2"
+                              stroke-dasharray="2 15" stroke-linecap="round"/>
+                        <circle cx="30" cy="640" r="5" fill="#17b3a3"/>
+                        <circle cx="410" cy="380" r="5" fill="#0d1424"/>
+                        <circle cx="710" cy="180" r="5" fill="#e3a24c"/>
+                        <circle cx="970" cy="60" r="5" fill="#17b3a3"/>
+                    </svg>
+                </div>
+
+                <div class="chat-scroll" id="scroll">
+                    <div class="chat" id="chat">
+                        <div class="welcome" id="welcome">
+                            <span class="welcome-eyebrow">Travel AI Orchestrator</span>
+                            <h1>Чем помочь сегодня?</h1>
+                            <p>Рынок, конкуренты, путешествия и рабочие задачи — в одном рабочем чате.</p>
+
+                            <div class="quick-actions">
+                                <button type="button" class="quick-card" id="qaCompetitor"
+                                        data-prompt="Проанализируй конкурента ">
+                                    <span class="quick-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                             stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="8"/>
+                                            <circle cx="12" cy="12" r="4"/>
+                                            <circle cx="12" cy="12" r=".6" fill="currentColor" stroke="none"/>
+                                        </svg>
+                                    </span>
+                                    <span class="quick-card-title">Проанализировать конкурента</span>
+                                    <span class="quick-card-desc">Публичные данные и Competitor Intelligence</span>
+                                </button>
+
+                                <button type="button" class="quick-card" id="qaSignals"
+                                        data-prompt="Какие сейчас самые важные рыночные сигналы и идеи для контента?">
+                                    <span class="quick-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                            <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/>
+                                        </svg>
+                                    </span>
+                                    <span class="quick-card-title">Найти идеи и сигналы</span>
+                                    <span class="quick-card-desc">Свежие рыночные сигналы для контента</span>
+                                </button>
+
+                                <button type="button" class="quick-card" id="qaMaterial"
+                                        data-prompt="Помоги создать материал на тему: ">
+                                    <span class="quick-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                             stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M4 20h4.5L19 9.5a2.12 2.12 0 0 0-3-3L5.5 17 4 20z"/>
+                                            <path d="M14 6.5l3 3"/>
+                                        </svg>
+                                    </span>
+                                    <span class="quick-card-title">Создать материал</span>
+                                    <span class="quick-card-desc">Пост, письмо или текст в вашем стиле</span>
+                                </button>
+
+                                <button type="button" class="quick-card" id="qaKnowledge"
+                                        data-prompt="Объясни просто: что такое Travel Advantage и как рассказать об этом клиенту?">
+                                    <span class="quick-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                             stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M4 5.5C4 4.7 4.7 4 5.5 4H12v16H5.5C4.7 20 4 19.3 4 18.5v-13z"/>
+                                            <path d="M20 5.5C20 4.7 19.3 4 18.5 4H12v16h6.5c.8 0 1.5-.7 1.5-1.5v-13z"/>
+                                        </svg>
+                                    </span>
+                                    <span class="quick-card-title">Спросить о Travel Advantage</span>
+                                    <span class="quick-card-desc">Проверенные факты из базы знаний</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="composer-wrap">
+                    <div class="composer">
+                        <textarea
+                            id="message"
+                            rows="1"
+                            placeholder="Напишите вопрос или задачу..."
+                        ></textarea>
+                        <div class="composer-actions">
+                            <button class="send" id="send">Отправить</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-competitors">
+                <div class="placeholder-view">
+                    <div class="placeholder-card">
+                        <div class="placeholder-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="8"/>
+                                <circle cx="12" cy="12" r="4"/>
+                                <circle cx="12" cy="12" r=".6" fill="currentColor" stroke="none"/>
+                            </svg>
+                        </div>
+                        <span class="badge-soon">Раздел подключается</span>
+                        <h2>Конкуренты</h2>
+                        <p>
+                            Здесь появится рабочий экран Competitor Intelligence: карточки
+                            отслеживаемых конкурентов, свежие сигналы по публичным источникам
+                            и сравнение позиционирования.
+                        </p>
+                        <ul>
+                            <li>Список конкурентов и статус последнего анализа</li>
+                            <li>Свежие Competitor Intelligence отчёты</li>
+                            <li>Быстрый запуск анализа из карточки конкурента</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-signals">
+                <div class="placeholder-view">
+                    <div class="placeholder-card">
+                        <div class="placeholder-icon">
+                            <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                                <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/>
+                            </svg>
+                        </div>
+                        <span class="badge-soon">Раздел подключается</span>
+                        <h2>Сигналы и идеи</h2>
+                        <p>
+                            Лента рыночных сигналов и идей для контента: то, что радар
+                            находит в отрасли, и подсказки, что с этим можно сделать.
+                        </p>
+                        <ul>
+                            <li>Радар сигналов рынка и трендов</li>
+                            <li>Идеи для постов и материалов на их основе</li>
+                            <li>Фильтр по источникам и актуальности</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-knowledge">
+                <div class="placeholder-view">
+                    <div class="placeholder-card">
+                        <div class="placeholder-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M4 5.5C4 4.7 4.7 4 5.5 4H12v16H5.5C4.7 20 4 19.3 4 18.5v-13z"/>
+                                <path d="M20 5.5C20 4.7 19.3 4 18.5 4H12v16h6.5c.8 0 1.5-.7 1.5-1.5v-13z"/>
+                            </svg>
+                        </div>
+                        <span class="badge-soon">Раздел подключается</span>
+                        <h2>База знаний</h2>
+                        <p>
+                            Проверенная база знаний Travel Advantage и MWR Life, которую
+                            уже использует Ассистент в чате, — здесь появится её отдельный
+                            просмотр: разделы, факты и источники.
+                        </p>
+                        <ul>
+                            <li>Просмотр разделов и канонических фактов</li>
+                            <li>Источники и статус проверки</li>
+                            <li>Поиск по базе знаний</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-materials">
+                <div class="placeholder-view">
+                    <div class="placeholder-card">
+                        <div class="placeholder-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z"/>
+                            </svg>
+                        </div>
+                        <span class="badge-soon">Раздел подключается</span>
+                        <h2>Материалы</h2>
+                        <p>
+                            Библиотека готовых текстов, черновиков и контент-плана партнёра —
+                            всё, что рождается из работы с Ассистентом, будет собираться здесь.
+                        </p>
+                        <ul>
+                            <li>Сохранённые материалы и черновики</li>
+                            <li>Контент-план по датам и каналам</li>
+                            <li>Экспорт в удобном формате</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-history">
+                <div class="placeholder-view">
+                    <div class="placeholder-card">
+                        <div class="placeholder-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="8.5"/>
+                                <path d="M12 7.5V12l3 2"/>
+                            </svg>
+                        </div>
+                        <span class="badge-soon">Раздел подключается</span>
+                        <h2>История / Артефакты</h2>
+                        <p>
+                            Архив прошлых диалогов с Оркестратором и сохранённые артефакты
+                            работы — не только текущая сессия в браузере, а полная история.
+                        </p>
+                        <ul>
+                            <li>Список прошлых диалогов и дата</li>
+                            <li>Сохранённые ответы и артефакты</li>
+                            <li>Возврат к диалогу для продолжения</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-profile">
+                <div class="placeholder-view">
+                    <div class="placeholder-card">
+                        <div class="placeholder-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="8.5" r="3.5"/>
+                                <path d="M4.5 20c1.2-3.8 4.2-6 7.5-6s6.3 2.2 7.5 6"/>
+                            </svg>
+                        </div>
+                        <span class="badge-soon">Раздел подключается</span>
+                        <h2>Профиль</h2>
+                        <p>
+                            Бизнес-профиль партнёра и личный стиль общения, который Ассистент
+                            уже учитывает в ответах, — здесь появится его редактирование.
+                        </p>
+                        <ul>
+                            <li>Бизнес-профиль: специализация, аудитория, позиционирование</li>
+                            <li>Личный стиль общения и примеры текстов</li>
+                            <li>Формулировки, которых стоит избегать</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-settings">
+                <div class="placeholder-view">
+                    <div class="placeholder-card">
+                        <div class="placeholder-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M4 7h9M17 7h3M4 12h3M9 12h11M4 17h13M19 17h1"/>
+                                <circle cx="13" cy="7" r="2"/>
+                                <circle cx="6" cy="12" r="2"/>
+                                <circle cx="16" cy="17" r="2"/>
+                            </svg>
+                        </div>
+                        <span class="badge-soon">Раздел подключается</span>
+                        <h2>Настройки</h2>
+                        <p>
+                            Параметры рабочего пространства: интеграции, уведомления и
+                            учёт использования Оркестратора появятся в этом разделе.
+                        </p>
+                        <ul>
+                            <li>Учёт использования и лимиты</li>
+                            <li>Интеграции рабочего пространства</li>
+                            <li>Уведомления</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
         </div>
     </div>
 </div>
@@ -251,6 +1125,13 @@ const message = document.getElementById("message");
 const send = document.getElementById("send");
 const welcome = document.getElementById("welcome");
 const newChat = document.getElementById("newChat");
+
+const sidebar = document.getElementById("sidebar");
+const overlay = document.getElementById("overlay");
+const hamburger = document.getElementById("hamburger");
+const navItems = document.querySelectorAll(".nav-item");
+const sectionTitle = document.getElementById("sectionTitle");
+const sectionSubtitle = document.getElementById("sectionSubtitle");
 
 let history = [];
 
@@ -410,7 +1291,17 @@ message.addEventListener("input", () => {
         Math.min(message.scrollHeight, 180) + "px";
 });
 
-newChat.addEventListener("click", () => {
+document.querySelectorAll(".quick-card").forEach(card => {
+    card.addEventListener("click", () => {
+        const prompt = card.dataset.prompt || "";
+        message.value = prompt;
+        message.dispatchEvent(new Event("input"));
+        message.focus();
+        message.setSelectionRange(prompt.length, prompt.length);
+    });
+});
+
+function resetChat() {
     history = [];
     sessionStorage.removeItem("ta_chat_history");
 
@@ -420,7 +1311,63 @@ newChat.addEventListener("click", () => {
 
     welcome.style.display = "block";
     message.value = "";
+}
+
+newChat.addEventListener("click", () => {
+    activateView("assistant");
+    resetChat();
     message.focus();
+});
+
+/* ---------- sidebar navigation ---------- */
+
+function activateView(key) {
+    document.querySelectorAll(".view").forEach(view => {
+        view.classList.toggle("active", view.id === "view-" + key);
+    });
+
+    navItems.forEach(item => {
+        const isActive = item.dataset.view === key;
+        item.classList.toggle("active", isActive);
+        if (isActive) {
+            sectionTitle.textContent = item.dataset.title;
+            sectionSubtitle.textContent = item.dataset.subtitle;
+        }
+    });
+
+    closeSidebar();
+
+    if (key === "assistant") {
+        message.focus();
+    }
+}
+
+navItems.forEach(item => {
+    item.addEventListener("click", () => activateView(item.dataset.view));
+});
+
+function openSidebar() {
+    sidebar.classList.add("open");
+    overlay.classList.add("show");
+}
+
+function closeSidebar() {
+    sidebar.classList.remove("open");
+    overlay.classList.remove("show");
+}
+
+hamburger.addEventListener("click", () => {
+    if (sidebar.classList.contains("open")) {
+        closeSidebar();
+    } else {
+        openSidebar();
+    }
+});
+
+overlay.addEventListener("click", closeSidebar);
+
+document.addEventListener("keydown", event => {
+    if (event.key === "Escape") closeSidebar();
 });
 
 restoreHistory();
