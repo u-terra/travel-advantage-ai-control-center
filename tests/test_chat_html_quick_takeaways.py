@@ -2,13 +2,14 @@
 Intelligence report view in app/templates/chat.html.
 
 No new LLM call - the card is built entirely from an already-fetched
-snapshot (positioning/strengths/opportunities), with client-side filtering
-so truncated/fragment-like source text (e.g. "GPT Apps You Can Use in",
-"направления: Shanghai...") never reaches the card. As with the report's
-other inline-JS behavior, there's no jsdom/npm toolchain in this repo, so
-these tests run the *actual* shipped functions via a `node` subprocess
-rather than reimplementing the logic in Python. Skips cleanly when `node`
-is missing.
+snapshot's positioning and strengths only (opportunities, products, signals
+and source titles/headlines are never used), with client-side filtering so
+truncated/headline-like source text (e.g. "GPT Apps You Can Use in",
+"...Which Is Better for Kids?...") never reaches the card. As with the
+report's other inline-JS behavior, there's no jsdom/npm toolchain in this
+repo, so these tests run the *actual* shipped functions via a `node`
+subprocess rather than reimplementing the logic in Python. Skips cleanly
+when `node` is missing.
 """
 
 from __future__ import annotations
@@ -29,11 +30,11 @@ pytestmark = pytest.mark.skipif(node is None, reason="node is not available on P
 _TAKEAWAY_FUNCTIONS = (
     "normalizeTakeawayKey",
     "normalizeTakeawayWhitespace",
-    "stripTakeawayTechnicalPrefix",
     "stripTakeawayTrailingEllipsis",
     "isCutOffTakeaway",
     "isTooThinToBeAThought",
-    "truncateTakeawayAtBoundary",
+    "looksLikeHeadlineTitle",
+    "shortenTakeawayAtSentenceBoundary",
     "prepareTakeawayCandidate",
     "buildQuickTakeaways",
 )
@@ -100,19 +101,22 @@ def _intelligence(**overrides) -> dict:
     base = {
         "positioning": [],
         "strengths": [],
+        # present in real snapshots but must never be used by the takeaways
+        # builder - included by default in a few tests below to prove that.
         "opportunities": [],
+        "products": [],
+        "fresh_signals": [],
     }
     base.update(overrides)
     return base
 
 
-# ── priority order: positioning, then strengths, then opportunities ─────────
+# ── priority order: positioning, then strengths; only these two fields ──────
 
-def test_takes_positioning_then_strengths_then_opportunities_in_order() -> None:
+def test_takes_positioning_then_strengths_in_order() -> None:
     intelligence = _intelligence(
         positioning=["Позиционируется как ОТА полного цикла.", "Фокус на азиатский рынок."],
         strengths=["Широкий инвентарь отелей."],
-        opportunities=[{"key_thesis": "Запущен новый AI-планировщик поездок."}],
     )
 
     result = _run_build_quick_takeaways(intelligence)
@@ -121,30 +125,35 @@ def test_takes_positioning_then_strengths_then_opportunities_in_order() -> None:
         "Позиционируется как ОТА полного цикла.",
         "Фокус на азиатский рынок.",
         "Широкий инвентарь отелей.",
-        "Запущен новый AI-планировщик поездок.",
     ]
 
 
-def test_caps_at_four_items_even_with_more_available() -> None:
+def test_caps_at_three_items_even_with_more_available() -> None:
     intelligence = _intelligence(
         positioning=["Позиция один.", "Позиция два.", "Позиция три."],
         strengths=["Сила один.", "Сила два.", "Сила три."],
-        opportunities=[
-            {"key_thesis": "Идея один."},
-            {"key_thesis": "Идея два."},
-            {"key_thesis": "Идея три."},
-        ],
     )
 
     result = _run_build_quick_takeaways(intelligence)
 
-    assert len(result) <= 4
-    # at most 2 taken from positioning/strengths each, in priority order -
-    # the two opportunities are never reached because the cap is already hit.
-    assert result == ["Позиция один.", "Позиция два.", "Сила один.", "Сила два."]
+    assert result == ["Позиция один.", "Позиция два.", "Позиция три."]
 
 
-# ── scarce data: fewer bullets than 3-4, nothing fabricated ─────────────────
+def test_opportunities_products_and_signals_are_never_used() -> None:
+    """Even when positioning/strengths are empty, the card must stay empty -
+    it must not fall back to opportunities/products/fresh_signals."""
+    intelligence = _intelligence(
+        opportunities=[{"key_thesis": "Полноценная идея из opportunities."}],
+        products=["Отели", "Авиабилеты"],
+        fresh_signals=["Полноценный свежий сигнал о конкуренте."],
+    )
+
+    result = _run_build_quick_takeaways(intelligence)
+
+    assert result == []
+
+
+# ── scarce data: fewer bullets than 3, nothing fabricated ───────────────────
 
 def test_single_positioning_item_yields_single_bullet() -> None:
     intelligence = _intelligence(positioning=["Единственный содержательный факт."])
@@ -154,7 +163,7 @@ def test_single_positioning_item_yields_single_bullet() -> None:
     assert result == ["Единственный содержательный факт."]
 
 
-def test_two_valid_items_stay_two_not_padded_to_three_or_four() -> None:
+def test_two_valid_items_stay_two_not_padded_to_three() -> None:
     intelligence = _intelligence(
         positioning=["Первая законченная мысль."],
         strengths=["Вторая законченная мысль."],
@@ -194,16 +203,11 @@ def test_duplicate_text_between_positioning_and_strengths_is_not_repeated() -> N
     intelligence = _intelligence(
         positioning=["Общий текст про конкурента."],
         strengths=["Общий текст про конкурента.", "Другая сильная сторона."],
-        opportunities=[{"key_thesis": "Отдельная идея для контента."}],
     )
 
     result = _run_build_quick_takeaways(intelligence)
 
-    assert result == [
-        "Общий текст про конкурента.",
-        "Другая сильная сторона.",
-        "Отдельная идея для контента.",
-    ]
+    assert result == ["Общий текст про конкурента.", "Другая сильная сторона."]
 
 
 def test_duplicate_ignores_case_and_surrounding_whitespace() -> None:
@@ -217,66 +221,32 @@ def test_duplicate_ignores_case_and_surrounding_whitespace() -> None:
     assert result == ["Текст ПРО конкурента."]
 
 
-# ── opportunities: prefer key_thesis / audience_value over topic ────────────
-
-def test_opportunity_uses_key_thesis_not_the_category_prefixed_topic() -> None:
+def test_dedup_does_not_starve_later_valid_items_below_the_cap() -> None:
+    """A duplicate must simply be skipped, not consume one of the 3 slots -
+    the third distinct valid item still gets in."""
     intelligence = _intelligence(
-        opportunities=[{
-            "topic": "направления: Shanghai Disneyland",
-            "key_thesis": "Trip.com выпустил гид по Shanghai Disneyland.",
-            "audience_value": "Помогает планировать поездку с детьми.",
-        }],
+        positioning=["Общая мысль про конкурента."],
+        strengths=[
+            "Общая мысль про конкурента.",
+            "Вторая сильная сторона конкурента.",
+            "Третья сильная сторона конкурента.",
+        ],
     )
 
     result = _run_build_quick_takeaways(intelligence)
 
-    assert result == ["Trip.com выпустил гид по Shanghai Disneyland."]
-    assert not any("направления" in item for item in result)
+    assert result == [
+        "Общая мысль про конкурента.",
+        "Вторая сильная сторона конкурента.",
+        "Третья сильная сторона конкурента.",
+    ]
 
 
-def test_opportunity_falls_back_to_audience_value_when_key_thesis_is_cut_off() -> None:
-    intelligence = _intelligence(
-        opportunities=[{
-            "topic": "AI и технологии в travel: AI-планировщик",
-            "key_thesis": "GPT Apps You Can Use in",
-            "audience_value": "Помогает путешественникам находить нужные инструменты быстрее.",
-        }],
-    )
-
-    result = _run_build_quick_takeaways(intelligence)
-
-    assert result == ["Помогает путешественникам находить нужные инструменты быстрее."]
-
-
-def test_opportunity_topic_is_never_used_as_a_takeaway_source() -> None:
-    """opportunity.topic is always built by the backend as "category: entity"
-    (see _opportunities() in competitor_intelligence.py) - by construction
-    it is a label, not a thought, so it must never surface here even as a
-    last resort."""
-    intelligence = _intelligence(
-        opportunities=[{"topic": "loyalty и promotions: Trip Coins бонусная программа"}],
-    )
-
-    result = _run_build_quick_takeaways(intelligence)
-
-    assert result == []
-
-
-def test_opportunity_with_blank_key_thesis_and_audience_value_yields_nothing() -> None:
-    intelligence = _intelligence(
-        opportunities=[{"key_thesis": "   ", "audience_value": ""}],
-    )
-
-    result = _run_build_quick_takeaways(intelligence)
-
-    assert result == []
-
-
-# ── the specific truncated/fragment examples reported by the user ───────────
+# ── the specific real Trip.com fragments this round targets ─────────────────
 
 def test_filters_out_dangling_preposition_fragment_gpt_apps_example() -> None:
-    """Real-world obrubok: a raw fact/thesis cut off mid-phrase, ending on a
-    dangling preposition with no terminal punctuation."""
+    """Real-world obrubok #1 from Trip.com: a raw fact cut off mid-phrase,
+    ending on a dangling preposition with no terminal punctuation."""
     intelligence = _intelligence(positioning=["GPT Apps You Can Use in"])
 
     result = _run_build_quick_takeaways(intelligence)
@@ -285,11 +255,43 @@ def test_filters_out_dangling_preposition_fragment_gpt_apps_example() -> None:
     assert not any("GPT Apps You Can Use in" in item for item in result)
 
 
-def test_gpt_apps_fragment_dropped_but_valid_sibling_item_kept() -> None:
+def test_filters_out_numbered_headline_variant_of_gpt_apps_example() -> None:
+    """The real Trip.com item is prefixed with a listicle number ("8 GPT
+    Apps..."). Title Case + a leading number is exactly the headline
+    signature, so this must also be dropped."""
+    intelligence = _intelligence(
+        strengths=["8 GPT Apps You Can Use in ChatGPT for Travel Planning"],
+    )
+
+    result = _run_build_quick_takeaways(intelligence)
+
+    assert result == []
+
+
+def test_filters_out_which_is_better_for_kids_headline_fragment() -> None:
+    """Real-world obrubok #2 from Trip.com: a comparison-headline fragment
+    ending in a trailing "...". Even though "?" alone would look like a
+    complete sentence, the Title Case pattern marks it as a source headline,
+    not a thought about the competitor."""
+    intelligence = _intelligence(
+        strengths=["Shanghai Disneyland vs Universal Beijing: Which Is Better for Kids?..."],
+    )
+
+    result = _run_build_quick_takeaways(intelligence)
+
+    assert result == []
+    assert not any("Which Is Better for Kids" in item for item in result)
+
+
+def test_headline_fragment_dropped_but_valid_sibling_item_kept() -> None:
     """Garbage is dropped, not used to pad the list, and doesn't block a
     genuinely valid item from the same field."""
     intelligence = _intelligence(
-        strengths=["GPT Apps You Can Use in", "Гибкая отмена бронирования без штрафа."],
+        strengths=[
+            "GPT Apps You Can Use in",
+            "Shanghai Disneyland vs Universal Beijing: Which Is Better for Kids?...",
+            "Гибкая отмена бронирования без штрафа.",
+        ],
     )
 
     result = _run_build_quick_takeaways(intelligence)
@@ -297,34 +299,30 @@ def test_gpt_apps_fragment_dropped_but_valid_sibling_item_kept() -> None:
     assert result == ["Гибкая отмена бронирования без штрафа."]
 
 
-def test_strips_category_prefix_and_drops_bare_entity_shanghai_example() -> None:
-    """Real-world obrubok: "направления: Shanghai..." - a technical
-    category-prefixed opportunity-topic label, not a thought. The category
-    prefix is stripped, the trailing "..." is stripped, and what remains
-    ("Shanghai") is a single bare word - too thin to count as a
-    self-sufficient idea, so nothing is shown for it."""
-    intelligence = _intelligence(positioning=["направления: Shanghai..."])
-
-    result = _run_build_quick_takeaways(intelligence)
-
-    assert result == []
-    assert not any("направления" in item for item in result)
-    assert not any(item == "Shanghai..." for item in result)
-
-
-def test_technical_prefix_stripped_when_remainder_is_a_full_thought() -> None:
+def test_normal_sentence_with_one_proper_noun_is_not_mistaken_for_a_headline() -> None:
+    """A real, complete sentence naturally capitalizes its first word and
+    any proper nouns (here: "Trip.com", "OTA", "Азию") - it must not trip
+    the headline-title heuristic just because a few words are capitalized."""
     intelligence = _intelligence(
-        positioning=["направления: Гид по паркам Шанхая набирает популярность."],
+        positioning=["Trip.com позиционируется как OTA полного цикла с фокусом на Азию."],
     )
 
     result = _run_build_quick_takeaways(intelligence)
 
-    assert result == ["Гид по паркам Шанхая набирает популярность."]
+    assert result == ["Trip.com позиционируется как OTA полного цикла с фокусом на Азию."]
 
 
-# ── long but valid text: shorten only at a sentence/word boundary ───────────
+def test_bare_short_remainder_after_ellipsis_strip_is_dropped() -> None:
+    intelligence = _intelligence(positioning=["Shanghai..."])
 
-def test_long_valid_sentence_is_truncated_at_sentence_boundary_not_mid_word() -> None:
+    result = _run_build_quick_takeaways(intelligence)
+
+    assert result == []
+
+
+# ── long but valid text: shorten only at a sentence boundary, else keep whole ─
+
+def test_long_valid_sentence_is_shortened_at_sentence_boundary() -> None:
     long_text = (
         "Конкурент активно продвигает новую программу лояльности для часто "
         "путешествующих клиентов. Это отдельное предложение, которое не "
@@ -335,31 +333,21 @@ def test_long_valid_sentence_is_truncated_at_sentence_boundary_not_mid_word() ->
 
     result = _run_build_quick_takeaways(intelligence)
 
-    assert len(result) == 1
-    takeaway = result[0]
-    assert takeaway == (
+    assert result == [
         "Конкурент активно продвигает новую программу лояльности для часто "
         "путешествующих клиентов."
-    )
-    assert "Это отдельное предложение" not in takeaway
-    # no dangling half-word: every remaining token is a real word/punctuation
-    assert not takeaway.rstrip(".").split(" ")[-1] == ""
+    ]
 
 
-def test_long_text_without_early_sentence_end_is_cut_at_word_boundary_with_ellipsis() -> None:
+def test_long_text_without_a_clean_sentence_boundary_is_kept_whole() -> None:
+    """If there is no good sentence boundary within the length budget, the
+    text must be kept in full rather than cut off mid-meaning."""
     long_text = "Слово" + " word" * 40  # no "." anywhere, well past the length cap
     intelligence = _intelligence(positioning=[long_text])
 
     result = _run_build_quick_takeaways(intelligence)
 
-    assert len(result) == 1
-    takeaway = result[0]
-    assert takeaway.endswith("…")
-    # the character right before the ellipsis is not mid-word: the boundary
-    # is always a full "word" token from the original text.
-    body = takeaway[:-1].strip()
-    assert body != "" and long_text.startswith(body)
-    assert long_text[len(body):len(body) + 1] in (" ", "")
+    assert result == [long_text]
 
 
 # ── appendQuickTakeaways: renders nothing when there is nothing to show ─────

@@ -2132,20 +2132,6 @@ function normalizeTakeawayWhitespace(text) {
     return (text || "").replace(/\s+/g, " ").trim();
 }
 
-/* Отчёт иногда хранит служебные ярлыки вида "направления: Shanghai" -
- * "направления:" здесь не мысль, а внутренняя категория opportunity.topic
- * (см. _opportunities() в competitor_intelligence.py: topic всегда
- * "category: entity"). Срезаем такой префикс, если то, что перед двоеточием,
- * само не выглядит законченным предложением. */
-function stripTakeawayTechnicalPrefix(text) {
-    const match = text.match(/^([^:]{2,45}):\s*(.+)$/s);
-    if (!match) return text;
-    const label = match[1].trim();
-    const rest = match[2].trim();
-    if (!rest || /[.!?]/.test(label)) return text;
-    return rest;
-}
-
 function stripTakeawayTrailingEllipsis(text) {
     return text.replace(/(\.{2,}|…)\s*$/, "").trim();
 }
@@ -2176,18 +2162,37 @@ function isCutOffTakeaway(text) {
     return TAKEAWAY_DANGLING_WORDS.has(lastWord);
 }
 
-/* Одно голое слово/сущность (например, всё, что осталось от "направления:
- * Shanghai..." после срезания префикса и многоточия) - не самостоятельная
- * мысль, а обрывок ярлыка. */
+/* Голое слово/сущность (например, всё, что осталось от короткого ярлыка
+ * после нормализации) - не самостоятельная мысль. */
 function isTooThinToBeAThought(text) {
     return text.split(" ").filter(Boolean).length < 2;
 }
 
+/* Заголовки и названия материалов конкурента ("GPT Apps You Can Use in
+ * ChatGPT for Travel Planning", "...Which Is Better for Kids?") пишутся в
+ * Title Case - почти каждое значимое слово с большой буквы. Обычное
+ * предложение (рус. или англ.) капитализирует только первое слово и
+ * случайные имена собственные. Порог по доле капитализированных слов ловит
+ * именно такие технические заголовки источников, не трогая обычный текст. */
+function looksLikeHeadlineTitle(text) {
+    const words = text.match(/[A-Za-zА-Яа-яЁё]+/g) || [];
+    const rest = words.slice(1).filter(word => word.length >= 3);
+    if (rest.length < 3) return false;
+
+    const capitalized = rest.filter(word => {
+        const first = word[0];
+        return first === first.toUpperCase() && first !== first.toLowerCase();
+    });
+
+    return capitalized.length / rest.length >= 0.6;
+}
+
 const TAKEAWAY_MAX_LENGTH = 140;
 
-/* Длинную, но валидную мысль сокращаем только по границе предложения или
- * слова - никогда не режем ни одно слово пополам. */
-function truncateTakeawayAtBoundary(text) {
+/* Длинную, но валидную мысль сокращаем ТОЛЬКО по границе предложения. Если
+ * аккуратной границы в пределах лимита нет - оставляем строку целиком: лучше
+ * длинный пункт, чем обрубленный смысл. */
+function shortenTakeawayAtSentenceBoundary(text) {
     if (text.length <= TAKEAWAY_MAX_LENGTH) return text;
 
     const slice = text.slice(0, TAKEAWAY_MAX_LENGTH);
@@ -2196,19 +2201,14 @@ function truncateTakeawayAtBoundary(text) {
         return sentenceMatch[0].trim();
     }
 
-    const lastSpace = slice.lastIndexOf(" ");
-    const cut = lastSpace > 20 ? slice.slice(0, lastSpace) : slice;
-    return cut.trim().replace(/[.,;:!?…-]+$/, "") + "…";
+    return text;
 }
 
 /* Возвращает законченную, самостоятельную мысль или null, если raw -
- * пустая строка, голый ярлык или обрывок фразы. Ничего не выдумывает и не
- * "чинит" обрывки - обрывки просто отбрасываются. */
+ * пустая строка, голый ярлык, заголовок источника или обрывок фразы.
+ * Ничего не выдумывает и не "чинит" обрывки - они просто отбрасываются. */
 function prepareTakeawayCandidate(raw) {
     let text = normalizeTakeawayWhitespace(raw);
-    if (!text) return null;
-
-    text = normalizeTakeawayWhitespace(stripTakeawayTechnicalPrefix(text));
     if (!text) return null;
 
     text = stripTakeawayTrailingEllipsis(text);
@@ -2216,46 +2216,37 @@ function prepareTakeawayCandidate(raw) {
 
     if (isTooThinToBeAThought(text)) return null;
     if (isCutOffTakeaway(text)) return null;
+    if (looksLikeHeadlineTitle(text)) return null;
 
-    return truncateTakeawayAtBoundary(text);
+    return shortenTakeawayAtSentenceBoundary(text);
 }
 
-/* Приоритет источников краткого вывода: позиционирование, сильные стороны,
- * возможности/рекомендации - без нового LLM-вызова, только уже сохранённые
- * поля snapshot. Для opportunities берём содержательные key_thesis /
- * audience_value, а не opportunity.topic - topic всегда собран бэкендом как
- * "категория: сущность" (см. _opportunities()), то есть по конструкции
- * всегда заголовок/фрагмент, а не мысль. Если данных мало, пунктов меньше -
- * ничего не добиваем; дедуп нужен, т.к. strengths в сервисе может дословно
- * повторять positioning. */
+/* Краткий вывод строится только из positioning и strengths - без нового
+ * LLM-вызова, только уже сохранённый snapshot. opportunities, products,
+ * signals и названия/заголовки источников сюда не идут вообще. Дедуп нужен,
+ * т.к. strengths в сервисе может дословно повторять positioning. Если
+ * валидных мыслей меньше 3 - показываем меньше, никогда не добиваем. */
 function buildQuickTakeaways(intelligence) {
     const picked = [];
     const seen = new Set();
 
     function tryAdd(raw) {
-        if (picked.length >= 4) return false;
+        if (picked.length >= 3) return;
         const candidate = prepareTakeawayCandidate(raw);
-        if (!candidate) return false;
+        if (!candidate) return;
         const key = normalizeTakeawayKey(candidate);
-        if (seen.has(key)) return false;
+        if (seen.has(key)) return;
         seen.add(key);
         picked.push(candidate);
-        return true;
     }
 
     const positioning = Array.isArray(intelligence.positioning) ? intelligence.positioning : [];
-    positioning.slice(0, 2).forEach(tryAdd);
+    positioning.forEach(tryAdd);
 
     const strengths = Array.isArray(intelligence.strengths) ? intelligence.strengths : [];
-    strengths.slice(0, 2).forEach(tryAdd);
+    strengths.forEach(tryAdd);
 
-    const opportunities = Array.isArray(intelligence.opportunities) ? intelligence.opportunities : [];
-    opportunities.slice(0, 2).forEach(opp => {
-        if (!opp) return;
-        tryAdd(opp.key_thesis) || tryAdd(opp.audience_value);
-    });
-
-    return picked.slice(0, 4);
+    return picked.slice(0, 3);
 }
 
 function appendQuickTakeaways(container, intelligence) {
