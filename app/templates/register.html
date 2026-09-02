@@ -196,7 +196,11 @@ h1 {
 const content = document.getElementById("content");
 
 function getInviteToken() {
-    return new URLSearchParams(window.location.search).get("invite") || "";
+    // .trim() - a token pasted into the URL by hand can pick up stray
+    // whitespace; the server also normalizes this the same way (see
+    // /api/auth/register), but stripping here avoids sending a token
+    // that's already wrong.
+    return (new URLSearchParams(window.location.search).get("invite") || "").trim();
 }
 
 function renderMissingInvite() {

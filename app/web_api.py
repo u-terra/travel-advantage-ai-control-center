@@ -292,6 +292,13 @@ async def register(request: RegisterRequest, response: Response):
     """Beta registration is invite-only - see scripts/create_beta_invite.py.
     No public self-serve signup exists."""
     email = request.email.strip().lower()
+    # Same normalization as email above - a token copy-pasted from a
+    # terminal (e.g. the CLI's printed URL/token) very easily picks up a
+    # trailing newline or stray space, which silently changes its SHA-256
+    # hash and makes an otherwise-valid, unexpired invite look "invalid"
+    # (see app.services.web_auth_tokens.hash_token - it hashes exactly the
+    # bytes it's given, no normalization of its own).
+    invite_token = request.invite_token.strip()
     invite_error = {"error": "Приглашение недействительно, уже использовано или истекло."}
 
     try:
@@ -301,7 +308,7 @@ async def register(request: RegisterRequest, response: Response):
 
     try:
         invite = await web_auth_repository.get_invite_by_token_hash(
-            hash_token(request.invite_token),
+            hash_token(invite_token),
         )
         if invite is None or invite.used_at is not None or invite.expires_at <= _now_iso():
             return invite_error
@@ -328,7 +335,7 @@ async def register(request: RegisterRequest, response: Response):
         if await web_auth_repository.get_user_by_email(email) is not None:
             return {"error": "Этот email уже зарегистрирован."}
 
-        consumed = await web_auth_repository.consume_invite(hash_token(request.invite_token))
+        consumed = await web_auth_repository.consume_invite(hash_token(invite_token))
         if consumed is None:
             # Lost a race against another registration using the same
             # invite (or the invite expired in the meantime).
