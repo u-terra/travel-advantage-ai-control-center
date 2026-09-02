@@ -28,6 +28,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.domain.business_profiles import BusinessProfileValidationError  # noqa: E402
 
+from tests._web_auth_test_helpers import login_as  # noqa: E402
+
+OWNER_ID = 586249067
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -43,9 +47,10 @@ def api(tmp_path, monkeypatch):
     sys.modules.pop("app.web_api", None)
     import app.web_api as web_api
 
-    with TestClient(web_api.app) as client:
-        _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
-        yield client, web_api, db_path
+    with TestClient(web_api.app, base_url="https://testserver") as client:
+        ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(OWNER_ID))
+        login_as(client, web_api, ws.id, OWNER_ID)
+        yield client, web_api, db_path, ws.id
 
     sys.modules.pop("app.web_api", None)
 
@@ -53,13 +58,13 @@ def api(tmp_path, monkeypatch):
 def test_default_owner_workspace_has_a_real_business_profile(api) -> None:
     """ensure_owner_workspace() provisions a real, usable default profile -
     the endpoint must reflect it, not fabricate its own."""
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
 
     response = client.get("/api/profile")
 
     assert response.status_code == 200
     body = response.json()
-    profile = _run(web_api.partner_repository.get_business_profile(web_api.WEB_WORKSPACE_ID))
+    profile = _run(web_api.partner_repository.get_business_profile(workspace_id))
     assert profile is not None
     assert body["business_profile"]["business_name"] == profile.business_name
     assert body["business_profile"]["business_type"] == profile.business_type
@@ -67,7 +72,7 @@ def test_default_owner_workspace_has_a_real_business_profile(api) -> None:
 
 
 def test_personal_style_is_null_until_actually_set(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.get("/api/profile")
 
@@ -75,21 +80,21 @@ def test_personal_style_is_null_until_actually_set(api) -> None:
 
 
 def test_personal_style_reflects_real_saved_preferences(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     # workspace_user_preferences has a composite FK to workspace_memberships
     # (workspace_id, telegram_user_id) - ensure_owner_workspace() (in the
     # fixture) only creates partner_workspaces/partner_profiles rows, not a
     # membership, so writing preferences needs this too (mirrors what
     # app/main.py's real startup does for the owner).
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
     _run(web_api.partner_repository.set_user_style_description(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, "Пишу просто и по делу.",
+        workspace_id, OWNER_ID, "Пишу просто и по делу.",
     ))
     _run(web_api.partner_repository.add_user_example_post(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, "Пример поста.",
+        workspace_id, OWNER_ID, "Пример поста.",
     ))
     _run(web_api.partner_repository.set_user_avoid_phrases(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, ["уникальное предложение"],
+        workspace_id, OWNER_ID, ["уникальное предложение"],
     ))
 
     response = client.get("/api/profile")
@@ -104,7 +109,7 @@ def test_workspace_memory_is_never_exposed(api) -> None:
     """workspace_memory is internal Assistant context (see /api/chat), not
     a user-facing profile field - even when a real summary is saved, it
     must not appear anywhere in the /api/profile response."""
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     saved_summary = "Внутренний рабочий конспект для Ассистента, не для показа пользователю."
 
     async def _save_memory() -> None:
@@ -115,13 +120,13 @@ def test_workspace_memory_is_never_exposed(api) -> None:
             await db.execute(
                 "INSERT INTO workspace_memory (workspace_id, summary, created_at, updated_at) "
                 "VALUES (?, ?, 'now', 'now')",
-                (web_api.WEB_WORKSPACE_ID, saved_summary),
+                (workspace_id, saved_summary),
             )
             await db.commit()
 
     _run(_save_memory())
 
-    record = _run(web_api.workspace_memory_repository.get(web_api.WEB_WORKSPACE_ID))
+    record = _run(web_api.workspace_memory_repository.get(workspace_id))
     assert record is not None and record.summary == saved_summary  # sanity: really saved
 
     response = client.get("/api/profile")
@@ -131,7 +136,7 @@ def test_workspace_memory_is_never_exposed(api) -> None:
 
 
 def test_response_contains_no_secret_looking_keys(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.get("/api/profile")
     raw = response.text.lower()
@@ -141,7 +146,7 @@ def test_response_contains_no_secret_looking_keys(api) -> None:
 
 
 def test_profile_isolated_by_workspace(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     other = _run(web_api.partner_repository.provision_partner(
         222334000, "Other Agency", "other-agency-profile",
         business_name="Чужой бизнес", business_type="independent_agent",
@@ -160,7 +165,7 @@ def test_profile_isolated_by_workspace(api) -> None:
 
 
 def test_endpoint_never_returns_500_on_backend_error(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
 
     async def broken_get(*args, **kwargs):
         raise RuntimeError("boom")
@@ -193,8 +198,8 @@ def _business_payload(**overrides) -> dict:
 # ── PUT /api/profile/business - reuses BusinessProfileService, no new model ──
 
 def test_update_business_profile_saves_real_fields(api) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
 
     response = client.put("/api/profile/business", json=_business_payload())
 
@@ -205,7 +210,7 @@ def test_update_business_profile_saves_real_fields(api) -> None:
     assert body["region"] == "Москва"
     assert body["tone"] == "Дружелюбный"
 
-    stored = _run(web_api.partner_repository.get_business_profile(web_api.WEB_WORKSPACE_ID))
+    stored = _run(web_api.partner_repository.get_business_profile(workspace_id))
     assert stored.business_name == "Обновлённое имя"
 
 
@@ -213,8 +218,8 @@ def test_update_business_profile_is_used_by_assistant_on_next_chat_call(api, mon
     """После сохранения новые значения должны сразу использоваться
     Ассистентом - проверяем это напрямую через то, что реально передаётся
     в chat_provider.generate(), без обращения к настоящему LLM."""
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
 
     client.put("/api/profile/business", json=_business_payload(
         business_name="Компания Феникс", short_description="Экспертиза по Азии.",
@@ -240,28 +245,29 @@ def test_update_business_profile_is_used_by_assistant_on_next_chat_call(api, mon
 
 
 def test_update_business_profile_without_membership_is_rejected(api) -> None:
-    """resolve_workspace_context() requires a real workspace_memberships
-    row (bootstrap_owner_membership) - ensure_owner_workspace() alone is
-    not enough, so writes correctly fail closed instead of silently
-    creating a new profile/membership."""
-    client, web_api, _ = api
+    """Fail closed: get_current_principal() re-checks PartnerRepository's
+    own access model on every request - a session alone (from login_as() in
+    the fixture, which auto-granted an active membership) is not enough
+    once that membership is gone. Deactivating it here simulates an admin
+    revoking access after the session already exists; the request must be
+    rejected at the auth layer (403), before it ever reaches the
+    endpoint's own body."""
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.set_partner_membership_status(OWNER_ID, "inactive"))
 
     response = client.put("/api/profile/business", json=_business_payload())
 
-    assert response.status_code == 200
-    body = response.json()
-    assert "error" in body
-    assert body["business_profile"] is None
-    stored = _run(web_api.partner_repository.get_business_profile(web_api.WEB_WORKSPACE_ID))
+    assert response.status_code == 403
+    stored = _run(web_api.partner_repository.get_business_profile(workspace_id))
     assert stored.business_name != "Обновлённое имя"
 
 
 def test_ta_affiliated_workspace_cannot_change_business_type(api) -> None:
     """Same rule as Telegram's on_profile_field_selected(): ta_affiliated
     profiles keep their business_type regardless of what the client sends."""
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
-    profile = _run(web_api.partner_repository.get_business_profile(web_api.WEB_WORKSPACE_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    profile = _run(web_api.partner_repository.get_business_profile(workspace_id))
     assert profile.ta_affiliated is True  # the default owner profile is TA-affiliated
 
     response = client.put(
@@ -278,7 +284,7 @@ def test_update_business_profile_rejects_invalid_business_type(api) -> None:
     exercised here directly against the same repository method the endpoint
     calls, since the web fixture's own workspace happens to be
     ta_affiliated (business_type is silently ignored there by design)."""
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     other = _run(web_api.partner_repository.provision_partner(
         222334333, "Independent Agency", "independent-agency-validation",
         business_name="Independent", business_type="independent_agent",
@@ -294,8 +300,9 @@ def test_update_business_profile_rejects_invalid_business_type(api) -> None:
 
 
 def test_update_business_profile_endpoint_never_returns_500(api, monkeypatch) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    """A broken access check must fail closed (403), never 500 and never
+    silently let the request through - see get_current_principal()."""
+    client, web_api, _, workspace_id = api
 
     async def broken_resolve(*args, **kwargs):
         raise RuntimeError("boom")
@@ -304,16 +311,17 @@ def test_update_business_profile_endpoint_never_returns_500(api, monkeypatch) ->
 
     response = client.put("/api/profile/business", json=_business_payload())
 
-    assert response.status_code == 200
-    assert "error" in response.json()
+    assert response.status_code == 403
+    stored = _run(web_api.partner_repository.get_business_profile(workspace_id))
+    assert stored.business_name != "Обновлённое имя"
 
 
 def test_update_business_profile_isolated_by_workspace(api) -> None:
     """resolve_workspace_context() is keyed off WEB_TELEGRAM_USER_ID, which
     only ever resolves to WEB_WORKSPACE_ID in this fixture - a foreign
     workspace's profile must stay untouched."""
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
     other = _run(web_api.partner_repository.provision_partner(
         222334444, "Other Agency 5", "other-agency-profile-5",
         business_name="Чужой бизнес 5", business_type="independent_agent",
@@ -329,8 +337,8 @@ def test_update_business_profile_isolated_by_workspace(api) -> None:
 # ── PUT /api/profile/style + examples - existing preference methods only ────
 
 def test_update_personal_style_saves_description_and_avoid_phrases(api) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
 
     response = client.put("/api/profile/style", json={
         "style_description": "Пишу с юмором.",
@@ -344,8 +352,8 @@ def test_update_personal_style_saves_description_and_avoid_phrases(api) -> None:
 
 
 def test_update_personal_style_is_used_by_assistant_on_next_chat_call(api, monkeypatch) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
 
     client.put("/api/profile/style", json={
         "style_description": "Пишу тепло и просто, всегда на «вы».",
@@ -371,10 +379,10 @@ def test_update_personal_style_is_used_by_assistant_on_next_chat_call(api, monke
 
 
 def test_update_personal_style_does_not_touch_example_posts(api) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
     _run(web_api.partner_repository.add_user_example_post(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, "Уже сохранённый пример.",
+        workspace_id, OWNER_ID, "Уже сохранённый пример.",
     ))
 
     response = client.put("/api/profile/style", json={
@@ -385,8 +393,8 @@ def test_update_personal_style_does_not_touch_example_posts(api) -> None:
 
 
 def test_add_example_post_appends_a_real_example(api) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
 
     response = client.post("/api/profile/style/examples", json={"text": "Мой пример поста."})
 
@@ -395,8 +403,8 @@ def test_add_example_post_appends_a_real_example(api) -> None:
 
 
 def test_add_example_post_rejects_blank_text(api) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
 
     response = client.post("/api/profile/style/examples", json={"text": "   "})
 
@@ -404,17 +412,17 @@ def test_add_example_post_rejects_blank_text(api) -> None:
     body = response.json()
     assert "error" in body
     preferences = _run(web_api.partner_repository.get_user_preferences(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID,
+        workspace_id, OWNER_ID,
     ))
     assert preferences is None or preferences.example_posts == ()
 
 
 def test_add_example_post_enforces_max_five(api) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
     for index in range(5):
         _run(web_api.partner_repository.add_user_example_post(
-            web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, f"Пример {index}.",
+            workspace_id, OWNER_ID, f"Пример {index}.",
         ))
 
     response = client.post("/api/profile/style/examples", json={"text": "Шестой пример."})
@@ -423,16 +431,16 @@ def test_add_example_post_enforces_max_five(api) -> None:
     body = response.json()
     assert "error" in body
     preferences = _run(web_api.partner_repository.get_user_preferences(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID,
+        workspace_id, OWNER_ID,
     ))
     assert len(preferences.example_posts) == 5
 
 
 def test_clear_example_posts_removes_all_of_them(api) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
     _run(web_api.partner_repository.add_user_example_post(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, "Пример.",
+        workspace_id, OWNER_ID, "Пример.",
     ))
 
     response = client.delete("/api/profile/style/examples")
@@ -445,8 +453,8 @@ def test_style_endpoints_are_isolated_by_workspace(api) -> None:
     """Style/avoid-phrase writes always target WEB_WORKSPACE_ID +
     WEB_TELEGRAM_USER_ID explicitly - a foreign workspace's preferences
     must stay untouched."""
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
     other = _run(web_api.partner_repository.provision_partner(
         222334555, "Other Agency 6", "other-agency-style-6",
         business_name="Other", business_type="independent_agent",
@@ -467,8 +475,8 @@ def test_style_endpoints_are_isolated_by_workspace(api) -> None:
 
 
 def test_style_endpoint_never_returns_500(api, monkeypatch) -> None:
-    client, web_api, _ = api
-    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
 
     async def broken_set(*args, **kwargs):
         raise RuntimeError("boom")

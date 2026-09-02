@@ -27,6 +27,10 @@ pytest.importorskip("markdown")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from tests._web_auth_test_helpers import login_as  # noqa: E402
+
+OWNER_ID = 586249067
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -42,15 +46,16 @@ def api(tmp_path, monkeypatch):
     sys.modules.pop("app.web_api", None)
     import app.web_api as web_api
 
-    with TestClient(web_api.app) as client:
-        _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
-        yield client, web_api, db_path
+    with TestClient(web_api.app, base_url="https://testserver") as client:
+        ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(OWNER_ID))
+        login_as(client, web_api, ws.id, OWNER_ID)
+        yield client, web_api, db_path, ws.id
 
     sys.modules.pop("app.web_api", None)
 
 
 def test_empty_workspace_returns_empty_list(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.get("/api/materials")
 
@@ -59,9 +64,9 @@ def test_empty_workspace_returns_empty_list(api) -> None:
 
 
 def test_lists_real_saved_artifact(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост про Азию",
+        workspace_id, artifact_type="post", title="Пост про Азию",
         content="Готовый текст поста.",
     ))
 
@@ -79,9 +84,9 @@ def test_lists_real_saved_artifact(api) -> None:
 
 
 def test_material_detail_returns_current_version_content(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="faq", title="FAQ по бронированию",
+        workspace_id, artifact_type="faq", title="FAQ по бронированию",
         content="Полный текст FAQ.",
     ))
 
@@ -96,13 +101,13 @@ def test_material_detail_returns_current_version_content(api) -> None:
 
 
 def test_material_detail_reflects_latest_version(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост",
+        workspace_id, artifact_type="post", title="Пост",
         content="Версия 1.",
     ))
     _run(web_api.artifact_repository.add_artifact_version(
-        web_api.WEB_WORKSPACE_ID, artifact.id, "Версия 2.",
+        workspace_id, artifact.id, "Версия 2.",
     ))
 
     response = client.get(f"/api/materials/{artifact.id}")
@@ -113,7 +118,7 @@ def test_material_detail_reflects_latest_version(api) -> None:
 
 
 def test_unknown_material_id_has_no_500(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.get("/api/materials/999999")
 
@@ -125,7 +130,7 @@ def test_unknown_material_id_has_no_500(api) -> None:
 
 
 def test_materials_isolated_by_workspace(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     other = _run(web_api.partner_repository.provision_partner(
         222333777, "Other Agency", "other-agency-materials",
         business_name="Other Agency", business_type="independent_agent",
@@ -137,7 +142,7 @@ def test_materials_isolated_by_workspace(api) -> None:
         content="Чужой текст.",
     ))
     _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Мой пост",
+        workspace_id, artifact_type="post", title="Мой пост",
         content="Мой текст.",
     ))
 
@@ -148,7 +153,7 @@ def test_materials_isolated_by_workspace(api) -> None:
 
 
 def test_material_detail_not_leaked_across_workspaces(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     other = _run(web_api.partner_repository.provision_partner(
         222333888, "Other Agency 2", "other-agency-materials-2",
         business_name="Other Agency 2", business_type="independent_agent",
@@ -171,9 +176,9 @@ def test_material_detail_not_leaked_across_workspaces(api) -> None:
 # ── PUT /api/materials/{id}: edit = new version, same versioning model ──────
 
 def test_edit_creates_a_new_version_not_a_parallel_record(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост",
+        workspace_id, artifact_type="post", title="Пост",
         content="Исходный текст.",
     ))
 
@@ -189,17 +194,17 @@ def test_edit_creates_a_new_version_not_a_parallel_record(api) -> None:
 
     # действительно версия того же artifact, а не новая параллельная запись
     versions = _run(web_api.artifact_repository.list_artifact_versions(
-        web_api.WEB_WORKSPACE_ID, artifact.id,
+        workspace_id, artifact.id,
     ))
     assert [v.content for v in versions] == ["Исходный текст.", "Отредактированный текст."]
-    materials = _run(web_api.artifact_repository.list_artifacts(web_api.WEB_WORKSPACE_ID))
+    materials = _run(web_api.artifact_repository.list_artifacts(workspace_id))
     assert len(materials) == 1
 
 
 def test_edit_rejects_empty_content(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост", content="Текст.",
+        workspace_id, artifact_type="post", title="Пост", content="Текст.",
     ))
 
     response = client.put(
@@ -211,19 +216,19 @@ def test_edit_rejects_empty_content(api) -> None:
     body = response.json()
     assert "error" in body
     assert _run(web_api.artifact_repository.list_artifact_versions(
-        web_api.WEB_WORKSPACE_ID, artifact.id,
+        workspace_id, artifact.id,
     )) == [version]
 
 
 def test_edit_with_stale_expected_version_id_fails_without_overwriting(api) -> None:
     """Optimistic concurrency: editing against a version_id that's no longer
     current must not silently overwrite whatever changed in between."""
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост", content="v1",
+        workspace_id, artifact_type="post", title="Пост", content="v1",
     ))
     _run(web_api.artifact_repository.add_artifact_version(
-        web_api.WEB_WORKSPACE_ID, artifact.id, "v2 (сохранена в другом месте)",
+        workspace_id, artifact.id, "v2 (сохранена в другом месте)",
     ))
 
     response = client.put(
@@ -236,13 +241,13 @@ def test_edit_with_stale_expected_version_id_fails_without_overwriting(api) -> N
     assert "error" in body
     assert body["material"] is None
     current = _run(web_api.artifact_repository.get_current_artifact_version(
-        web_api.WEB_WORKSPACE_ID, artifact.id,
+        workspace_id, artifact.id,
     ))
     assert current.content == "v2 (сохранена в другом месте)"
 
 
 def test_edit_unknown_material_has_no_500(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.put(
         "/api/materials/999999",
@@ -254,7 +259,7 @@ def test_edit_unknown_material_has_no_500(api) -> None:
 
 
 def test_edit_is_isolated_by_workspace(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     other = _run(web_api.partner_repository.provision_partner(
         222334111, "Other Agency 3", "other-agency-materials-3",
         business_name="Other Agency 3", business_type="independent_agent",
@@ -281,9 +286,9 @@ def test_edit_is_isolated_by_workspace(api) -> None:
 
 
 def test_edit_endpoint_never_returns_500_on_backend_error(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост", content="Текст.",
+        workspace_id, artifact_type="post", title="Пост", content="Текст.",
     ))
 
     async def broken_get(*args, **kwargs):
@@ -303,9 +308,9 @@ def test_edit_endpoint_never_returns_500_on_backend_error(api, monkeypatch) -> N
 # ── DELETE /api/materials/{id}: real deletion, workspace-isolated ───────────
 
 def test_delete_removes_the_material(api) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Удаляемый", content="Текст.",
+        workspace_id, artifact_type="post", title="Удаляемый", content="Текст.",
     ))
 
     response = client.delete(f"/api/materials/{artifact.id}")
@@ -313,12 +318,12 @@ def test_delete_removes_the_material(api) -> None:
     assert response.status_code == 200
     assert response.json() == {"deleted": True}
     assert _run(web_api.artifact_repository.get_artifact(
-        web_api.WEB_WORKSPACE_ID, artifact.id,
+        workspace_id, artifact.id,
     )) is None
 
 
 def test_delete_unknown_material_has_no_500(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.delete("/api/materials/999999")
 
@@ -331,7 +336,7 @@ def test_delete_unknown_material_has_no_500(api) -> None:
 def test_delete_is_isolated_by_workspace(api) -> None:
     """A workspace must never be able to delete another workspace's
     material, even by guessing its numeric id."""
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     other = _run(web_api.partner_repository.provision_partner(
         222334222, "Other Agency 4", "other-agency-materials-4",
         business_name="Other Agency 4", business_type="independent_agent",
@@ -354,9 +359,9 @@ def test_delete_is_isolated_by_workspace(api) -> None:
 
 
 def test_delete_endpoint_never_returns_500_on_backend_error(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
-        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост", content="Текст.",
+        workspace_id, artifact_type="post", title="Пост", content="Текст.",
     ))
 
     async def broken_delete(*args, **kwargs):

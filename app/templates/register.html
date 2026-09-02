@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Регистрация — Travel AI Orchestrator</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+    --navy-950: #0a0f1c;
+    --navy-900: #0d1424;
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --bg: #f4f6fa;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+    --danger: #c94b4b;
+    --danger-soft: rgba(201, 75, 75, .1);
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--sidebar-grad);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+.auth-shell {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.auth-card {
+    width: 100%;
+    max-width: 380px;
+    background: var(--card);
+    border-radius: 16px;
+    padding: 32px 28px 28px;
+    box-shadow: 0 20px 60px rgba(5, 10, 20, .35);
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    margin-bottom: 26px;
+}
+
+.brand-mark {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--teal) 0%, #3fd1c4 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 16px rgba(23, 179, 163, .35);
+}
+
+.brand-mark svg { width: 18px; height: 18px; }
+
+.brand-text .name {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.25;
+}
+
+.brand-text .sub {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+h1 {
+    font-size: 20px;
+    margin: 0 0 4px;
+}
+
+.auth-sub {
+    font-size: 13.5px;
+    color: var(--text-muted);
+    margin: 0 0 22px;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+
+.field label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.field input {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    padding: 10px 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text);
+    font-family: inherit;
+}
+
+.field input:focus {
+    outline: none;
+    border-color: var(--teal);
+}
+
+.field-hint {
+    font-size: 11.5px;
+    color: var(--text-muted);
+}
+
+.submit-btn {
+    width: 100%;
+    border: 0;
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: white;
+    border-radius: 10px;
+    padding: 11px 16px;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 6px;
+    box-shadow: 0 4px 14px rgba(15, 148, 136, .28);
+    transition: filter .15s ease, transform .1s ease;
+}
+
+.submit-btn:hover { filter: brightness(1.06); transform: translateY(-1px); }
+.submit-btn:disabled { opacity: .6; cursor: wait; filter: none; transform: none; }
+
+.error-box {
+    display: none;
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-bottom: 14px;
+}
+
+.error-box.show { display: block; }
+
+.state-card h3 {
+    font-size: 16px;
+    margin: 0 0 6px;
+}
+
+.state-card p {
+    font-size: 13.5px;
+    color: var(--text-muted);
+    margin: 0;
+}
+</style>
+</head>
+<body>
+
+<div class="auth-shell">
+    <div class="auth-card">
+        <div class="brand">
+            <div class="brand-mark">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2l2.6 6.6L21 11l-6.4 2.4L12 20l-2.6-6.6L3 11l6.4-2.4z"/>
+                </svg>
+            </div>
+            <div class="brand-text">
+                <div class="name">Travel AI Orchestrator</div>
+                <div class="sub">Рабочий кабинет партнёра</div>
+            </div>
+        </div>
+
+        <div id="content"></div>
+    </div>
+</div>
+
+<script>
+const content = document.getElementById("content");
+
+function getInviteToken() {
+    return new URLSearchParams(window.location.search).get("invite") || "";
+}
+
+function renderMissingInvite() {
+    content.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+    const title = document.createElement("h3");
+    title.textContent = "Нужна ссылка-приглашение";
+    const text = document.createElement("p");
+    text.textContent =
+        "Регистрация в бета-версии доступна только по персональной " +
+        "ссылке-приглашению. Если у вас есть такая ссылка, откройте её " +
+        "полностью — включая параметр после «?invite=».";
+    card.appendChild(title);
+    card.appendChild(text);
+    content.appendChild(card);
+}
+
+function renderForm(inviteToken) {
+    content.innerHTML = "";
+
+    const heading = document.createElement("h1");
+    heading.textContent = "Регистрация";
+    content.appendChild(heading);
+
+    const sub = document.createElement("p");
+    sub.className = "auth-sub";
+    sub.textContent = "Создайте пароль для входа в рабочий кабинет.";
+    content.appendChild(sub);
+
+    const errorBox = document.createElement("div");
+    errorBox.className = "error-box";
+    errorBox.id = "errorBox";
+    content.appendChild(errorBox);
+
+    const form = document.createElement("form");
+    form.id = "registerForm";
+    form.setAttribute("novalidate", "");
+
+    const emailField = document.createElement("div");
+    emailField.className = "field";
+    const emailLabel = document.createElement("label");
+    emailLabel.setAttribute("for", "email");
+    emailLabel.textContent = "Email";
+    const emailInput = document.createElement("input");
+    emailInput.type = "email";
+    emailInput.id = "email";
+    emailInput.name = "email";
+    emailInput.autocomplete = "email";
+    emailInput.required = true;
+    emailField.appendChild(emailLabel);
+    emailField.appendChild(emailInput);
+    form.appendChild(emailField);
+
+    const passwordField = document.createElement("div");
+    passwordField.className = "field";
+    const passwordLabel = document.createElement("label");
+    passwordLabel.setAttribute("for", "password");
+    passwordLabel.textContent = "Пароль";
+    const passwordInput = document.createElement("input");
+    passwordInput.type = "password";
+    passwordInput.id = "password";
+    passwordInput.name = "password";
+    passwordInput.autocomplete = "new-password";
+    passwordInput.required = true;
+    const passwordHint = document.createElement("div");
+    passwordHint.className = "field-hint";
+    passwordHint.textContent = "Не короче 10 символов.";
+    passwordField.appendChild(passwordLabel);
+    passwordField.appendChild(passwordInput);
+    passwordField.appendChild(passwordHint);
+    form.appendChild(passwordField);
+
+    const confirmField = document.createElement("div");
+    confirmField.className = "field";
+    const confirmLabel = document.createElement("label");
+    confirmLabel.setAttribute("for", "passwordConfirm");
+    confirmLabel.textContent = "Повторите пароль";
+    const confirmInput = document.createElement("input");
+    confirmInput.type = "password";
+    confirmInput.id = "passwordConfirm";
+    confirmInput.name = "passwordConfirm";
+    confirmInput.autocomplete = "new-password";
+    confirmInput.required = true;
+    confirmField.appendChild(confirmLabel);
+    confirmField.appendChild(confirmInput);
+    form.appendChild(confirmField);
+
+    const submitBtn = document.createElement("button");
+    submitBtn.type = "submit";
+    submitBtn.className = "submit-btn";
+    submitBtn.textContent = "Зарегистрироваться";
+    form.appendChild(submitBtn);
+
+    content.appendChild(form);
+
+    function showError(text) {
+        errorBox.textContent = text;
+        errorBox.classList.add("show");
+    }
+
+    function hideError() {
+        errorBox.classList.remove("show");
+        errorBox.textContent = "";
+    }
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        hideError();
+
+        if (passwordInput.value !== confirmInput.value) {
+            showError("Пароли не совпадают.");
+            return;
+        }
+
+        submitBtn.disabled = true;
+
+        try {
+            const response = await fetch("/api/auth/register", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    invite_token: inviteToken,
+                    email: emailInput.value,
+                    password: passwordInput.value,
+                }),
+            });
+
+            const data = await response.json();
+
+            if (!response.ok || data.error) {
+                showError(data.error || "Не удалось завершить регистрацию.");
+                return;
+            }
+
+            window.location.href = "/";
+
+        } catch (_) {
+            showError("Ошибка соединения. Попробуйте ещё раз.");
+        } finally {
+            submitBtn.disabled = false;
+        }
+    });
+}
+
+const inviteToken = getInviteToken();
+if (!inviteToken) {
+    renderMissingInvite();
+} else {
+    renderForm(inviteToken);
+}
+</script>
+
+</body>
+</html>

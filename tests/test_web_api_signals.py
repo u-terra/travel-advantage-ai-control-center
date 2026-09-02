@@ -33,6 +33,10 @@ pytest.importorskip("markdown")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from tests._web_auth_test_helpers import login_as  # noqa: E402
+
+OWNER_ID = 586249067
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -184,8 +188,9 @@ def api(tmp_path, monkeypatch):
     sys.modules.pop("app.web_api", None)
     import app.web_api as web_api
 
-    with TestClient(web_api.app) as client:
-        _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
+    with TestClient(web_api.app, base_url="https://testserver") as client:
+        ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(OWNER_ID))
+        login_as(client, web_api, ws.id, OWNER_ID)
         # In production, app/main.py (the bot process) already initializes
         # SourceCatalogRepository against this same shared journal DB before
         # the web process ever runs - list_for_workspace() unconditionally
@@ -196,7 +201,7 @@ def api(tmp_path, monkeypatch):
         with sqlite3.connect(db_path) as db:
             _ensure_source_catalog_schema(db)
             db.commit()
-        yield client, web_api, db_path, radar_db_path
+        yield client, web_api, db_path, radar_db_path, ws.id
 
     sys.modules.pop("app.web_api", None)
 
@@ -209,7 +214,7 @@ def test_no_radar_db_file_returns_unavailable_error_not_500(api) -> None:
     """LEAD_RADAR_DB_PATH pointing at nothing (e.g. local/dev without the
     Radar deployment) must degrade to the same 'unavailable' shape Telegram
     uses (unavailable_summary()), never a 500."""
-    client, web_api, _, radar_db_path = api
+    client, web_api, _, radar_db_path, workspace_id = api
     assert not radar_db_path.exists()
 
     response = client.get("/api/signals")
@@ -221,7 +226,7 @@ def test_no_radar_db_file_returns_unavailable_error_not_500(api) -> None:
 
 
 def test_empty_workspace_with_no_synced_signals_returns_empty_list(api) -> None:
-    client, web_api, db_path, radar_db_path = api
+    client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [])
 
     with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
@@ -232,12 +237,12 @@ def test_empty_workspace_with_no_synced_signals_returns_empty_list(api) -> None:
 
 
 def test_returns_real_synced_signal_with_required_card_fields(api) -> None:
-    client, web_api, db_path, radar_db_path = api
+    client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [
         _radar_row(1, source_id="src-1", category="market_signal", hours_ago=2.0),
     ])
     _add_active_source_subscription(
-        db_path, workspace_id=web_api.WEB_WORKSPACE_ID,
+        db_path, workspace_id=workspace_id,
         source_id="src-1", source_name="VK: Путешествия",
     )
     _sync(web_api)
@@ -264,12 +269,12 @@ def test_returns_real_synced_signal_with_required_card_fields(api) -> None:
 
 
 def test_signal_without_stored_score_reports_null_not_fabricated(api) -> None:
-    client, web_api, db_path, radar_db_path = api
+    client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [
         _radar_row(1, source_id="src-1", category="market_signal", ai_score=None),
     ])
     _add_active_source_subscription(
-        db_path, workspace_id=web_api.WEB_WORKSPACE_ID,
+        db_path, workspace_id=workspace_id,
         source_id="src-1", source_name="VK: Путешествия",
     )
     _sync(web_api)
@@ -283,12 +288,12 @@ def test_signal_without_stored_score_reports_null_not_fabricated(api) -> None:
 def test_signal_from_disabled_source_is_not_shown(api) -> None:
     """list_for_workspace() already hides interpretations whose source has
     since been disabled/deactivated - this endpoint must not bypass that."""
-    client, web_api, db_path, radar_db_path = api
+    client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [
         _radar_row(1, source_id="src-1", category="market_signal"),
     ])
     _add_active_source_subscription(
-        db_path, workspace_id=web_api.WEB_WORKSPACE_ID,
+        db_path, workspace_id=workspace_id,
         source_id="src-1", source_name="VK: Путешествия",
     )
     _sync(web_api)
@@ -296,7 +301,7 @@ def test_signal_from_disabled_source_is_not_shown(api) -> None:
         db.execute(
             "UPDATE workspace_source_subscriptions SET enabled = 0 "
             "WHERE workspace_id = ? AND source_id = ?",
-            (web_api.WEB_WORKSPACE_ID, "src-1"),
+            (workspace_id, "src-1"),
         )
         db.commit()
 
@@ -307,7 +312,7 @@ def test_signal_from_disabled_source_is_not_shown(api) -> None:
 
 
 def test_only_current_web_workspace_signals_are_returned(api) -> None:
-    client, web_api, db_path, radar_db_path = api
+    client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [
         _radar_row(1, source_id="src-mine", category="market_signal"),
         _radar_row(2, source_id="src-other", category="market_signal"),
@@ -319,7 +324,7 @@ def test_only_current_web_workspace_signals_are_returned(api) -> None:
         context={},
     ))
     _add_active_source_subscription(
-        db_path, workspace_id=web_api.WEB_WORKSPACE_ID,
+        db_path, workspace_id=workspace_id,
         source_id="src-mine", source_name="Моя подписка",
     )
     _add_active_source_subscription(
@@ -339,12 +344,12 @@ def test_endpoint_does_not_write_new_interpretation_rows_itself(api) -> None:
     """Read-only requirement: GET /api/signals must not materialize new
     interpretations on its own - only what sync_eligible() (owned by the bot
     process) already synced should ever be visible."""
-    client, web_api, db_path, radar_db_path = api
+    client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [
         _radar_row(1, source_id="src-1", category="market_signal"),
     ])
     _add_active_source_subscription(
-        db_path, workspace_id=web_api.WEB_WORKSPACE_ID,
+        db_path, workspace_id=workspace_id,
         source_id="src-1", source_name="VK: Путешествия",
     )
     # Deliberately NOT calling sync_eligible() here.
@@ -364,7 +369,7 @@ def test_noise_and_stale_signals_are_excluded_same_as_telegram(api) -> None:
     """No parallel filtering policy - the same _is_allowed_row()/freshness
     rules from app/services/lead_radar.py apply here (noise category and
     signals older than the per-action freshness window are dropped)."""
-    client, web_api, db_path, radar_db_path = api
+    client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [
         _radar_row(1, source_id="src-1", category="noise"),
         # "observe" freshness window is 7 days (168h); 10 days is well past
@@ -374,7 +379,7 @@ def test_noise_and_stale_signals_are_excluded_same_as_telegram(api) -> None:
         _radar_row(3, source_id="src-1", category="market_signal", hours_ago=1.0),
     ])
     _add_active_source_subscription(
-        db_path, workspace_id=web_api.WEB_WORKSPACE_ID,
+        db_path, workspace_id=workspace_id,
         source_id="src-1", source_name="VK: Путешествия",
     )
     _sync(web_api)

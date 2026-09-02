@@ -175,6 +175,34 @@ button, textarea { font-family: inherit; }
 
 .sidebar-footer strong { color: var(--sidebar-text); font-weight: 600; }
 
+#footerEmail {
+    display: block;
+    margin-top: 4px;
+    color: var(--sidebar-text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.logout-btn {
+    margin-top: 10px;
+    width: 100%;
+    border: 1px solid var(--sidebar-border);
+    background: transparent;
+    color: var(--sidebar-text-dim);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color .15s ease, color .15s ease;
+}
+
+.logout-btn:hover {
+    border-color: var(--teal);
+    color: #ecfbf9;
+}
+
 /* ---------- main column ---------- */
 
 .main {
@@ -1462,7 +1490,8 @@ textarea {
 
         <div class="sidebar-footer">
             <strong>Web Orchestrator</strong> · Beta<br>
-            Основное рабочее пространство
+            <span id="footerEmail"></span>
+            <button type="button" class="logout-btn" id="logoutBtn">Выйти</button>
         </div>
     </aside>
 
@@ -1650,6 +1679,69 @@ textarea {
 </div>
 
 <script>
+/* ---------- auth: CSRF auto-attach + 401 -> /login ---------- */
+/* Every existing fetch("/api/...") call below goes through this wrapper
+   unchanged - mutating requests get X-CSRF-Token attached from the
+   (non-HttpOnly, JS-readable) ta_csrf cookie; any 401 response means the
+   session is gone (expired/revoked) and sends the browser to /login,
+   the same place the server itself redirects an unauthenticated GET /. */
+(function installAuthFetch() {
+    const realFetch = window.fetch.bind(window);
+    const MUTATING = new Set(["POST", "PUT", "DELETE", "PATCH"]);
+
+    function csrfCookie() {
+        const match = document.cookie.match(/(?:^|; )ta_csrf=([^;]*)/);
+        return match ? decodeURIComponent(match[1]) : "";
+    }
+
+    window.fetch = async function (input, init) {
+        const options = init ? Object.assign({}, init) : {};
+        const method = (options.method || "GET").toUpperCase();
+
+        if (MUTATING.has(method)) {
+            const headers = new Headers(options.headers || {});
+            const token = csrfCookie();
+            if (token) headers.set("X-CSRF-Token", token);
+            options.headers = headers;
+        }
+
+        const response = await realFetch(input, options);
+
+        if (response.status === 401 && !String(input).includes("/api/auth/")) {
+            window.location.href = "/login";
+        }
+
+        return response;
+    };
+})();
+
+const footerEmail = document.getElementById("footerEmail");
+const logoutBtn = document.getElementById("logoutBtn");
+
+async function loadCurrentUser() {
+    try {
+        const response = await fetch("/api/auth/me");
+        if (!response.ok) return;
+        const data = await response.json();
+        footerEmail.textContent = data.email || "";
+    } catch (_) {
+        // не критично для работы кабинета - просто не покажем email
+    }
+}
+
+logoutBtn.addEventListener("click", async () => {
+    logoutBtn.disabled = true;
+    try {
+        await fetch("/api/auth/logout", { method: "POST" });
+    } catch (_) {
+        // всё равно уходим на /login - без валидной cookie сервер уже
+        // не даст пользоваться кабинетом
+    }
+    window.location.href = "/login";
+});
+
+loadCurrentUser();
+
 const chat = document.getElementById("chat");
 const scrollBox = document.getElementById("scroll");
 const message = document.getElementById("message");

@@ -23,6 +23,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.chat_provider import ChatResult  # noqa: E402
 
+from tests._web_auth_test_helpers import login_as  # noqa: E402
+
+OWNER_ID = 586249067
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -38,9 +42,10 @@ def api(tmp_path, monkeypatch):
     sys.modules.pop("app.web_api", None)
     import app.web_api as web_api
 
-    with TestClient(web_api.app) as client:
-        _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
-        yield client, web_api, db_path
+    with TestClient(web_api.app, base_url="https://testserver") as client:
+        ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(OWNER_ID))
+        login_as(client, web_api, ws.id, OWNER_ID)
+        yield client, web_api, db_path, ws.id
 
     sys.modules.pop("app.web_api", None)
 
@@ -60,7 +65,7 @@ def _fail_generate(**kwargs):
 # ── POST /api/conversations ──────────────────────────────────────────────
 
 def test_create_conversation_returns_default_title(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.post("/api/conversations")
 
@@ -74,7 +79,7 @@ def test_create_conversation_returns_default_title(api) -> None:
 # ── GET /api/conversations ───────────────────────────────────────────────
 
 def test_list_conversations_empty_by_default(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.get("/api/conversations")
 
@@ -83,7 +88,7 @@ def test_list_conversations_empty_by_default(api) -> None:
 
 
 def test_list_conversations_freshest_first(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     monkeypatch.setattr(web_api.chat_provider, "generate", _fake_generate())
 
     first = client.post("/api/conversations").json()["conversation"]
@@ -99,7 +104,7 @@ def test_list_conversations_freshest_first(api, monkeypatch) -> None:
 # ── GET /api/conversations/{id}/messages ─────────────────────────────────
 
 def test_messages_for_unknown_conversation_returns_error(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.get("/api/conversations/999999/messages")
 
@@ -111,7 +116,7 @@ def test_messages_for_unknown_conversation_returns_error(api) -> None:
 
 
 def test_messages_round_trip_after_chat(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     monkeypatch.setattr(
         web_api.chat_provider, "generate", _fake_generate(text="Держите ответ."),
     )
@@ -135,7 +140,7 @@ def test_messages_round_trip_after_chat(api, monkeypatch) -> None:
 # ── /api/chat orchestration ──────────────────────────────────────────────
 
 def test_chat_requires_conversation_id(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.post("/api/chat", json={"message": "Привет"})
 
@@ -143,7 +148,7 @@ def test_chat_requires_conversation_id(api) -> None:
 
 
 def test_chat_rejects_unknown_conversation_id(api) -> None:
-    client, _, _ = api
+    client, _, _, workspace_id = api
 
     response = client.post(
         "/api/chat", json={"message": "Привет", "conversation_id": 999999},
@@ -156,7 +161,7 @@ def test_chat_rejects_unknown_conversation_id(api) -> None:
 
 
 def test_chat_saves_user_and_assistant_messages(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     monkeypatch.setattr(
         web_api.chat_provider, "generate", _fake_generate(text="Отвечаю."),
     )
@@ -172,7 +177,7 @@ def test_chat_saves_user_and_assistant_messages(api, monkeypatch) -> None:
     assert body["conversation"]["id"] == conversation_id
 
     messages = _run(web_api.web_conversation_repository.list_messages(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, conversation_id,
+        workspace_id, OWNER_ID, conversation_id,
     ))
     assert [(item.role, item.content) for item in messages] == [
         ("user", "Привет!"), ("assistant", "Отвечаю."),
@@ -180,7 +185,7 @@ def test_chat_saves_user_and_assistant_messages(api, monkeypatch) -> None:
 
 
 def test_chat_derives_title_from_first_message(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     monkeypatch.setattr(web_api.chat_provider, "generate", _fake_generate())
 
     conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
@@ -206,7 +211,7 @@ def test_chat_derives_title_from_first_message(api, monkeypatch) -> None:
 
 
 def test_chat_passes_prior_history_to_provider(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     captured = {}
     monkeypatch.setattr(
         web_api.chat_provider, "generate", _fake_generate(text="Первый ответ", captured=captured),
@@ -233,7 +238,7 @@ def test_chat_passes_prior_history_to_provider(api, monkeypatch) -> None:
 def test_chat_generation_failure_keeps_user_message_without_fake_assistant_reply(
     api, monkeypatch,
 ) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     monkeypatch.setattr(web_api.chat_provider, "generate", _fail_generate)
 
     conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
@@ -246,7 +251,7 @@ def test_chat_generation_failure_keeps_user_message_without_fake_assistant_reply
     assert "answer" not in response.json()
 
     messages = _run(web_api.web_conversation_repository.list_messages(
-        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, conversation_id,
+        workspace_id, OWNER_ID, conversation_id,
     ))
     assert [(item.role, item.content) for item in messages] == [
         ("user", "Сломай генерацию"),
@@ -255,13 +260,13 @@ def test_chat_generation_failure_keeps_user_message_without_fake_assistant_reply
     from app.domain.usage import UsageStatus
 
     usage_events = _run(web_api.usage_ledger_repository.list_for_workspace(
-        web_api.WEB_WORKSPACE_ID, limit=10,
+        workspace_id, limit=10,
     ))
     assert any(event.status is UsageStatus.FAILURE for event in usage_events)
 
 
 def test_messages_render_markdown_for_assistant_only(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     monkeypatch.setattr(
         web_api.chat_provider, "generate", _fake_generate(text="**жирный** текст"),
     )
@@ -281,7 +286,7 @@ def test_messages_render_markdown_for_assistant_only(api, monkeypatch) -> None:
 
 
 def test_chat_response_never_leaks_context_fields(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    client, web_api, _, workspace_id = api
     monkeypatch.setattr(web_api.chat_provider, "generate", _fake_generate())
 
     conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
@@ -300,28 +305,29 @@ def test_chat_response_never_leaks_context_fields(api, monkeypatch) -> None:
 # ── workspace / user isolation ───────────────────────────────────────────
 
 def test_foreign_workspace_cannot_read_or_append_to_conversation(api, monkeypatch) -> None:
-    client, web_api, db_path = api
+    """Identity now comes from a real second session (a different web
+    account bound to a different workspace) instead of mutating a global -
+    a stronger proof, since it goes through the exact same auth path a
+    real attacker would."""
+    client, web_api, db_path, workspace_id = api
     monkeypatch.setattr(web_api.chat_provider, "generate", _fake_generate())
 
     conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
 
     other_workspace_id = _run(_insert_other_workspace(web_api, db_path))
+    with TestClient(web_api.app, base_url="https://testserver") as other_client:
+        login_as(other_client, web_api, other_workspace_id, OWNER_ID + 100, email="intruder@example.com")
 
-    real_workspace_id = web_api.WEB_WORKSPACE_ID
-    web_api.WEB_WORKSPACE_ID = other_workspace_id
-    try:
-        response = client.get(f"/api/conversations/{conversation_id}/messages")
+        response = other_client.get(f"/api/conversations/{conversation_id}/messages")
         assert response.json()["conversation"] is None
 
-        chat_response = client.post(
+        chat_response = other_client.post(
             "/api/chat", json={"message": "Чужой доступ", "conversation_id": conversation_id},
         )
         assert "error" in chat_response.json()
-    finally:
-        web_api.WEB_WORKSPACE_ID = real_workspace_id
 
     messages = _run(web_api.web_conversation_repository.list_messages(
-        real_workspace_id, web_api.WEB_TELEGRAM_USER_ID, conversation_id,
+        workspace_id, OWNER_ID, conversation_id,
     ))
     assert messages == []
 
@@ -340,25 +346,29 @@ async def _insert_other_workspace(web_api, db_path) -> int:
 
 
 def test_foreign_user_cannot_read_or_append_to_conversation(api, monkeypatch) -> None:
-    client, web_api, _ = api
+    """Same workspace, different telegram_user_id (a teammate, not an
+    outside attacker) - a real second session, same reasoning as the
+    foreign-workspace test above."""
+    client, web_api, _, workspace_id = api
     monkeypatch.setattr(web_api.chat_provider, "generate", _fake_generate())
 
     conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
 
-    real_user_id = web_api.WEB_TELEGRAM_USER_ID
-    web_api.WEB_TELEGRAM_USER_ID = real_user_id + 1
-    try:
-        response = client.get(f"/api/conversations/{conversation_id}/messages")
+    with TestClient(web_api.app, base_url="https://testserver") as other_client:
+        login_as(
+            other_client, web_api, workspace_id, OWNER_ID + 1,
+            email="teammate@example.com",
+        )
+
+        response = other_client.get(f"/api/conversations/{conversation_id}/messages")
         assert response.json()["conversation"] is None
 
-        chat_response = client.post(
+        chat_response = other_client.post(
             "/api/chat", json={"message": "Чужой пользователь", "conversation_id": conversation_id},
         )
         assert "error" in chat_response.json()
-    finally:
-        web_api.WEB_TELEGRAM_USER_ID = real_user_id
 
     messages = _run(web_api.web_conversation_repository.list_messages(
-        web_api.WEB_WORKSPACE_ID, real_user_id, conversation_id,
+        workspace_id, OWNER_ID, conversation_id,
     ))
     assert messages == []

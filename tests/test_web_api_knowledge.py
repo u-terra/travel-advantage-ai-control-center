@@ -27,7 +27,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.services.knowledge_import import import_dataset  # noqa: E402
 
+from tests._web_auth_test_helpers import login_as  # noqa: E402
+
 DATASET = "knowledge/travel_advantage/imports/compensation-foundation.v1.json"
+OWNER_ID = 586249067
 
 
 def _run(coro):
@@ -47,7 +50,9 @@ def api(tmp_path, monkeypatch):
     # data/knowledge.sqlite3 BEFORE the startup event (init()) runs.
     web_api.knowledge_repository.db_path = tmp_path / "knowledge.sqlite3"
 
-    with TestClient(web_api.app) as client:
+    with TestClient(web_api.app, base_url="https://testserver") as client:
+        ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(OWNER_ID))
+        login_as(client, web_api, ws.id, OWNER_ID)
         yield client, web_api
 
     sys.modules.pop("app.web_api", None)

@@ -18,9 +18,19 @@ pytest.importorskip("markdown")
 from app.domain.competitor_intelligence import CompetitorIntelligence  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from tests._web_auth_test_helpers import login_as  # noqa: E402
+
+OWNER_ID = 586249067
+
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _login(client, web_api):
+    ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(OWNER_ID))
+    login_as(client, web_api, ws.id, OWNER_ID)
+    return ws.id
 
 
 def _intelligence(competitor_id: int, analyzed_at: str) -> CompetitorIntelligence:
@@ -49,7 +59,7 @@ def api(tmp_path, monkeypatch):
     sys.modules.pop("app.web_api", None)
     import app.web_api as web_api
 
-    with TestClient(web_api.app) as client:
+    with TestClient(web_api.app, base_url="https://testserver") as client:
         yield client, web_api, db_path
 
     sys.modules.pop("app.web_api", None)
@@ -57,6 +67,7 @@ def api(tmp_path, monkeypatch):
 
 def test_empty_workspace_returns_empty_list(api) -> None:
     client, web_api, _ = api
+    _login(client, web_api)
 
     response = client.get("/api/competitors")
 
@@ -66,9 +77,9 @@ def test_empty_workspace_returns_empty_list(api) -> None:
 
 def test_lists_real_saved_competitors_with_ui_fields_only(api) -> None:
     client, web_api, _ = api
-    _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
+    workspace_id = _login(client, web_api)
     competitor = _run(web_api.competitor_repository.add_competitor(
-        web_api.WEB_WORKSPACE_ID, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
+        workspace_id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
     ))
 
     response = client.get("/api/competitors")
@@ -90,12 +101,12 @@ def test_lists_real_saved_competitors_with_ui_fields_only(api) -> None:
 
 def test_last_analyzed_at_reflects_saved_intelligence_snapshot(api) -> None:
     client, web_api, _ = api
-    _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
+    workspace_id = _login(client, web_api)
     competitor = _run(web_api.competitor_repository.add_competitor(
-        web_api.WEB_WORKSPACE_ID, "https://competitor.example.com", label="Example",
+        workspace_id, "https://competitor.example.com", label="Example",
     ))
     _run(web_api.competitor_repository.save_intelligence(
-        web_api.WEB_WORKSPACE_ID, _intelligence(competitor.id, "2026-01-01T00:00:00+00:00"),
+        workspace_id, _intelligence(competitor.id, "2026-01-01T00:00:00+00:00"),
     ))
 
     response = client.get("/api/competitors")
@@ -142,12 +153,12 @@ def _full_intelligence(competitor_id: int, analyzed_at: str) -> CompetitorIntell
 
 def test_intelligence_report_returns_saved_snapshot(api) -> None:
     client, web_api, _ = api
-    _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
+    workspace_id = _login(client, web_api)
     competitor = _run(web_api.competitor_repository.add_competitor(
-        web_api.WEB_WORKSPACE_ID, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
+        workspace_id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
     ))
     _run(web_api.competitor_repository.save_intelligence(
-        web_api.WEB_WORKSPACE_ID,
+        workspace_id,
         _full_intelligence(competitor.id, "2026-01-01T00:00:00+00:00"),
     ))
 
@@ -169,9 +180,9 @@ def test_intelligence_report_returns_saved_snapshot(api) -> None:
 
 def test_intelligence_report_returns_none_when_not_yet_analyzed(api) -> None:
     client, web_api, _ = api
-    _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
+    workspace_id = _login(client, web_api)
     competitor = _run(web_api.competitor_repository.add_competitor(
-        web_api.WEB_WORKSPACE_ID, "https://competitor.example.com", label="Example",
+        workspace_id, "https://competitor.example.com", label="Example",
     ))
 
     response = client.get(f"/api/competitors/{competitor.id}/intelligence")
@@ -185,7 +196,7 @@ def test_intelligence_report_returns_none_when_not_yet_analyzed(api) -> None:
 
 def test_intelligence_report_unknown_competitor_id_has_no_500(api) -> None:
     client, web_api, _ = api
-    _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
+    _login(client, web_api)
 
     response = client.get("/api/competitors/999999/intelligence")
 
@@ -197,7 +208,7 @@ def test_intelligence_report_unknown_competitor_id_has_no_500(api) -> None:
 
 def test_intelligence_report_not_leaked_across_workspaces(api) -> None:
     client, web_api, _ = api
-    _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
+    _login(client, web_api)
     other = _run(web_api.partner_repository.provision_partner(
         222333555, "Other Agency 2", "other-agency-2",
         business_name="Other Agency 2", business_type="independent_agent",
@@ -222,9 +233,9 @@ def test_intelligence_report_not_leaked_across_workspaces(api) -> None:
 
 def test_only_current_web_workspace_competitors_are_returned(api) -> None:
     client, web_api, _ = api
-    _run(web_api.partner_repository.ensure_owner_workspace(web_api.WEB_TELEGRAM_USER_ID))
+    workspace_id = _login(client, web_api)
     _run(web_api.competitor_repository.add_competitor(
-        web_api.WEB_WORKSPACE_ID, "https://mine.example.com", label="Mine",
+        workspace_id, "https://mine.example.com", label="Mine",
     ))
     other = _run(web_api.partner_repository.provision_partner(
         222333444, "Other Agency", "other-agency",
