@@ -2128,22 +2128,119 @@ function normalizeTakeawayKey(text) {
     return (text || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+function normalizeTakeawayWhitespace(text) {
+    return (text || "").replace(/\s+/g, " ").trim();
+}
+
+/* Отчёт иногда хранит служебные ярлыки вида "направления: Shanghai" -
+ * "направления:" здесь не мысль, а внутренняя категория opportunity.topic
+ * (см. _opportunities() в competitor_intelligence.py: topic всегда
+ * "category: entity"). Срезаем такой префикс, если то, что перед двоеточием,
+ * само не выглядит законченным предложением. */
+function stripTakeawayTechnicalPrefix(text) {
+    const match = text.match(/^([^:]{2,45}):\s*(.+)$/s);
+    if (!match) return text;
+    const label = match[1].trim();
+    const rest = match[2].trim();
+    if (!rest || /[.!?]/.test(label)) return text;
+    return rest;
+}
+
+function stripTakeawayTrailingEllipsis(text) {
+    return text.replace(/(\.{2,}|…)\s*$/, "").trim();
+}
+
+const TAKEAWAY_DANGLING_WORDS = new Set([
+    "a", "an", "the", "in", "on", "at", "for", "to", "with", "of", "and",
+    "or", "from", "by", "as", "that", "which", "is", "are", "was", "were",
+    "be", "been", "being", "this", "these", "those", "than", "into", "onto",
+    "about", "over", "under", "not", "but", "so", "such", "via", "you",
+    "can", "will", "should", "would", "could",
+    "в", "на", "и", "или", "для", "от", "по", "из", "как", "что", "с", "к",
+    "у", "о", "за", "до", "при", "над", "под", "без", "про", "между",
+    "среди", "чтобы", "либо", "а", "но", "же", "ли", "не", "это",
+]);
+
+const TAKEAWAY_TERMINAL_PUNCTUATION_RE = /[.!?»"')\]]$/;
+
+/* Реальные обрубки вроде "GPT Apps You Can Use in" не заканчиваются знаком
+ * препинания и обрываются на предлоге/союзе - явный признак того, что фраза
+ * продолжалась дальше и была разрезана (например, composite-фактом,
+ * порезанным по запятой на бэкенде). */
+function isCutOffTakeaway(text) {
+    if (TAKEAWAY_TERMINAL_PUNCTUATION_RE.test(text)) return false;
+    const words = text.split(" ").filter(Boolean);
+    const lastWord = (words[words.length - 1] || "")
+        .toLowerCase()
+        .replace(/[^a-zа-яё0-9-]/gi, "");
+    return TAKEAWAY_DANGLING_WORDS.has(lastWord);
+}
+
+/* Одно голое слово/сущность (например, всё, что осталось от "направления:
+ * Shanghai..." после срезания префикса и многоточия) - не самостоятельная
+ * мысль, а обрывок ярлыка. */
+function isTooThinToBeAThought(text) {
+    return text.split(" ").filter(Boolean).length < 2;
+}
+
+const TAKEAWAY_MAX_LENGTH = 140;
+
+/* Длинную, но валидную мысль сокращаем только по границе предложения или
+ * слова - никогда не режем ни одно слово пополам. */
+function truncateTakeawayAtBoundary(text) {
+    if (text.length <= TAKEAWAY_MAX_LENGTH) return text;
+
+    const slice = text.slice(0, TAKEAWAY_MAX_LENGTH);
+    const sentenceMatch = slice.match(/^[\s\S]*[.!?](?=\s|$)/);
+    if (sentenceMatch && sentenceMatch[0].trim().length >= 20) {
+        return sentenceMatch[0].trim();
+    }
+
+    const lastSpace = slice.lastIndexOf(" ");
+    const cut = lastSpace > 20 ? slice.slice(0, lastSpace) : slice;
+    return cut.trim().replace(/[.,;:!?…-]+$/, "") + "…";
+}
+
+/* Возвращает законченную, самостоятельную мысль или null, если raw -
+ * пустая строка, голый ярлык или обрывок фразы. Ничего не выдумывает и не
+ * "чинит" обрывки - обрывки просто отбрасываются. */
+function prepareTakeawayCandidate(raw) {
+    let text = normalizeTakeawayWhitespace(raw);
+    if (!text) return null;
+
+    text = normalizeTakeawayWhitespace(stripTakeawayTechnicalPrefix(text));
+    if (!text) return null;
+
+    text = stripTakeawayTrailingEllipsis(text);
+    if (!text) return null;
+
+    if (isTooThinToBeAThought(text)) return null;
+    if (isCutOffTakeaway(text)) return null;
+
+    return truncateTakeawayAtBoundary(text);
+}
+
 /* Приоритет источников краткого вывода: позиционирование, сильные стороны,
  * возможности/рекомендации - без нового LLM-вызова, только уже сохранённые
- * поля snapshot. Если данных мало, пунктов меньше - ничего не придумываем;
- * дедуп нужен, т.к. strengths в сервисе может дословно повторять positioning. */
+ * поля snapshot. Для opportunities берём содержательные key_thesis /
+ * audience_value, а не opportunity.topic - topic всегда собран бэкендом как
+ * "категория: сущность" (см. _opportunities()), то есть по конструкции
+ * всегда заголовок/фрагмент, а не мысль. Если данных мало, пунктов меньше -
+ * ничего не добиваем; дедуп нужен, т.к. strengths в сервисе может дословно
+ * повторять positioning. */
 function buildQuickTakeaways(intelligence) {
     const picked = [];
     const seen = new Set();
 
-    function tryAdd(text) {
-        if (picked.length >= 5) return;
-        const trimmed = (text || "").trim();
-        if (!trimmed) return;
-        const key = normalizeTakeawayKey(trimmed);
-        if (seen.has(key)) return;
+    function tryAdd(raw) {
+        if (picked.length >= 4) return false;
+        const candidate = prepareTakeawayCandidate(raw);
+        if (!candidate) return false;
+        const key = normalizeTakeawayKey(candidate);
+        if (seen.has(key)) return false;
         seen.add(key);
-        picked.push(trimmed);
+        picked.push(candidate);
+        return true;
     }
 
     const positioning = Array.isArray(intelligence.positioning) ? intelligence.positioning : [];
@@ -2153,9 +2250,12 @@ function buildQuickTakeaways(intelligence) {
     strengths.slice(0, 2).forEach(tryAdd);
 
     const opportunities = Array.isArray(intelligence.opportunities) ? intelligence.opportunities : [];
-    opportunities.slice(0, 2).forEach(opp => tryAdd(opp && opp.topic));
+    opportunities.slice(0, 2).forEach(opp => {
+        if (!opp) return;
+        tryAdd(opp.key_thesis) || tryAdd(opp.audience_value);
+    });
 
-    return picked.slice(0, 5);
+    return picked.slice(0, 4);
 }
 
 function appendQuickTakeaways(container, intelligence) {
