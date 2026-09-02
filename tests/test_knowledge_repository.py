@@ -39,6 +39,31 @@ def test_repository_schema_and_retrieval(tmp_path: Path) -> None:
     )
 
 
+def test_list_items_returns_all_active_items_across_categories(tmp_path: Path) -> None:
+    repository = KnowledgeRepository(tmp_path / "knowledge.sqlite3")
+    run(import_dataset(DATASET, repository))
+
+    items = run(repository.list_items())
+
+    assert len(items) == 2
+    assert {item.stable_key for item in items} == {
+        "ta.member_bonus", "ta.builder_bonus",
+    }
+    # каждый item приходит с тем же тегами/содержимым, что и get_item()
+    direct = run(repository.get_item("ta.member_bonus"))
+    listed = next(item for item in items if item.stable_key == "ta.member_bonus")
+    assert listed == direct
+
+
+def test_list_items_respects_limit(tmp_path: Path) -> None:
+    repository = KnowledgeRepository(tmp_path / "knowledge.sqlite3")
+    run(import_dataset(DATASET, repository))
+
+    items = run(repository.list_items(limit=1))
+
+    assert len(items) == 1
+
+
 def test_repository_import_is_idempotent(tmp_path: Path) -> None:
     repository = KnowledgeRepository(tmp_path / "knowledge.sqlite3")
     run(import_dataset(DATASET, repository))

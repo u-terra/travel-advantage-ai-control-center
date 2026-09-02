@@ -301,6 +301,17 @@ class KnowledgeRepository:
         )
         return [await self._item(row) for row in rows]
 
+    async def list_items(self, limit: int = 200) -> list[KnowledgeItem]:
+        """All active items across every category, for a plain browse view
+        (web «База знаний») - the existing surface only supports lookup by
+        known category (get_by_category) or a ranked query (search_text),
+        neither of which lists everything at once."""
+        rows = await self._all(
+            "SELECT * FROM knowledge_items WHERE status = 'active' "
+            "ORDER BY category, sort_order, id LIMIT ?", (_limit(limit),)
+        )
+        return [await self._item(row) for row in rows]
+
     async def search_text(self, query: str, limit: int = 8) -> list[KnowledgeItem]:
         """Return active items ranked by deterministic lexical relevance.
 
@@ -429,6 +440,12 @@ def _decimal(value: Any) -> Decimal | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _limit(value: int) -> int:
+    if value <= 0:
+        raise ValueError("limit должен быть положительным")
+    return value
 
 
 def _source(r: Mapping[str, Any]) -> KnowledgeSource:

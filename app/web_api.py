@@ -14,6 +14,7 @@ from app.chat_provider import ChatConfig, OpenAIChatProvider
 from app.config import load_settings
 from app.domain.competitor_discovery import canonical_domain
 from app.domain.usage import UsageStatus
+from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.partner_repository import PartnerRepository
@@ -48,6 +49,7 @@ usage_ledger_repository = UsageLedgerRepository(settings.journal_db_path)
 competitor_repository = CompetitorRepository(settings.journal_db_path)
 partner_repository = PartnerRepository(settings.journal_db_path)
 workspace_memory_repository = WorkspaceMemoryRepository(settings.journal_db_path)
+artifact_repository = ArtifactRepository(settings.journal_db_path)
 workspace_signal_repository = WorkspaceSignalRepository(
     settings.journal_db_path, settings.lead_radar_db_path
 )
@@ -101,6 +103,7 @@ async def startup() -> None:
     await competitor_repository.init()
     await partner_repository.init()
     await workspace_memory_repository.init()
+    await artifact_repository.init()
     # legacy_owner_workspace_id=None: the one-time legacy-Radar backfill is
     # already owned by the bot process (app/main.py) against the same shared
     # journal DB - this just ensures the schema exists, it never re-runs
@@ -372,6 +375,244 @@ async def list_signals():
 
     except Exception:
         return {"error": "Не удалось загрузить сигналы.", "signals": []}
+
+
+@app.get("/api/knowledge")
+async def list_knowledge():
+    """Read-only browse of the shared Travel Advantage/MWR Life knowledge
+    base - the same repository the Assistant already reads for chat answers
+    (knowledge_service.retrieve()). Not workspace-scoped by design: this is
+    shared reference data with no workspace_id column, exactly like the
+    existing chat retrieval path.
+    """
+    try:
+        sources = await knowledge_repository.get_sources()
+        items = await knowledge_repository.list_items()
+        sources_by_id = {source.id: source for source in sources}
+
+        return {
+            "sources": [
+                {
+                    "id": source.id,
+                    "title": source.title,
+                    "source_type": source.source_type,
+                    "source_name": source.source_name,
+                    "verification_status": source.verification_status,
+                    "version": source.version,
+                    "effective_date": source.effective_date,
+                }
+                for source in sources
+            ],
+            "items": [
+                {
+                    "stable_key": item.stable_key,
+                    "category": item.category,
+                    "title": item.title,
+                    "content": item.content,
+                    "tags": list(item.tags),
+                    "source_title": (
+                        sources_by_id[item.source_id].title
+                        if item.source_id in sources_by_id else None
+                    ),
+                    "verification_status": (
+                        sources_by_id[item.source_id].verification_status
+                        if item.source_id in sources_by_id else None
+                    ),
+                }
+                for item in items
+            ],
+        }
+
+    except Exception:
+        return {"error": "Не удалось загрузить базу знаний.", "sources": [], "items": []}
+
+
+@app.get("/api/materials")
+async def list_materials():
+    """Read-only: реально сохранённые Artifact текущего workspace - тот же
+    ArtifactRepository и та же логика, что и в Telegram «📚 Мои материалы»
+    (app/handlers/materials.py)."""
+    try:
+        artifacts = await artifact_repository.list_artifacts(WEB_WORKSPACE_ID, limit=50)
+
+        return {
+            "materials": [
+                {
+                    "id": artifact.id,
+                    "title": artifact.title,
+                    "artifact_type": artifact.artifact_type,
+                    "status": artifact.status,
+                    "created_at": artifact.created_at,
+                    "updated_at": artifact.updated_at,
+                }
+                for artifact in artifacts
+            ]
+        }
+
+    except Exception:
+        return {"error": "Не удалось загрузить материалы.", "materials": []}
+
+
+@app.get("/api/materials/{artifact_id}")
+async def get_material(artifact_id: int):
+    try:
+        artifact = await artifact_repository.get_artifact(WEB_WORKSPACE_ID, artifact_id)
+
+        if artifact is None:
+            return {"error": "Материал не найден.", "material": None, "version": None}
+
+        version = await artifact_repository.get_current_artifact_version(
+            WEB_WORKSPACE_ID, artifact_id,
+        )
+
+        return {
+            "material": {
+                "id": artifact.id,
+                "title": artifact.title,
+                "artifact_type": artifact.artifact_type,
+                "status": artifact.status,
+                "created_at": artifact.created_at,
+                "updated_at": artifact.updated_at,
+            },
+            "version": (
+                {
+                    "version_number": version.version_number,
+                    "content": version.content,
+                    "generation_note": version.generation_note,
+                    "created_at": version.created_at,
+                }
+                if version is not None else None
+            ),
+        }
+
+    except Exception:
+        return {"error": "Не удалось загрузить материал.", "material": None, "version": None}
+
+
+_ARTIFACT_STATUSES = ("draft", "review_required", "ready", "used", "archived")
+
+
+@app.get("/api/history")
+async def get_history():
+    """Read-only activity view for «История / Артефакты»: real recorded AI
+    usage events (usage_ledger_repository - already populated by every
+    chat/competitor-analysis call, see record_llm_call()) plus a status
+    breakdown of real saved Artifacts. Deliberately not a chat-message
+    history - the Assistant's conversation is only kept in the browser's
+    sessionStorage today, nothing server-side to read here honestly.
+    """
+    try:
+        events = await usage_ledger_repository.list_for_workspace(
+            WEB_WORKSPACE_ID, limit=30,
+        )
+        artifacts = await artifact_repository.list_artifacts(WEB_WORKSPACE_ID, limit=200)
+
+        status_counts = {status: 0 for status in _ARTIFACT_STATUSES}
+        for artifact in artifacts:
+            status_counts[artifact.status] = status_counts.get(artifact.status, 0) + 1
+
+        return {
+            "usage_events": [
+                {
+                    "occurred_at": event.occurred_at,
+                    "module": event.module,
+                    "provider": event.provider,
+                    "model": event.model,
+                    "status": event.status.value,
+                }
+                for event in events
+            ],
+            "artifact_status_counts": status_counts,
+        }
+
+    except Exception:
+        return {
+            "error": "Не удалось загрузить историю.",
+            "usage_events": [],
+            "artifact_status_counts": {},
+        }
+
+
+@app.get("/api/profile")
+async def get_profile():
+    """Read-only: реальный BusinessProfile workspace + личный стиль текущего
+    пользователя (WorkspaceUserPreferences) - те же данные, что уже
+    показывает Telegram «⚙️ Профиль». workspace_memory сюда намеренно не
+    попадает: это внутренний контекст Ассистента (см. /api/chat), а не
+    пользовательское профильное поле - пользователю оно не показывается."""
+    try:
+        profile = await partner_repository.get_business_profile(WEB_WORKSPACE_ID)
+        preferences = await partner_repository.get_user_preferences(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID,
+        )
+
+        business = None
+        if profile is not None:
+            context = profile.context
+            business = {
+                "business_name": profile.business_name,
+                "business_type": profile.business_type,
+                "short_description": profile.short_description,
+                "profile_status": profile.profile_status,
+                "ta_affiliated": profile.ta_affiliated,
+                "specializations": list(context.specializations),
+                "destinations": list(context.destinations),
+                "region": context.region,
+                "audiences": list(context.audiences),
+                "tone": str(context.communication.get("tone") or ""),
+                "public_contacts": dict(context.public_contacts),
+                "verified_claims": [
+                    claim.text for claim in context.claims
+                    if claim.verification_status == "verified" and claim.text.strip()
+                ],
+            }
+
+        style = None
+        if preferences is not None:
+            style = {
+                "style_description": preferences.style_description,
+                "example_posts": list(preferences.example_posts),
+                "avoid_phrases": list(preferences.avoid_phrases),
+            }
+
+        return {
+            "business_profile": business,
+            "personal_style": style,
+        }
+
+    except Exception:
+        return {
+            "error": "Не удалось загрузить профиль.",
+            "business_profile": None,
+            "personal_style": None,
+        }
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Read-only workspace parameters (name/slug/status/access) - no env,
+    no API keys, no system config. Personal preferences live under
+    /api/profile; there is no other real, safe, workspace-level setting
+    in the current backend (no integrations/notifications system exists
+    yet - see final report)."""
+    try:
+        workspace = await partner_repository.get_workspace(WEB_WORKSPACE_ID)
+
+        if workspace is None:
+            return {"error": "Рабочее пространство недоступно.", "workspace": None}
+
+        return {
+            "workspace": {
+                "name": workspace.name,
+                "slug": workspace.slug,
+                "status": workspace.status,
+                "access_status": workspace.access_status,
+                "access_expires_at": workspace.access_expires_at,
+            }
+        }
+
+    except Exception:
+        return {"error": "Не удалось загрузить настройки.", "workspace": None}
 
 
 @app.post("/api/chat")

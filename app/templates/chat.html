@@ -1078,6 +1078,145 @@ textarea {
     outline-offset: 2px;
 }
 
+/* ---------- generic info cards (знания / материалы / история) ---------- */
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
+}
+
+.info-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px 18px 16px;
+    box-shadow: 0 4px 14px rgba(16, 24, 40, .045);
+    transition: box-shadow .15s ease, border-color .15s ease;
+}
+
+.info-card:hover {
+    border-color: var(--teal);
+    box-shadow: 0 14px 30px rgba(16, 24, 40, .09);
+}
+
+.info-card-badge {
+    align-self: flex-start;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+    border-radius: 999px;
+    padding: 4px 10px;
+}
+
+.info-card-title {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.info-card-text {
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+.info-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.info-meta .dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--border);
+    flex: 0 0 auto;
+}
+
+.info-action-btn {
+    align-self: flex-start;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    border-radius: 9px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+
+.info-action-btn:hover {
+    border-color: var(--teal);
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+}
+
+.info-action-btn:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+}
+
+.report-content-block {
+    white-space: pre-wrap;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+
+.stat-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.stat-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    background: var(--bg);
+    min-width: 96px;
+}
+
+.stat-chip .stat-value {
+    font-size: 19px;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.stat-chip .stat-label {
+    font-size: 11.5px;
+    color: var(--text-muted);
+}
+
+.subsection-heading {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin: 24px 0 12px;
+}
+
+.subsection-heading:first-child { margin-top: 0; }
+
 .state-card {
     max-width: 460px;
     margin: 36px auto 0;
@@ -1398,129 +1537,52 @@ textarea {
             </section>
 
             <section class="view" id="view-knowledge">
-                <div class="placeholder-view">
-                    <div class="placeholder-card">
-                        <div class="placeholder-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
-                                 stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M4 5.5C4 4.7 4.7 4 5.5 4H12v16H5.5C4.7 20 4 19.3 4 18.5v-13z"/>
-                                <path d="M20 5.5C20 4.7 19.3 4 18.5 4H12v16h6.5c.8 0 1.5-.7 1.5-1.5v-13z"/>
-                            </svg>
-                        </div>
-                        <span class="badge-soon">Раздел подключается</span>
+                <div class="competitors-view">
+                    <div class="competitors-head">
                         <h2>База знаний</h2>
-                        <p>
-                            Проверенная база знаний Travel Advantage и MWR Life, которую
-                            уже использует Ассистент в чате, — здесь появится её отдельный
-                            просмотр: разделы, факты и источники.
-                        </p>
-                        <ul>
-                            <li>Просмотр разделов и канонических фактов</li>
-                            <li>Источники и статус проверки</li>
-                            <li>Поиск по базе знаний</li>
-                        </ul>
+                        <p>Проверенные факты Travel Advantage и MWR Life — та же база, которую уже использует Ассистент в чате.</p>
                     </div>
+                    <div id="knowledgeState"></div>
                 </div>
             </section>
 
             <section class="view" id="view-materials">
-                <div class="placeholder-view">
-                    <div class="placeholder-card">
-                        <div class="placeholder-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
-                                 stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z"/>
-                            </svg>
-                        </div>
-                        <span class="badge-soon">Раздел подключается</span>
+                <div class="competitors-view">
+                    <div class="competitors-head">
                         <h2>Материалы</h2>
-                        <p>
-                            Библиотека готовых текстов, черновиков и контент-плана партнёра —
-                            всё, что рождается из работы с Ассистентом, будет собираться здесь.
-                        </p>
-                        <ul>
-                            <li>Сохранённые материалы и черновики</li>
-                            <li>Контент-план по датам и каналам</li>
-                            <li>Экспорт в удобном формате</li>
-                        </ul>
+                        <p>Сохранённые материалы рабочего пространства — тексты и черновики, созданные вместе с Ассистентом.</p>
                     </div>
+                    <div id="materialsState"></div>
                 </div>
             </section>
 
             <section class="view" id="view-history">
-                <div class="placeholder-view">
-                    <div class="placeholder-card">
-                        <div class="placeholder-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
-                                 stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="12" cy="12" r="8.5"/>
-                                <path d="M12 7.5V12l3 2"/>
-                            </svg>
-                        </div>
-                        <span class="badge-soon">Раздел подключается</span>
+                <div class="competitors-view">
+                    <div class="competitors-head">
                         <h2>История / Артефакты</h2>
-                        <p>
-                            Архив прошлых диалогов с Оркестратором и сохранённые артефакты
-                            работы — не только текущая сессия в браузере, а полная история.
-                        </p>
-                        <ul>
-                            <li>Список прошлых диалогов и дата</li>
-                            <li>Сохранённые ответы и артефакты</li>
-                            <li>Возврат к диалогу для продолжения</li>
-                        </ul>
+                        <p>Журнал действий Ассистента и статус сохранённых материалов рабочего пространства.</p>
                     </div>
+                    <div id="historyState"></div>
                 </div>
             </section>
 
             <section class="view" id="view-profile">
-                <div class="placeholder-view">
-                    <div class="placeholder-card">
-                        <div class="placeholder-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
-                                 stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="12" cy="8.5" r="3.5"/>
-                                <path d="M4.5 20c1.2-3.8 4.2-6 7.5-6s6.3 2.2 7.5 6"/>
-                            </svg>
-                        </div>
-                        <span class="badge-soon">Раздел подключается</span>
+                <div class="competitors-view">
+                    <div class="competitors-head">
                         <h2>Профиль</h2>
-                        <p>
-                            Бизнес-профиль партнёра и личный стиль общения, который Ассистент
-                            уже учитывает в ответах, — здесь появится его редактирование.
-                        </p>
-                        <ul>
-                            <li>Бизнес-профиль: специализация, аудитория, позиционирование</li>
-                            <li>Личный стиль общения и примеры текстов</li>
-                            <li>Формулировки, которых стоит избегать</li>
-                        </ul>
+                        <p>Бизнес-профиль рабочего пространства и личный стиль общения, который уже учитывает Ассистент.</p>
                     </div>
+                    <div id="profileState"></div>
                 </div>
             </section>
 
             <section class="view" id="view-settings">
-                <div class="placeholder-view">
-                    <div class="placeholder-card">
-                        <div class="placeholder-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
-                                 stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M4 7h9M17 7h3M4 12h3M9 12h11M4 17h13M19 17h1"/>
-                                <circle cx="13" cy="7" r="2"/>
-                                <circle cx="6" cy="12" r="2"/>
-                                <circle cx="16" cy="17" r="2"/>
-                            </svg>
-                        </div>
-                        <span class="badge-soon">Раздел подключается</span>
+                <div class="competitors-view">
+                    <div class="competitors-head">
                         <h2>Настройки</h2>
-                        <p>
-                            Параметры рабочего пространства: интеграции, уведомления и
-                            учёт использования Оркестратора появятся в этом разделе.
-                        </p>
-                        <ul>
-                            <li>Учёт использования и лимиты</li>
-                            <li>Интеграции рабочего пространства</li>
-                            <li>Уведомления</li>
-                        </ul>
+                        <p>Параметры рабочего пространства.</p>
                     </div>
+                    <div id="settingsState"></div>
                 </div>
             </section>
 
@@ -2433,6 +2495,759 @@ async function loadSignals() {
     }
 }
 
+/* ---------- generic loading/empty/error (знания / материалы / история / профиль / настройки) ---------- */
+
+function renderStateLoading(container, text) {
+    container.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "competitors-loading";
+
+    const spinner = document.createElement("div");
+    spinner.className = "competitors-spinner";
+
+    wrap.appendChild(spinner);
+    wrap.appendChild(document.createTextNode(text));
+    container.appendChild(wrap);
+}
+
+function renderStateEmpty(container, title, text) {
+    container.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+
+    const paragraph = document.createElement("p");
+    paragraph.textContent = text;
+
+    card.appendChild(heading);
+    card.appendChild(paragraph);
+    container.appendChild(card);
+}
+
+function renderStateError(container, title, text, retry) {
+    container.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+
+    const paragraph = document.createElement("p");
+    paragraph.textContent = text;
+
+    card.appendChild(heading);
+    card.appendChild(paragraph);
+
+    if (typeof retry === "function") {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "new-chat";
+        button.textContent = "Повторить";
+        button.addEventListener("click", retry);
+        card.appendChild(button);
+    }
+
+    container.appendChild(card);
+}
+
+function appendFactListSection(container, title, lines) {
+    const nonEmpty = lines.filter(Boolean);
+    if (nonEmpty.length === 0) return;
+
+    const section = document.createElement("div");
+    section.className = "report-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    const list = document.createElement("ul");
+    list.className = "report-list";
+    nonEmpty.forEach(line => {
+        const li = document.createElement("li");
+        li.textContent = line;
+        list.appendChild(li);
+    });
+    section.appendChild(list);
+
+    container.appendChild(section);
+}
+
+/* ---------- база знаний ---------- */
+
+const knowledgeState = document.getElementById("knowledgeState");
+
+const KNOWLEDGE_VERIFICATION_LABELS = {
+    verified_official: "Проверено официально",
+    superseded: "Устарело / заменено",
+    withdrawn: "Отозвано",
+};
+
+function knowledgeVerificationLabel(status) {
+    return KNOWLEDGE_VERIFICATION_LABELS[status] || "Статус не указан";
+}
+
+function renderKnowledge(sources, items) {
+    knowledgeState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+
+    if (sources.length > 0) {
+        const heading = document.createElement("h3");
+        heading.className = "subsection-heading";
+        heading.textContent = "Источники (" + sources.length + ")";
+        wrap.appendChild(heading);
+
+        const grid = document.createElement("div");
+        grid.className = "info-grid";
+        sources.forEach(source => {
+            const card = document.createElement("div");
+            card.className = "info-card";
+
+            const badge = document.createElement("div");
+            badge.className = "info-card-badge";
+            badge.textContent = knowledgeVerificationLabel(source.verification_status);
+            card.appendChild(badge);
+
+            const title = document.createElement("div");
+            title.className = "info-card-title";
+            title.textContent = source.title;
+            card.appendChild(title);
+
+            const meta = document.createElement("div");
+            meta.className = "info-meta";
+            meta.appendChild(document.createTextNode(source.source_name || source.source_type || ""));
+            if (source.version) {
+                const dot = document.createElement("span");
+                dot.className = "dot";
+                meta.appendChild(dot);
+                meta.appendChild(document.createTextNode(source.version));
+            }
+            card.appendChild(meta);
+
+            grid.appendChild(card);
+        });
+        wrap.appendChild(grid);
+    }
+
+    if (items.length > 0) {
+        const heading = document.createElement("h3");
+        heading.className = "subsection-heading";
+        heading.textContent = "Разделы базы знаний (" + items.length + ")";
+        wrap.appendChild(heading);
+
+        const grid = document.createElement("div");
+        grid.className = "info-grid";
+        items.forEach(item => {
+            const card = document.createElement("div");
+            card.className = "info-card";
+
+            const badge = document.createElement("div");
+            badge.className = "info-card-badge";
+            badge.textContent = item.category;
+            card.appendChild(badge);
+
+            const title = document.createElement("div");
+            title.className = "info-card-title";
+            title.textContent = item.title;
+            card.appendChild(title);
+
+            const text = document.createElement("div");
+            text.className = "info-card-text";
+            text.textContent = item.content;
+            card.appendChild(text);
+
+            if (item.source_title) {
+                const meta = document.createElement("div");
+                meta.className = "info-meta";
+                meta.appendChild(document.createTextNode("Источник: " + item.source_title));
+                card.appendChild(meta);
+            }
+
+            grid.appendChild(card);
+        });
+        wrap.appendChild(grid);
+    }
+
+    knowledgeState.appendChild(wrap);
+}
+
+async function loadKnowledge() {
+    renderStateLoading(knowledgeState, "Загружаем базу знаний…");
+
+    try {
+        const response = await fetch("/api/knowledge");
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderStateError(
+                knowledgeState, "Не удалось загрузить базу знаний",
+                "Проверьте соединение и попробуйте ещё раз.", loadKnowledge,
+            );
+            return;
+        }
+
+        const sources = Array.isArray(data.sources) ? data.sources : [];
+        const items = Array.isArray(data.items) ? data.items : [];
+
+        if (sources.length === 0 && items.length === 0) {
+            renderStateEmpty(
+                knowledgeState, "База знаний пока пуста",
+                "Проверенные факты появятся здесь, как только будут загружены.",
+            );
+        } else {
+            renderKnowledge(sources, items);
+        }
+
+    } catch (_) {
+        renderStateError(
+            knowledgeState, "Не удалось загрузить базу знаний",
+            "Проверьте соединение и попробуйте ещё раз.", loadKnowledge,
+        );
+    }
+}
+
+/* ---------- материалы ---------- */
+
+const materialsState = document.getElementById("materialsState");
+
+const MATERIAL_TYPE_LABELS = {
+    post: "Пост",
+    video_script: "Сценарий видео",
+    stories: "Stories",
+    client_message: "Ответ клиенту",
+    objection_reply: "Ответ на возражение",
+    faq: "FAQ",
+    content_plan_item: "Пункт контент-плана",
+    other: "Материал",
+};
+
+const MATERIAL_STATUS_LABELS = {
+    draft: "Черновик",
+    review_required: "Нужна проверка",
+    ready: "Готово",
+    used: "Использовано",
+    archived: "В архиве",
+};
+
+function materialTypeLabel(type) {
+    return MATERIAL_TYPE_LABELS[type] || type || "Материал";
+}
+
+function materialStatusLabel(status) {
+    return MATERIAL_STATUS_LABELS[status] || status || "";
+}
+
+function renderMaterialsList(items) {
+    materialsState.innerHTML = "";
+
+    const grid = document.createElement("div");
+    grid.className = "info-grid";
+
+    items.forEach(item => {
+        const card = document.createElement("div");
+        card.className = "info-card";
+
+        const badge = document.createElement("div");
+        badge.className = "info-card-badge";
+        badge.textContent = materialTypeLabel(item.artifact_type);
+        card.appendChild(badge);
+
+        const title = document.createElement("div");
+        title.className = "info-card-title";
+        title.textContent = item.title || "Без названия";
+        card.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.className = "info-meta";
+        meta.appendChild(document.createTextNode(materialStatusLabel(item.status)));
+        const dot = document.createElement("span");
+        dot.className = "dot";
+        meta.appendChild(dot);
+        meta.appendChild(document.createTextNode(formatSignalDate(item.created_at)));
+        card.appendChild(meta);
+
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "info-action-btn";
+        openBtn.textContent = "Открыть";
+        openBtn.addEventListener("click", () => openMaterial(item));
+        card.appendChild(openBtn);
+
+        grid.appendChild(card);
+    });
+
+    materialsState.appendChild(grid);
+}
+
+function makeMaterialsBackButton() {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "report-back-btn";
+    back.textContent = "← Назад к материалам";
+    back.addEventListener("click", () => loadMaterials());
+    return back;
+}
+
+function renderMaterialLoading() {
+    materialsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "report-view";
+    wrap.appendChild(makeMaterialsBackButton());
+
+    const loading = document.createElement("div");
+    loading.className = "competitors-loading";
+    const spinner = document.createElement("div");
+    spinner.className = "competitors-spinner";
+    loading.appendChild(spinner);
+    loading.appendChild(document.createTextNode("Загружаем материал…"));
+    wrap.appendChild(loading);
+
+    materialsState.appendChild(wrap);
+}
+
+function renderMaterialError(item) {
+    materialsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "report-view";
+    wrap.appendChild(makeMaterialsBackButton());
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+    const title = document.createElement("h3");
+    title.textContent = "Не удалось загрузить материал";
+    const text = document.createElement("p");
+    text.textContent = "Проверьте соединение и попробуйте ещё раз.";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "new-chat";
+    retry.textContent = "Повторить";
+    retry.addEventListener("click", () => openMaterial(item));
+    card.appendChild(title);
+    card.appendChild(text);
+    card.appendChild(retry);
+    wrap.appendChild(card);
+
+    materialsState.appendChild(wrap);
+}
+
+function renderMaterialDetail(material, version) {
+    materialsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "report-view";
+    wrap.appendChild(makeMaterialsBackButton());
+
+    const header = document.createElement("div");
+    header.className = "report-header";
+
+    const info = document.createElement("div");
+    info.className = "report-header-info";
+    const heading = document.createElement("h2");
+    heading.textContent = material.title || "Без названия";
+    info.appendChild(heading);
+    const sub = document.createElement("div");
+    sub.className = "report-domain";
+    sub.textContent = materialTypeLabel(material.artifact_type) + " · " + materialStatusLabel(material.status);
+    info.appendChild(sub);
+    header.appendChild(info);
+
+    const badge = document.createElement("div");
+    badge.className = "report-analyzed-badge";
+    badge.textContent = formatSignalDate(material.updated_at || material.created_at);
+    header.appendChild(badge);
+
+    wrap.appendChild(header);
+
+    const sections = document.createElement("div");
+    sections.className = "report-sections";
+
+    if (version && version.content) {
+        const section = document.createElement("div");
+        section.className = "report-section";
+        const sectionHeading = document.createElement("h3");
+        sectionHeading.textContent = "Текущая версия" +
+            (version.version_number ? (" (v" + version.version_number + ")") : "");
+        section.appendChild(sectionHeading);
+        const content = document.createElement("div");
+        content.className = "report-content-block";
+        content.textContent = version.content;
+        section.appendChild(content);
+        sections.appendChild(section);
+    } else {
+        const card = document.createElement("div");
+        card.className = "state-card";
+        const title = document.createElement("h3");
+        title.textContent = "Текст версии недоступен";
+        card.appendChild(title);
+        sections.appendChild(card);
+    }
+
+    wrap.appendChild(sections);
+    materialsState.appendChild(wrap);
+}
+
+async function openMaterial(item) {
+    renderMaterialLoading();
+
+    try {
+        const response = await fetch("/api/materials/" + encodeURIComponent(item.id));
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderMaterialError(item);
+            return;
+        }
+
+        renderMaterialDetail(data.material || item, data.version);
+
+    } catch (_) {
+        renderMaterialError(item);
+    }
+}
+
+async function loadMaterials() {
+    renderStateLoading(materialsState, "Загружаем материалы…");
+
+    try {
+        const response = await fetch("/api/materials");
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderStateError(
+                materialsState, "Не удалось загрузить материалы",
+                "Проверьте соединение и попробуйте ещё раз.", loadMaterials,
+            );
+            return;
+        }
+
+        const items = Array.isArray(data.materials) ? data.materials : [];
+
+        if (items.length === 0) {
+            renderStateEmpty(
+                materialsState, "Пока нет сохранённых материалов",
+                "Материалы, созданные вместе с Ассистентом, появятся здесь.",
+            );
+        } else {
+            renderMaterialsList(items);
+        }
+
+    } catch (_) {
+        renderStateError(
+            materialsState, "Не удалось загрузить материалы",
+            "Проверьте соединение и попробуйте ещё раз.", loadMaterials,
+        );
+    }
+}
+
+/* ---------- история / артефакты ---------- */
+
+const historyState = document.getElementById("historyState");
+
+const USAGE_MODULE_LABELS = {
+    web_chat: "Чат с Ассистентом",
+    competitor_intelligence: "Анализ конкурента",
+};
+
+function usageModuleLabel(module) {
+    return USAGE_MODULE_LABELS[module] || module;
+}
+
+const ARTIFACT_STATUS_ORDER = ["draft", "review_required", "ready", "used", "archived"];
+
+function renderHistory(events, statusCounts) {
+    historyState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+
+    const countsHeading = document.createElement("h3");
+    countsHeading.className = "subsection-heading";
+    countsHeading.textContent = "Материалы по статусам";
+    wrap.appendChild(countsHeading);
+
+    const chips = document.createElement("div");
+    chips.className = "stat-chips";
+    ARTIFACT_STATUS_ORDER.forEach(status => {
+        const count = Number(statusCounts[status]) || 0;
+        const chip = document.createElement("div");
+        chip.className = "stat-chip";
+        const value = document.createElement("div");
+        value.className = "stat-value";
+        value.textContent = String(count);
+        const label = document.createElement("div");
+        label.className = "stat-label";
+        label.textContent = materialStatusLabel(status);
+        chip.appendChild(value);
+        chip.appendChild(label);
+        chips.appendChild(chip);
+    });
+    wrap.appendChild(chips);
+
+    const eventsHeading = document.createElement("h3");
+    eventsHeading.className = "subsection-heading";
+    eventsHeading.textContent = "Журнал действий";
+    wrap.appendChild(eventsHeading);
+
+    if (events.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "info-card-text";
+        empty.textContent = "Действий пока не записано.";
+        wrap.appendChild(empty);
+    } else {
+        const grid = document.createElement("div");
+        grid.className = "info-grid";
+        events.forEach(event => {
+            const card = document.createElement("div");
+            card.className = "info-card";
+
+            const badge = document.createElement("div");
+            badge.className = "info-card-badge";
+            badge.textContent = event.status === "success" ? "Успешно" : "Ошибка";
+            card.appendChild(badge);
+
+            const title = document.createElement("div");
+            title.className = "info-card-title";
+            title.textContent = usageModuleLabel(event.module);
+            card.appendChild(title);
+
+            const meta = document.createElement("div");
+            meta.className = "info-meta";
+            const providerText = event.model ? (event.provider + " · " + event.model) : event.provider;
+            meta.appendChild(document.createTextNode(providerText || ""));
+            const dot = document.createElement("span");
+            dot.className = "dot";
+            meta.appendChild(dot);
+            meta.appendChild(document.createTextNode(formatSignalDate(event.occurred_at)));
+            card.appendChild(meta);
+
+            grid.appendChild(card);
+        });
+        wrap.appendChild(grid);
+    }
+
+    historyState.appendChild(wrap);
+}
+
+async function loadHistory() {
+    renderStateLoading(historyState, "Загружаем историю…");
+
+    try {
+        const response = await fetch("/api/history");
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderStateError(
+                historyState, "Не удалось загрузить историю",
+                "Проверьте соединение и попробуйте ещё раз.", loadHistory,
+            );
+            return;
+        }
+
+        const events = Array.isArray(data.usage_events) ? data.usage_events : [];
+        const statusCounts = (data.artifact_status_counts && typeof data.artifact_status_counts === "object")
+            ? data.artifact_status_counts : {};
+        const totalArtifacts = Object.values(statusCounts)
+            .reduce((sum, value) => sum + (Number(value) || 0), 0);
+
+        if (events.length === 0 && totalArtifacts === 0) {
+            renderStateEmpty(
+                historyState, "Пока нет истории",
+                "Здесь появится журнал действий Ассистента и статус ваших материалов.",
+            );
+        } else {
+            renderHistory(events, statusCounts);
+        }
+
+    } catch (_) {
+        renderStateError(
+            historyState, "Не удалось загрузить историю",
+            "Проверьте соединение и попробуйте ещё раз.", loadHistory,
+        );
+    }
+}
+
+/* ---------- профиль ---------- */
+
+const profileState = document.getElementById("profileState");
+
+const BUSINESS_TYPE_LABELS = {
+    independent_agent: "независимый агент",
+    club_partner: "клубный партнёр",
+    agency: "турагентство",
+    travel_company: "туроператор",
+    other: "другое",
+};
+
+function businessTypeLabel(type) {
+    return BUSINESS_TYPE_LABELS[type] || type || "";
+}
+
+function renderProfile(business, style) {
+    profileState.innerHTML = "";
+
+    const sections = document.createElement("div");
+    sections.className = "report-sections";
+
+    if (business) {
+        const lines = [
+            business.business_name ? ("Название: " + business.business_name) : null,
+            "Тип бизнеса: " + businessTypeLabel(business.business_type),
+            business.short_description ? ("Описание: " + business.short_description) : null,
+            business.specializations.length ? ("Специализации: " + business.specializations.join(", ")) : null,
+            business.destinations.length ? ("Направления: " + business.destinations.join(", ")) : null,
+            business.region ? ("Регион работы: " + business.region) : null,
+            business.audiences.length ? ("Аудитории: " + business.audiences.join(", ")) : null,
+            business.tone ? ("Стиль общения компании: " + business.tone) : null,
+        ];
+        appendFactListSection(sections, "Профиль бизнеса", lines);
+
+        const contactLines = Object.entries(business.public_contacts || {})
+            .filter(([, value]) => value && value.trim())
+            .map(([key, value]) => key + ": " + value);
+        appendFactListSection(sections, "Контакты", contactLines);
+
+        appendFactListSection(sections, "Подтверждённые факты", business.verified_claims || []);
+
+        if (business.profile_status === "incomplete") {
+            const note = document.createElement("div");
+            note.className = "report-section";
+            const text = document.createElement("p");
+            text.className = "info-card-text";
+            text.textContent = "Профиль заполнен частично — персонализация пока ограничена.";
+            note.appendChild(text);
+            sections.appendChild(note);
+        }
+    }
+
+    if (style) {
+        const lines = [
+            style.style_description
+                ? ("Стиль общения: " + style.style_description)
+                : "Стиль общения: не заполнен.",
+            "Примеров текстов сохранено: " + style.example_posts.length + " из 5.",
+            style.avoid_phrases.length
+                ? ("Не использовать: " + style.avoid_phrases.join(", "))
+                : "Не использовать: список пуст.",
+        ];
+        appendFactListSection(sections, "Личный стиль", lines);
+    }
+
+    if (sections.children.length === 0) {
+        const card = document.createElement("div");
+        card.className = "state-card";
+        const title = document.createElement("h3");
+        title.textContent = "Профиль ещё не заполнен";
+        const text = document.createElement("p");
+        text.textContent = "Бизнес-профиль и личный стиль появятся здесь, как только будут заполнены.";
+        card.appendChild(title);
+        card.appendChild(text);
+        sections.appendChild(card);
+    }
+
+    profileState.appendChild(sections);
+}
+
+async function loadProfile() {
+    renderStateLoading(profileState, "Загружаем профиль…");
+
+    try {
+        const response = await fetch("/api/profile");
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderStateError(
+                profileState, "Не удалось загрузить профиль",
+                "Проверьте соединение и попробуйте ещё раз.", loadProfile,
+            );
+            return;
+        }
+
+        renderProfile(data.business_profile, data.personal_style);
+
+    } catch (_) {
+        renderStateError(
+            profileState, "Не удалось загрузить профиль",
+            "Проверьте соединение и попробуйте ещё раз.", loadProfile,
+        );
+    }
+}
+
+/* ---------- настройки ---------- */
+
+const settingsState = document.getElementById("settingsState");
+
+const WORKSPACE_STATUS_LABELS = {
+    active: "Активно",
+    suspended: "Приостановлено",
+    disabled: "Отключено",
+};
+
+function workspaceStatusLabel(status) {
+    return WORKSPACE_STATUS_LABELS[status] || status || "";
+}
+
+function renderSettings(workspace) {
+    settingsState.innerHTML = "";
+
+    const sections = document.createElement("div");
+    sections.className = "report-sections";
+
+    const lines = [
+        "Название: " + (workspace.name || "—"),
+        "Идентификатор: " + (workspace.slug || "—"),
+        "Статус рабочего пространства: " + workspaceStatusLabel(workspace.status),
+        "Статус доступа: " + workspaceStatusLabel(workspace.access_status),
+        workspace.access_expires_at
+            ? ("Доступ действует до: " + formatSignalDate(workspace.access_expires_at))
+            : "Доступ: без ограничения по сроку.",
+    ];
+    appendFactListSection(sections, "Рабочее пространство", lines);
+
+    const note = document.createElement("div");
+    note.className = "report-section";
+    const noteText = document.createElement("p");
+    noteText.className = "info-card-text";
+    noteText.textContent =
+        "Интеграции и уведомления пока не подключены на бэкенде — здесь появятся, " +
+        "когда для них будет реальное хранилище.";
+    note.appendChild(noteText);
+    sections.appendChild(note);
+
+    settingsState.appendChild(sections);
+}
+
+async function loadSettings() {
+    renderStateLoading(settingsState, "Загружаем настройки…");
+
+    try {
+        const response = await fetch("/api/settings");
+        const data = await response.json();
+
+        if (!response.ok || data.error || !data.workspace) {
+            renderStateError(
+                settingsState, "Не удалось загрузить настройки",
+                "Проверьте соединение и попробуйте ещё раз.", loadSettings,
+            );
+            return;
+        }
+
+        renderSettings(data.workspace);
+
+    } catch (_) {
+        renderStateError(
+            settingsState, "Не удалось загрузить настройки",
+            "Проверьте соединение и попробуйте ещё раз.", loadSettings,
+        );
+    }
+}
+
 document.querySelectorAll(".quick-card").forEach(card => {
     card.addEventListener("click", () => {
         const prompt = card.dataset.prompt || "";
@@ -2485,6 +3300,16 @@ function activateView(key) {
         loadCompetitors();
     } else if (key === "signals") {
         loadSignals();
+    } else if (key === "knowledge") {
+        loadKnowledge();
+    } else if (key === "materials") {
+        loadMaterials();
+    } else if (key === "history") {
+        loadHistory();
+    } else if (key === "profile") {
+        loadProfile();
+    } else if (key === "settings") {
+        loadSettings();
     }
 }
 
