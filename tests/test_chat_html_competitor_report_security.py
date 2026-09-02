@@ -53,6 +53,7 @@ def _extract_function(source: str, name: str) -> str:
 def _run_node(script: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [node, "-e", script], capture_output=True, text=True, timeout=30,
+        encoding="utf-8",
     )
 
 

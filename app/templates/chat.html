@@ -878,6 +878,34 @@ textarea {
     white-space: nowrap;
 }
 
+.report-quick-takeaways {
+    background: var(--teal-soft);
+    border: 1px solid var(--teal-soft-strong);
+    border-radius: 14px;
+    padding: 16px 20px;
+    margin-bottom: 18px;
+}
+
+.report-quick-takeaways h3 {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--teal-dark);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin: 0 0 10px;
+}
+
+.report-quick-takeaways ul {
+    margin: 0;
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--text);
+}
+
 .report-sections {
     display: flex;
     flex-direction: column;
@@ -2096,6 +2124,62 @@ function appendReportOpportunitiesSection(container, opportunities) {
     container.appendChild(section);
 }
 
+function normalizeTakeawayKey(text) {
+    return (text || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/* Приоритет источников краткого вывода: позиционирование, сильные стороны,
+ * возможности/рекомендации - без нового LLM-вызова, только уже сохранённые
+ * поля snapshot. Если данных мало, пунктов меньше - ничего не придумываем;
+ * дедуп нужен, т.к. strengths в сервисе может дословно повторять positioning. */
+function buildQuickTakeaways(intelligence) {
+    const picked = [];
+    const seen = new Set();
+
+    function tryAdd(text) {
+        if (picked.length >= 5) return;
+        const trimmed = (text || "").trim();
+        if (!trimmed) return;
+        const key = normalizeTakeawayKey(trimmed);
+        if (seen.has(key)) return;
+        seen.add(key);
+        picked.push(trimmed);
+    }
+
+    const positioning = Array.isArray(intelligence.positioning) ? intelligence.positioning : [];
+    positioning.slice(0, 2).forEach(tryAdd);
+
+    const strengths = Array.isArray(intelligence.strengths) ? intelligence.strengths : [];
+    strengths.slice(0, 2).forEach(tryAdd);
+
+    const opportunities = Array.isArray(intelligence.opportunities) ? intelligence.opportunities : [];
+    opportunities.slice(0, 2).forEach(opp => tryAdd(opp && opp.topic));
+
+    return picked.slice(0, 5);
+}
+
+function appendQuickTakeaways(container, intelligence) {
+    const takeaways = buildQuickTakeaways(intelligence);
+    if (takeaways.length === 0) return;
+
+    const card = document.createElement("div");
+    card.className = "report-quick-takeaways";
+
+    const heading = document.createElement("h3");
+    heading.textContent = "Краткий вывод";
+    card.appendChild(heading);
+
+    const list = document.createElement("ul");
+    takeaways.forEach(text => {
+        const li = document.createElement("li");
+        li.textContent = text;
+        list.appendChild(li);
+    });
+    card.appendChild(list);
+
+    container.appendChild(card);
+}
+
 function renderReport(competitor, intelligence) {
     competitorsState.innerHTML = "";
 
@@ -2128,6 +2212,7 @@ function renderReport(competitor, intelligence) {
     }
 
     wrap.appendChild(header);
+    appendQuickTakeaways(wrap, intelligence);
 
     const sections = document.createElement("div");
     sections.className = "report-sections";
