@@ -430,6 +430,49 @@ class ArtifactRepository:
             row = await cursor.fetchone()
         return _version_from_row(row) if row is not None else None
 
+    async def delete_artifact(self, workspace_id: int, artifact_id: int) -> bool:
+        """Permanently deletes the artifact and all of its versions.
+
+        Ownership is enforced the same way as everywhere else in this
+        repository: `_artifact_row` filters by (workspace_id, id) in SQL,
+        so a foreign artifact_id simply matches nothing and this returns
+        False - fail closed, no separate authorization check needed.
+        Versions are deleted first (no ON DELETE CASCADE on artifact_id in
+        the schema), then the artifact row, inside one transaction.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await self._artifact_row(db, workspace_id, artifact_id)
+                if row is None:
+                    await db.rollback()
+                    return False
+                # artifacts.current_version_id -> artifact_versions.id and
+                # artifact_versions.artifact_id -> artifacts.id form a cycle:
+                # the current-version pointer must be cleared first, or
+                # deleting artifact_versions violates the still-live FK from
+                # artifacts.current_version_id.
+                await db.execute(
+                    "UPDATE artifacts SET current_version_id = NULL "
+                    "WHERE workspace_id = ? AND id = ?",
+                    (workspace_id, artifact_id),
+                )
+                await db.execute(
+                    "DELETE FROM artifact_versions WHERE artifact_id = ?",
+                    (artifact_id,),
+                )
+                await db.execute(
+                    "DELETE FROM artifacts WHERE workspace_id = ? AND id = ?",
+                    (workspace_id, artifact_id),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return True
+
     @staticmethod
     async def _source_row(
         db: aiosqlite.Connection, workspace_id: int, source_id: int

@@ -4,6 +4,14 @@ workspace-scoped queries as Telegram's «📚 Мои материалы»
 (app/handlers/materials.py: list_artifacts / get_artifact /
 get_current_artifact_version).
 
+PUT /api/materials/{id} and DELETE /api/materials/{id} add real edit/delete
+capability on top of the same ArtifactRepository - edit reuses
+add_artifact_version_if_current(), the exact optimistic-concurrency
+versioning pattern Telegram's Safety Layer edit flow already uses
+(app/handlers/text_review.py), no parallel storage; delete uses the new
+delete_artifact() repository method (see tests/test_artifact_repository.py
+for its own isolation/cascade coverage).
+
 Requires the web-only dependencies (requirements-web.txt: fastapi,
 uvicorn, markdown). Skips cleanly when they're not installed.
 """
@@ -157,4 +165,208 @@ def test_material_detail_not_leaked_across_workspaces(api) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["material"] is None
+    assert "error" in body
+
+
+# ── PUT /api/materials/{id}: edit = new version, same versioning model ──────
+
+def test_edit_creates_a_new_version_not_a_parallel_record(api) -> None:
+    client, web_api, _ = api
+    artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост",
+        content="Исходный текст.",
+    ))
+
+    response = client.put(
+        f"/api/materials/{artifact.id}",
+        json={"content": "Отредактированный текст.", "expected_version_id": version.id},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["version"]["version_number"] == 2
+    assert body["version"]["content"] == "Отредактированный текст."
+
+    # действительно версия того же artifact, а не новая параллельная запись
+    versions = _run(web_api.artifact_repository.list_artifact_versions(
+        web_api.WEB_WORKSPACE_ID, artifact.id,
+    ))
+    assert [v.content for v in versions] == ["Исходный текст.", "Отредактированный текст."]
+    materials = _run(web_api.artifact_repository.list_artifacts(web_api.WEB_WORKSPACE_ID))
+    assert len(materials) == 1
+
+
+def test_edit_rejects_empty_content(api) -> None:
+    client, web_api, _ = api
+    artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост", content="Текст.",
+    ))
+
+    response = client.put(
+        f"/api/materials/{artifact.id}",
+        json={"content": "   ", "expected_version_id": version.id},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" in body
+    assert _run(web_api.artifact_repository.list_artifact_versions(
+        web_api.WEB_WORKSPACE_ID, artifact.id,
+    )) == [version]
+
+
+def test_edit_with_stale_expected_version_id_fails_without_overwriting(api) -> None:
+    """Optimistic concurrency: editing against a version_id that's no longer
+    current must not silently overwrite whatever changed in between."""
+    client, web_api, _ = api
+    artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост", content="v1",
+    ))
+    _run(web_api.artifact_repository.add_artifact_version(
+        web_api.WEB_WORKSPACE_ID, artifact.id, "v2 (сохранена в другом месте)",
+    ))
+
+    response = client.put(
+        f"/api/materials/{artifact.id}",
+        json={"content": "Конфликтующая правка", "expected_version_id": version.id},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" in body
+    assert body["material"] is None
+    current = _run(web_api.artifact_repository.get_current_artifact_version(
+        web_api.WEB_WORKSPACE_ID, artifact.id,
+    ))
+    assert current.content == "v2 (сохранена в другом месте)"
+
+
+def test_edit_unknown_material_has_no_500(api) -> None:
+    client, _, _ = api
+
+    response = client.put(
+        "/api/materials/999999",
+        json={"content": "Текст", "expected_version_id": 1},
+    )
+
+    assert response.status_code == 200
+    assert "error" in response.json()
+
+
+def test_edit_is_isolated_by_workspace(api) -> None:
+    client, web_api, _ = api
+    other = _run(web_api.partner_repository.provision_partner(
+        222334111, "Other Agency 3", "other-agency-materials-3",
+        business_name="Other Agency 3", business_type="independent_agent",
+        short_description="Другое рабочее пространство.",
+        context={},
+    ))
+    foreign_artifact, foreign_version = _run(
+        web_api.artifact_repository.create_artifact_with_initial_version(
+            other.workspace.id, artifact_type="post", title="Чужой", content="Чужой текст.",
+        )
+    )
+
+    response = client.put(
+        f"/api/materials/{foreign_artifact.id}",
+        json={"content": "Взлом", "expected_version_id": foreign_version.id},
+    )
+
+    assert response.status_code == 200
+    assert "error" in response.json()
+    current = _run(web_api.artifact_repository.get_current_artifact_version(
+        other.workspace.id, foreign_artifact.id,
+    ))
+    assert current.content == "Чужой текст."
+
+
+def test_edit_endpoint_never_returns_500_on_backend_error(api, monkeypatch) -> None:
+    client, web_api, _ = api
+    artifact, version = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост", content="Текст.",
+    ))
+
+    async def broken_get(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(web_api.artifact_repository, "get_artifact", broken_get)
+
+    response = client.put(
+        f"/api/materials/{artifact.id}",
+        json={"content": "Новый текст", "expected_version_id": version.id},
+    )
+
+    assert response.status_code == 200
+    assert "error" in response.json()
+
+
+# ── DELETE /api/materials/{id}: real deletion, workspace-isolated ───────────
+
+def test_delete_removes_the_material(api) -> None:
+    client, web_api, _ = api
+    artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Удаляемый", content="Текст.",
+    ))
+
+    response = client.delete(f"/api/materials/{artifact.id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True}
+    assert _run(web_api.artifact_repository.get_artifact(
+        web_api.WEB_WORKSPACE_ID, artifact.id,
+    )) is None
+
+
+def test_delete_unknown_material_has_no_500(api) -> None:
+    client, _, _ = api
+
+    response = client.delete("/api/materials/999999")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] is False
+    assert "error" in body
+
+
+def test_delete_is_isolated_by_workspace(api) -> None:
+    """A workspace must never be able to delete another workspace's
+    material, even by guessing its numeric id."""
+    client, web_api, _ = api
+    other = _run(web_api.partner_repository.provision_partner(
+        222334222, "Other Agency 4", "other-agency-materials-4",
+        business_name="Other Agency 4", business_type="independent_agent",
+        short_description="Другое рабочее пространство.",
+        context={},
+    ))
+    foreign_artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        other.workspace.id, artifact_type="post", title="Чужой", content="Чужой текст.",
+    ))
+
+    response = client.delete(f"/api/materials/{foreign_artifact.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] is False
+    assert "error" in body
+    assert _run(web_api.artifact_repository.get_artifact(
+        other.workspace.id, foreign_artifact.id,
+    )) is not None
+
+
+def test_delete_endpoint_never_returns_500_on_backend_error(api, monkeypatch) -> None:
+    client, web_api, _ = api
+    artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        web_api.WEB_WORKSPACE_ID, artifact_type="post", title="Пост", content="Текст.",
+    ))
+
+    async def broken_delete(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(web_api.artifact_repository, "delete_artifact", broken_delete)
+
+    response = client.delete(f"/api/materials/{artifact.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] is False
     assert "error" in body

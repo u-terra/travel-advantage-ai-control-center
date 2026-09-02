@@ -1,9 +1,10 @@
-"""GET /api/profile - read-only BusinessProfile + personal style
+"""GET/PUT /api/profile* - real, editable BusinessProfile + personal style
 (WorkspaceUserPreferences) for the web shell «Профиль». Same repository
 calls the existing chat endpoint already uses for personalization context
 (see partner_repository.get_user_preferences() in /api/chat), plus
-get_business_profile() - the same data Telegram's «⚙️ Профиль» already
-shows read-only via on_profile_view().
+get_business_profile()/BusinessProfileService - the same data and the same
+access-control/optimistic-concurrency Telegram's «⚙️ Профиль» already uses
+(app/handlers/profile.py). No parallel profile model is created.
 
 workspace_memory is deliberately NOT part of this response: it's internal
 Assistant context (see WorkspaceMemoryRepository / /api/chat), not a
@@ -24,6 +25,8 @@ fastapi = pytest.importorskip("fastapi")
 pytest.importorskip("markdown")
 
 from fastapi.testclient import TestClient  # noqa: E402
+
+from app.domain.business_profiles import BusinessProfileValidationError  # noqa: E402
 
 
 def _run(coro):
@@ -170,3 +173,305 @@ def test_endpoint_never_returns_500_on_backend_error(api, monkeypatch) -> None:
     body = response.json()
     assert "error" in body
     assert body["business_profile"] is None
+
+
+def _business_payload(**overrides) -> dict:
+    payload = {
+        "business_name": "Обновлённое имя",
+        "business_type": "agency",
+        "short_description": "Новое описание.",
+        "specializations": ["Азия", "Европа"],
+        "destinations": ["Таиланд"],
+        "region": "Москва",
+        "audiences": ["Семьи"],
+        "tone": "Дружелюбный",
+    }
+    payload.update(overrides)
+    return payload
+
+
+# ── PUT /api/profile/business - reuses BusinessProfileService, no new model ──
+
+def test_update_business_profile_saves_real_fields(api) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+
+    response = client.put("/api/profile/business", json=_business_payload())
+
+    assert response.status_code == 200
+    body = response.json()["business_profile"]
+    assert body["business_name"] == "Обновлённое имя"
+    assert body["specializations"] == ["Азия", "Европа"]
+    assert body["region"] == "Москва"
+    assert body["tone"] == "Дружелюбный"
+
+    stored = _run(web_api.partner_repository.get_business_profile(web_api.WEB_WORKSPACE_ID))
+    assert stored.business_name == "Обновлённое имя"
+
+
+def test_update_business_profile_is_used_by_assistant_on_next_chat_call(api, monkeypatch) -> None:
+    """После сохранения новые значения должны сразу использоваться
+    Ассистентом - проверяем это напрямую через то, что реально передаётся
+    в chat_provider.generate(), без обращения к настоящему LLM."""
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+
+    client.put("/api/profile/business", json=_business_payload(
+        business_name="Компания Феникс", short_description="Экспертиза по Азии.",
+    ))
+
+    captured = {}
+
+    def fake_generate(**kwargs):
+        captured.update(kwargs)
+        from app.chat_provider import ChatResult
+        return ChatResult(text="ok", usage=None)
+
+    monkeypatch.setattr(web_api.chat_provider, "generate", fake_generate)
+
+    response = client.post("/api/chat", json={"message": "Привет", "history": []})
+
+    assert response.status_code == 200
+    assert "Компания Феникс" in captured["knowledge_context"]
+    assert "Экспертиза по Азии" in captured["knowledge_context"]
+
+
+def test_update_business_profile_without_membership_is_rejected(api) -> None:
+    """resolve_workspace_context() requires a real workspace_memberships
+    row (bootstrap_owner_membership) - ensure_owner_workspace() alone is
+    not enough, so writes correctly fail closed instead of silently
+    creating a new profile/membership."""
+    client, web_api, _ = api
+
+    response = client.put("/api/profile/business", json=_business_payload())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" in body
+    assert body["business_profile"] is None
+    stored = _run(web_api.partner_repository.get_business_profile(web_api.WEB_WORKSPACE_ID))
+    assert stored.business_name != "Обновлённое имя"
+
+
+def test_ta_affiliated_workspace_cannot_change_business_type(api) -> None:
+    """Same rule as Telegram's on_profile_field_selected(): ta_affiliated
+    profiles keep their business_type regardless of what the client sends."""
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    profile = _run(web_api.partner_repository.get_business_profile(web_api.WEB_WORKSPACE_ID))
+    assert profile.ta_affiliated is True  # the default owner profile is TA-affiliated
+
+    response = client.put(
+        "/api/profile/business",
+        json=_business_payload(business_type="travel_company"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["business_profile"]["business_type"] == profile.business_type
+
+
+def test_update_business_profile_rejects_invalid_business_type(api) -> None:
+    """The endpoint's error handling covers BusinessProfileValidationError -
+    exercised here directly against the same repository method the endpoint
+    calls, since the web fixture's own workspace happens to be
+    ta_affiliated (business_type is silently ignored there by design)."""
+    client, web_api, _ = api
+    other = _run(web_api.partner_repository.provision_partner(
+        222334333, "Independent Agency", "independent-agency-validation",
+        business_name="Independent", business_type="independent_agent",
+        short_description="x", context={},
+    ))
+
+    with pytest.raises(BusinessProfileValidationError):
+        _run(web_api.partner_repository.update_business_profile(
+            other.workspace.id, 1,
+            business_name="X", business_type="not-a-real-type",
+            short_description="x", context={},
+        ))
+
+
+def test_update_business_profile_endpoint_never_returns_500(api, monkeypatch) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+
+    async def broken_resolve(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(web_api.partner_repository, "resolve_workspace_context", broken_resolve)
+
+    response = client.put("/api/profile/business", json=_business_payload())
+
+    assert response.status_code == 200
+    assert "error" in response.json()
+
+
+def test_update_business_profile_isolated_by_workspace(api) -> None:
+    """resolve_workspace_context() is keyed off WEB_TELEGRAM_USER_ID, which
+    only ever resolves to WEB_WORKSPACE_ID in this fixture - a foreign
+    workspace's profile must stay untouched."""
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    other = _run(web_api.partner_repository.provision_partner(
+        222334444, "Other Agency 5", "other-agency-profile-5",
+        business_name="Чужой бизнес 5", business_type="independent_agent",
+        short_description="x", context={},
+    ))
+
+    client.put("/api/profile/business", json=_business_payload(business_name="Захват"))
+
+    other_profile = _run(web_api.partner_repository.get_business_profile(other.workspace.id))
+    assert other_profile.business_name == "Чужой бизнес 5"
+
+
+# ── PUT /api/profile/style + examples - existing preference methods only ────
+
+def test_update_personal_style_saves_description_and_avoid_phrases(api) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+
+    response = client.put("/api/profile/style", json={
+        "style_description": "Пишу с юмором.",
+        "avoid_phrases": ["уникальное предложение", "успейте купить"],
+    })
+
+    assert response.status_code == 200
+    style = response.json()["personal_style"]
+    assert style["style_description"] == "Пишу с юмором."
+    assert style["avoid_phrases"] == ["уникальное предложение", "успейте купить"]
+
+
+def test_update_personal_style_is_used_by_assistant_on_next_chat_call(api, monkeypatch) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+
+    client.put("/api/profile/style", json={
+        "style_description": "Пишу тепло и просто, всегда на «вы».",
+        "avoid_phrases": [],
+    })
+
+    captured = {}
+
+    def fake_generate(**kwargs):
+        captured.update(kwargs)
+        from app.chat_provider import ChatResult
+        return ChatResult(text="ok", usage=None)
+
+    monkeypatch.setattr(web_api.chat_provider, "generate", fake_generate)
+
+    response = client.post("/api/chat", json={"message": "Привет", "history": []})
+
+    assert response.status_code == 200
+    assert captured["personal_style"] == "Пишу тепло и просто, всегда на «вы»."
+
+
+def test_update_personal_style_does_not_touch_example_posts(api) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    _run(web_api.partner_repository.add_user_example_post(
+        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, "Уже сохранённый пример.",
+    ))
+
+    response = client.put("/api/profile/style", json={
+        "style_description": "Новый стиль.", "avoid_phrases": [],
+    })
+
+    assert response.json()["personal_style"]["example_posts"] == ["Уже сохранённый пример."]
+
+
+def test_add_example_post_appends_a_real_example(api) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+
+    response = client.post("/api/profile/style/examples", json={"text": "Мой пример поста."})
+
+    assert response.status_code == 200
+    assert response.json()["personal_style"]["example_posts"] == ["Мой пример поста."]
+
+
+def test_add_example_post_rejects_blank_text(api) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+
+    response = client.post("/api/profile/style/examples", json={"text": "   "})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" in body
+    preferences = _run(web_api.partner_repository.get_user_preferences(
+        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID,
+    ))
+    assert preferences is None or preferences.example_posts == ()
+
+
+def test_add_example_post_enforces_max_five(api) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    for index in range(5):
+        _run(web_api.partner_repository.add_user_example_post(
+            web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, f"Пример {index}.",
+        ))
+
+    response = client.post("/api/profile/style/examples", json={"text": "Шестой пример."})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" in body
+    preferences = _run(web_api.partner_repository.get_user_preferences(
+        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID,
+    ))
+    assert len(preferences.example_posts) == 5
+
+
+def test_clear_example_posts_removes_all_of_them(api) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    _run(web_api.partner_repository.add_user_example_post(
+        web_api.WEB_WORKSPACE_ID, web_api.WEB_TELEGRAM_USER_ID, "Пример.",
+    ))
+
+    response = client.delete("/api/profile/style/examples")
+
+    assert response.status_code == 200
+    assert response.json()["personal_style"]["example_posts"] == []
+
+
+def test_style_endpoints_are_isolated_by_workspace(api) -> None:
+    """Style/avoid-phrase writes always target WEB_WORKSPACE_ID +
+    WEB_TELEGRAM_USER_ID explicitly - a foreign workspace's preferences
+    must stay untouched."""
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+    other = _run(web_api.partner_repository.provision_partner(
+        222334555, "Other Agency 6", "other-agency-style-6",
+        business_name="Other", business_type="independent_agent",
+        short_description="x", context={},
+    ))
+    _run(web_api.partner_repository.set_user_style_description(
+        other.workspace.id, 222334555, "Чужой стиль общения.",
+    ))
+
+    client.put("/api/profile/style", json={
+        "style_description": "Мой стиль.", "avoid_phrases": [],
+    })
+
+    other_preferences = _run(web_api.partner_repository.get_user_preferences(
+        other.workspace.id, 222334555,
+    ))
+    assert other_preferences.style_description == "Чужой стиль общения."
+
+
+def test_style_endpoint_never_returns_500(api, monkeypatch) -> None:
+    client, web_api, _ = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(web_api.WEB_TELEGRAM_USER_ID))
+
+    async def broken_set(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(web_api.partner_repository, "set_user_style_description", broken_set)
+
+    response = client.put("/api/profile/style", json={
+        "style_description": "x", "avoid_phrases": [],
+    })
+
+    assert response.status_code == 200
+    assert "error" in response.json()

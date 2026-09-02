@@ -200,6 +200,7 @@ def test_render_material_detail_treats_version_content_as_data() -> None:
 {_extract_function(source, "materialStatusLabel")}
 {_extract_function(source, "formatSignalDate")}
 {_extract_function(source, "makeMaterialsBackButton")}
+{_extract_function(source, "buildMaterialActions")}
 const materialsState = document.createElement("div");
 {_extract_function(source, "renderMaterialDetail")}
 
@@ -226,6 +227,7 @@ def test_render_profile_treats_business_and_style_text_as_data() -> None:
     script = f"""
 {_FAKE_DOM}
 {_extract_function(source, "appendFactListSection")}
+{_extract_function(source, "appendSectionEditButton")}
 {_extract_const(source, "BUSINESS_TYPE_LABELS")}
 {_extract_function(source, "businessTypeLabel")}
 const profileState = document.createElement("div");
@@ -267,6 +269,7 @@ def test_render_profile_never_shows_workspace_memory() -> None:
     script = f"""
 {_FAKE_DOM}
 {_extract_function(source, "appendFactListSection")}
+{_extract_function(source, "appendSectionEditButton")}
 {_extract_const(source, "BUSINESS_TYPE_LABELS")}
 {_extract_function(source, "businessTypeLabel")}
 const profileState = document.createElement("div");
@@ -286,7 +289,7 @@ renderProfile(null, null, "секретный внутренний конспе�
     assert "О проекте" not in all_text
 
 
-# ── renderHistory / renderSettings: same discipline, quick smoke checks ─────
+# ── renderHistory (Активность): same discipline, plus no chat/dialogue wording ──
 
 def test_render_history_treats_module_text_as_data() -> None:
     source = _script_source()
@@ -314,25 +317,127 @@ renderHistory(
     assert any(_XSS_PAYLOAD in item for item in _collect_text(tree))
 
 
-def test_render_settings_treats_workspace_name_as_data() -> None:
+def test_activity_module_labels_never_say_chat_or_dialogue() -> None:
+    """The Активность section is a usage_events/artifact-status journal, not
+    a chat-message archive - none of its human-readable labels may use
+    "чат"/"диалог" wording that would imply stored conversation content."""
+    source = _script_source()
+    usage_labels_block = _extract_const(source, "USAGE_MODULE_LABELS")
+
+    lowered = usage_labels_block.lower()
+    assert "чат" not in lowered
+    assert "диалог" not in lowered
+
+
+def test_provider_model_rendered_as_secondary_technical_detail() -> None:
+    """provider/model must be visually secondary (separate, muted element)
+    relative to the module/action label, not folded into the same
+    prominent line."""
+    source = _script_source()
+    render_history = _extract_function(source, "renderHistory")
+
+    assert "info-meta-secondary" in render_history
+
+
+# ── destructive actions require explicit two-step confirmation ──────────────
+
+_CLICKABLE_FAKE_DOM = """
+class FakeElement {
+    constructor(tag) {
+        this.tagName = String(tag).toUpperCase();
+        this.children = [];
+        this.className = "";
+        this._textContent = "";
+        this.disabled = false;
+        this._listeners = {};
+    }
+    set textContent(value) { this._textContent = value; }
+    get textContent() { return this._textContent; }
+    set innerHTML(value) { if (value === "") this.children = []; }
+    appendChild(el) { this.children.push(el); return el; }
+    addEventListener(type, handler) { this._listeners[type] = handler; }
+    click() { if (this._listeners.click) this._listeners.click(); }
+}
+const document = { createElement: (tag) => new FakeElement(tag) };
+"""
+
+
+def test_material_delete_button_requires_explicit_confirmation_before_deleting() -> None:
+    """Общие требования: destructive action только с подтверждением. A
+    single click on "Удалить" must never call deleteMaterial() directly -
+    it must first show an inline confirm step with its own explicit
+    confirm/cancel controls."""
     source = _script_source()
     script = f"""
-{_FAKE_DOM}
-{_extract_function(source, "appendFactListSection")}
-{_extract_const(source, "WORKSPACE_STATUS_LABELS")}
-{_extract_function(source, "workspaceStatusLabel")}
-{_extract_function(source, "formatSignalDate")}
-const settingsState = document.createElement("div");
-{_extract_function(source, "renderSettings")}
+{_CLICKABLE_FAKE_DOM}
 
-renderSettings({{
-    name: {json.dumps(_XSS_PAYLOAD)}, slug: "x", status: "active",
-    access_status: "active", access_expires_at: null,
-}});
-{_serializable_script("settingsState")}
+let deleteCalls = 0;
+function deleteMaterial() {{ deleteCalls += 1; }}
+function renderMaterialDetail() {{}}
+
+{_extract_function(source, "requestDestructiveConfirmation")}
+{_extract_function(source, "showDeleteConfirmation")}
+{_extract_function(source, "buildMaterialActions")}
+
+const material = {{ id: 1, title: "Материал" }};
+const actions = buildMaterialActions(material, {{ id: 10, version_number: 1 }});
+const deleteBtn = actions.children.find(el => el.textContent === "Удалить");
+
+deleteBtn.click();
+const afterFirstClick = {{
+    deleteCalls: deleteCalls,
+    hasConfirmButton: actions.children.some(el => el.textContent === "Да, подтверждаю"),
+    hasCancelButton: actions.children.some(el => el.textContent === "Отмена"),
+}};
+
+const confirmBtn = actions.children.find(el => el.textContent === "Да, подтверждаю");
+confirmBtn.click();
+
+console.log(JSON.stringify({{ afterFirstClick, deleteCallsAfterConfirm: deleteCalls }}));
 """
     result = _run_node(script)
     assert result.returncode == 0, result.stderr
-    tree = json.loads(result.stdout.strip())
+    payload = json.loads(result.stdout.strip())
 
-    assert any(_XSS_PAYLOAD in item for item in _collect_text(tree))
+    assert payload["afterFirstClick"]["deleteCalls"] == 0
+    assert payload["afterFirstClick"]["hasConfirmButton"] is True
+    assert payload["afterFirstClick"]["hasCancelButton"] is True
+    assert payload["deleteCallsAfterConfirm"] == 1
+
+
+def test_material_delete_cancel_does_not_delete() -> None:
+    source = _script_source()
+    script = f"""
+{_CLICKABLE_FAKE_DOM}
+
+let deleteCalls = 0;
+let renderDetailCalls = 0;
+function deleteMaterial() {{ deleteCalls += 1; }}
+function renderMaterialDetail() {{ renderDetailCalls += 1; }}
+
+{_extract_function(source, "requestDestructiveConfirmation")}
+{_extract_function(source, "showDeleteConfirmation")}
+{_extract_function(source, "buildMaterialActions")}
+
+const material = {{ id: 1, title: "Материал" }};
+const actions = buildMaterialActions(material, {{ id: 10, version_number: 1 }});
+actions.children.find(el => el.textContent === "Удалить").click();
+actions.children.find(el => el.textContent === "Отмена").click();
+
+console.log(JSON.stringify({{ deleteCalls, renderDetailCalls }}));
+"""
+    result = _run_node(script)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip())
+
+    assert payload["deleteCalls"] == 0
+    assert payload["renderDetailCalls"] == 1
+
+
+def test_clear_example_posts_also_requires_explicit_confirmation() -> None:
+    """Same general "destructive action needs confirmation" rule applies to
+    clearing saved style examples, not just material deletion."""
+    source = _script_source()
+    render_form = _extract_function(source, "renderPersonalStyleEditForm")
+
+    assert "requestDestructiveConfirmation" in render_form

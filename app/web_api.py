@@ -12,15 +12,28 @@ from pydantic import BaseModel, Field
 
 from app.chat_provider import ChatConfig, OpenAIChatProvider
 from app.config import load_settings
+from app.domain.business_profiles import (
+    BusinessProfileValidationError,
+    StaleBusinessProfileError,
+)
 from app.domain.competitor_discovery import canonical_domain
 from app.domain.usage import UsageStatus
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
-from app.repositories.partner_repository import PartnerRepository
+from app.repositories.partner_repository import (
+    PartnerRepository,
+    TooManyUserExamplesError,
+    business_context_to_dict,
+)
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.workspace_memory_repository import WorkspaceMemoryRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
+from app.services.business_profile_context import (
+    BusinessProfileAccessError,
+    BusinessProfileService,
+    build_assistant_context,
+)
 from app.services.competitor_intelligence import (
     CompetitorIntelligenceService,
     CompetitorIntelligenceUnavailable,
@@ -266,6 +279,36 @@ def _competitor_context(intelligence) -> str:
     )
 
 
+def _business_profile_context(profile) -> str:
+    """Same safe projection Content Factory uses for LLM prompts
+    (build_assistant_context: unverified claims excluded) - reused as-is
+    so editing BusinessProfile in /api/profile takes effect on the very
+    next /api/chat call, without a second profile-context builder."""
+    data = build_assistant_context(profile)
+    lines = ["=== ПРОФИЛЬ БИЗНЕСА ==="]
+
+    if data["business_name"]:
+        lines.append(f"Название: {data['business_name']}")
+    if data["short_description"]:
+        lines.append(f"Описание: {data['short_description']}")
+    if data["specializations"]:
+        lines.append("Специализации: " + ", ".join(data["specializations"]))
+    if data["destinations"]:
+        lines.append("Направления: " + ", ".join(data["destinations"]))
+    if data["preferred_terms"]:
+        lines.append("Предпочтительные формулировки: " + ", ".join(data["preferred_terms"]))
+    if data["verified_claims"]:
+        lines.append(
+            "Подтверждённые факты: "
+            + "; ".join(claim["text"] for claim in data["verified_claims"])
+        )
+
+    if len(lines) == 1:
+        return ""
+
+    return "\n".join(lines)
+
+
 @app.get("/health")
 async def health():
     return {
@@ -427,6 +470,34 @@ async def list_knowledge():
         return {"error": "Не удалось загрузить базу знаний.", "sources": [], "items": []}
 
 
+def _material_payload(artifact) -> dict:
+    return {
+        "id": artifact.id,
+        "title": artifact.title,
+        "artifact_type": artifact.artifact_type,
+        "status": artifact.status,
+        "created_at": artifact.created_at,
+        "updated_at": artifact.updated_at,
+    }
+
+
+def _version_payload(version) -> dict | None:
+    if version is None:
+        return None
+    return {
+        "id": version.id,
+        "version_number": version.version_number,
+        "content": version.content,
+        "generation_note": version.generation_note,
+        "created_at": version.created_at,
+    }
+
+
+class MaterialUpdateRequest(BaseModel):
+    content: str
+    expected_version_id: int
+
+
 @app.get("/api/materials")
 async def list_materials():
     """Read-only: реально сохранённые Artifact текущего workspace - тот же
@@ -435,19 +506,7 @@ async def list_materials():
     try:
         artifacts = await artifact_repository.list_artifacts(WEB_WORKSPACE_ID, limit=50)
 
-        return {
-            "materials": [
-                {
-                    "id": artifact.id,
-                    "title": artifact.title,
-                    "artifact_type": artifact.artifact_type,
-                    "status": artifact.status,
-                    "created_at": artifact.created_at,
-                    "updated_at": artifact.updated_at,
-                }
-                for artifact in artifacts
-            ]
-        }
+        return {"materials": [_material_payload(artifact) for artifact in artifacts]}
 
     except Exception:
         return {"error": "Не удалось загрузить материалы.", "materials": []}
@@ -466,27 +525,77 @@ async def get_material(artifact_id: int):
         )
 
         return {
-            "material": {
-                "id": artifact.id,
-                "title": artifact.title,
-                "artifact_type": artifact.artifact_type,
-                "status": artifact.status,
-                "created_at": artifact.created_at,
-                "updated_at": artifact.updated_at,
-            },
-            "version": (
-                {
-                    "version_number": version.version_number,
-                    "content": version.content,
-                    "generation_note": version.generation_note,
-                    "created_at": version.created_at,
-                }
-                if version is not None else None
-            ),
+            "material": _material_payload(artifact),
+            "version": _version_payload(version),
         }
 
     except Exception:
         return {"error": "Не удалось загрузить материал.", "material": None, "version": None}
+
+
+@app.put("/api/materials/{artifact_id}")
+async def update_material(artifact_id: int, request: MaterialUpdateRequest):
+    """Редактирование материала = новая версия поверх той же модели
+    Artifact/ArtifactVersion, ровно тот же паттерн, что и в Telegram Safety
+    Layer edit-флоу (app/handlers/text_review.py:
+    add_artifact_version_if_current) - никакого параллельного хранилища.
+
+    expected_version_id обязателен и защищает от потери чужих правок:
+    если текущая версия материала успела измениться между открытием и
+    сохранением, запись не проходит и клиенту возвращается понятная ошибка
+    вместо тихой перезаписи.
+    """
+    content = request.content.strip()
+
+    if not content:
+        return {"error": "Текст материала не должен быть пустым.", "material": None, "version": None}
+
+    try:
+        artifact = await artifact_repository.get_artifact(WEB_WORKSPACE_ID, artifact_id)
+
+        if artifact is None:
+            return {"error": "Материал не найден.", "material": None, "version": None}
+
+        new_version = await artifact_repository.add_artifact_version_if_current(
+            WEB_WORKSPACE_ID, artifact_id, request.expected_version_id, content,
+            generation_note="Отредактировано в веб-кабинете",
+        )
+
+        if new_version is None:
+            return {
+                "error": "Материал изменился в другом месте. Обновите страницу и попробуйте снова.",
+                "material": None,
+                "version": None,
+            }
+
+        updated_artifact = await artifact_repository.get_artifact(WEB_WORKSPACE_ID, artifact_id)
+
+        return {
+            "material": _material_payload(updated_artifact),
+            "version": _version_payload(new_version),
+        }
+
+    except Exception:
+        return {"error": "Не удалось сохранить материал.", "material": None, "version": None}
+
+
+@app.delete("/api/materials/{artifact_id}")
+async def delete_material(artifact_id: int):
+    """Безопасное удаление: workspace isolation обеспечивается тем же
+    механизмом, что и везде в ArtifactRepository (WHERE workspace_id=? AND
+    id=? внутри delete_artifact - чужой artifact_id просто не совпадёт ни с
+    одной строкой). Подтверждение - ответственность UI (двухшаговое
+    подтверждение перед отправкой запроса), не самого эндпоинта."""
+    try:
+        deleted = await artifact_repository.delete_artifact(WEB_WORKSPACE_ID, artifact_id)
+
+        if not deleted:
+            return {"error": "Материал не найден.", "deleted": False}
+
+        return {"deleted": True}
+
+    except Exception:
+        return {"error": "Не удалось удалить материал.", "deleted": False}
 
 
 _ARTIFACT_STATUSES = ("draft", "review_required", "ready", "used", "archived")
@@ -533,6 +642,59 @@ async def get_history():
         }
 
 
+def _business_profile_payload(profile) -> dict | None:
+    if profile is None:
+        return None
+    context = profile.context
+    return {
+        "business_name": profile.business_name,
+        "business_type": profile.business_type,
+        "short_description": profile.short_description,
+        "profile_status": profile.profile_status,
+        "ta_affiliated": profile.ta_affiliated,
+        "specializations": list(context.specializations),
+        "destinations": list(context.destinations),
+        "region": context.region,
+        "audiences": list(context.audiences),
+        "tone": str(context.communication.get("tone") or ""),
+        "public_contacts": dict(context.public_contacts),
+        "verified_claims": [
+            claim.text for claim in context.claims
+            if claim.verification_status == "verified" and claim.text.strip()
+        ],
+    }
+
+
+def _personal_style_payload(preferences) -> dict | None:
+    if preferences is None:
+        return None
+    return {
+        "style_description": preferences.style_description,
+        "example_posts": list(preferences.example_posts),
+        "avoid_phrases": list(preferences.avoid_phrases),
+    }
+
+
+class BusinessProfileUpdateRequest(BaseModel):
+    business_name: str
+    business_type: str
+    short_description: str
+    specializations: list[str] = Field(default_factory=list)
+    destinations: list[str] = Field(default_factory=list)
+    region: str = ""
+    audiences: list[str] = Field(default_factory=list)
+    tone: str = ""
+
+
+class PersonalStyleUpdateRequest(BaseModel):
+    style_description: str
+    avoid_phrases: list[str] = Field(default_factory=list)
+
+
+class ExamplePostRequest(BaseModel):
+    text: str
+
+
 @app.get("/api/profile")
 async def get_profile():
     """Read-only: реальный BusinessProfile workspace + личный стиль текущего
@@ -546,38 +708,9 @@ async def get_profile():
             WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID,
         )
 
-        business = None
-        if profile is not None:
-            context = profile.context
-            business = {
-                "business_name": profile.business_name,
-                "business_type": profile.business_type,
-                "short_description": profile.short_description,
-                "profile_status": profile.profile_status,
-                "ta_affiliated": profile.ta_affiliated,
-                "specializations": list(context.specializations),
-                "destinations": list(context.destinations),
-                "region": context.region,
-                "audiences": list(context.audiences),
-                "tone": str(context.communication.get("tone") or ""),
-                "public_contacts": dict(context.public_contacts),
-                "verified_claims": [
-                    claim.text for claim in context.claims
-                    if claim.verification_status == "verified" and claim.text.strip()
-                ],
-            }
-
-        style = None
-        if preferences is not None:
-            style = {
-                "style_description": preferences.style_description,
-                "example_posts": list(preferences.example_posts),
-                "avoid_phrases": list(preferences.avoid_phrases),
-            }
-
         return {
-            "business_profile": business,
-            "personal_style": style,
+            "business_profile": _business_profile_payload(profile),
+            "personal_style": _personal_style_payload(preferences),
         }
 
     except Exception:
@@ -588,31 +721,107 @@ async def get_profile():
         }
 
 
-@app.get("/api/settings")
-async def get_settings():
-    """Read-only workspace parameters (name/slug/status/access) - no env,
-    no API keys, no system config. Personal preferences live under
-    /api/profile; there is no other real, safe, workspace-level setting
-    in the current backend (no integrations/notifications system exists
-    yet - see final report)."""
+@app.put("/api/profile/business")
+async def update_business_profile_endpoint(request: BusinessProfileUpdateRequest):
+    """Правки бизнес-профиля идут через тот же BusinessProfileService и тот
+    же revision-based optimistic concurrency, что и Telegram self-service
+    «🏢 Профиль компании» (app/handlers/profile.py) - никакой параллельной
+    модели профиля. resolve_workspace_context() - тот же access-control
+    (owner/admin, active workspace), что использует Telegram; отсутствие
+    активного membership для WEB_TELEGRAM_USER_ID однозначно трактуется как
+    запрет записи, а не как повод создать что-то новое.
+
+    После сохранения /api/chat читает BusinessProfile заново на каждый
+    запрос (без кеша) - новые значения сразу видны Ассистенту.
+    """
     try:
-        workspace = await partner_repository.get_workspace(WEB_WORKSPACE_ID)
+        workspace_context = await partner_repository.resolve_workspace_context(
+            WEB_TELEGRAM_USER_ID,
+        )
+        if workspace_context is None or workspace_context.workspace_id != WEB_WORKSPACE_ID:
+            return {"error": "Недостаточно прав для изменения профиля.", "business_profile": None}
 
-        if workspace is None:
-            return {"error": "Рабочее пространство недоступно.", "workspace": None}
+        profile = await partner_repository.get_business_profile(WEB_WORKSPACE_ID)
+        if profile is None:
+            return {"error": "Профиль ещё не создан.", "business_profile": None}
 
-        return {
-            "workspace": {
-                "name": workspace.name,
-                "slug": workspace.slug,
-                "status": workspace.status,
-                "access_status": workspace.access_status,
-                "access_expires_at": workspace.access_expires_at,
-            }
-        }
+        context_dict = business_context_to_dict(profile.context)
+        context_dict["specializations"] = request.specializations
+        context_dict["destinations"] = request.destinations
+        context_dict["region"] = request.region
+        context_dict["audiences"] = request.audiences
+        context_dict["communication"]["tone"] = request.tone
+
+        # ta_affiliated workspaces can't change business_type from the web
+        # either - same rule as Telegram's on_profile_field_selected().
+        business_type = profile.business_type if profile.ta_affiliated else request.business_type
+
+        updated = await BusinessProfileService(partner_repository).update(
+            workspace_context, profile.revision,
+            business_name=request.business_name, business_type=business_type,
+            short_description=request.short_description, context=context_dict,
+        )
+
+        return {"business_profile": _business_profile_payload(updated)}
+
+    except BusinessProfileAccessError:
+        return {"error": "Недостаточно прав для изменения профиля.", "business_profile": None}
+    except (BusinessProfileValidationError, StaleBusinessProfileError) as exc:
+        return {"error": str(exc), "business_profile": None}
+    except Exception:
+        return {"error": "Не удалось сохранить профиль.", "business_profile": None}
+
+
+@app.put("/api/profile/style")
+async def update_personal_style(request: PersonalStyleUpdateRequest):
+    """Личный стиль - через существующие PartnerRepository-методы
+    (WorkspaceUserPreferences), те же, что Telegram «✍️ Мой стиль общения» /
+    «🚫 Чего не использовать». Каждый метод сам перечитывает текущую запись
+    и сохраняет остальные поля как есть, так что вызовы ниже не затирают
+    example_posts. /api/chat читает эти же предпочтения на каждый запрос -
+    сохранённый стиль сразу используется Ассистентом."""
+    try:
+        await partner_repository.set_user_style_description(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, request.style_description,
+        )
+        preferences = await partner_repository.set_user_avoid_phrases(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, request.avoid_phrases,
+        )
+        return {"personal_style": _personal_style_payload(preferences)}
 
     except Exception:
-        return {"error": "Не удалось загрузить настройки.", "workspace": None}
+        return {"error": "Не удалось сохранить личный стиль.", "personal_style": None}
+
+
+@app.post("/api/profile/style/examples")
+async def add_personal_style_example(request: ExamplePostRequest):
+    text = request.text.strip()
+
+    if not text:
+        return {"error": "Текст примера не должен быть пустым.", "personal_style": None}
+
+    try:
+        preferences = await partner_repository.add_user_example_post(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, text,
+        )
+        return {"personal_style": _personal_style_payload(preferences)}
+
+    except TooManyUserExamplesError as exc:
+        return {"error": str(exc), "personal_style": None}
+    except Exception:
+        return {"error": "Не удалось сохранить пример текста.", "personal_style": None}
+
+
+@app.delete("/api/profile/style/examples")
+async def clear_personal_style_examples():
+    try:
+        preferences = await partner_repository.clear_user_example_posts(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID,
+        )
+        return {"personal_style": _personal_style_payload(preferences)}
+
+    except Exception:
+        return {"error": "Не удалось очистить примеры.", "personal_style": None}
 
 
 @app.post("/api/chat")
@@ -638,6 +847,16 @@ async def chat(request: ChatRequest):
 
         bundle = await knowledge_service.retrieve(retrieval_query)
         knowledge_context = _knowledge_context(bundle)
+
+        business_profile = await partner_repository.get_business_profile(WEB_WORKSPACE_ID)
+        if business_profile is not None:
+            knowledge_context = "\n\n".join(
+                part for part in (
+                    knowledge_context,
+                    _business_profile_context(business_profile),
+                )
+                if part
+            )
 
         competitor = await _requested_competitor(message)
 

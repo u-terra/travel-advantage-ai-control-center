@@ -340,3 +340,59 @@ def test_version_insert_rolls_back_when_current_update_fails(tmp_path: Path) -> 
     assert _run(repository.list_artifact_versions(owner_id, artifact.id)) == [first]
     assert _run(repository.get_artifact(owner_id, artifact.id)).current_version_id == first.id
     assert _run(repository.get_current_artifact_version(owner_id, artifact.id)) == first
+
+
+# ── delete_artifact ───────────────────────────────────────────────────────────
+
+def test_delete_artifact_removes_artifact_and_its_versions(tmp_path: Path) -> None:
+    repository, _, owner_id, _ = _setup(tmp_path)
+    artifact, _ = _run(repository.create_artifact_with_initial_version(
+        owner_id, artifact_type="post", title="Удаляемый", content="Текст",
+    ))
+    _run(repository.add_artifact_version(owner_id, artifact.id, "Вторая версия"))
+
+    deleted = _run(repository.delete_artifact(owner_id, artifact.id))
+
+    assert deleted is True
+    assert _run(repository.get_artifact(owner_id, artifact.id)) is None
+    assert _run(repository.list_artifact_versions(owner_id, artifact.id)) == []
+    with sqlite3.connect(repository.db_path) as db:
+        count = db.execute(
+            "SELECT COUNT(*) FROM artifact_versions WHERE artifact_id = ?", (artifact.id,)
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_delete_artifact_unknown_id_returns_false(tmp_path: Path) -> None:
+    repository, _, owner_id, _ = _setup(tmp_path)
+
+    assert _run(repository.delete_artifact(owner_id, 999999)) is False
+
+
+def test_delete_artifact_is_isolated_by_workspace(tmp_path: Path) -> None:
+    repository, _, owner_id, other_id = _setup(tmp_path)
+    artifact, _ = _run(repository.create_artifact_with_initial_version(
+        owner_id, artifact_type="post", title="Мой", content="Текст",
+    ))
+
+    deleted = _run(repository.delete_artifact(other_id, artifact.id))
+
+    assert deleted is False
+    assert _run(repository.get_artifact(owner_id, artifact.id)) is not None
+    assert _run(repository.list_artifact_versions(owner_id, artifact.id)) != []
+
+
+def test_delete_artifact_does_not_affect_other_artifacts(tmp_path: Path) -> None:
+    repository, _, owner_id, _ = _setup(tmp_path)
+    keep, _ = _run(repository.create_artifact_with_initial_version(
+        owner_id, artifact_type="post", title="Остаётся", content="Текст",
+    ))
+    remove, _ = _run(repository.create_artifact_with_initial_version(
+        owner_id, artifact_type="post", title="Удаляется", content="Текст",
+    ))
+
+    _run(repository.delete_artifact(owner_id, remove.id))
+
+    assert _run(repository.get_artifact(owner_id, keep.id)) is not None
+    remaining_ids = {a.id for a in _run(repository.list_artifacts(owner_id))}
+    assert remaining_ids == {keep.id}

@@ -1145,6 +1145,12 @@ textarea {
     flex: 0 0 auto;
 }
 
+.info-meta-secondary {
+    font-size: 11px;
+    color: var(--text-muted);
+    opacity: .75;
+}
+
 .info-action-btn {
     align-self: flex-start;
     border: 1px solid var(--border);
@@ -1167,6 +1173,117 @@ textarea {
 .info-action-btn:focus-visible {
     outline: 2px solid var(--teal);
     outline-offset: 2px;
+}
+
+.info-action-btn-danger {
+    align-self: flex-start;
+    border: 1px solid rgba(227, 162, 76, .35);
+    background: var(--amber-soft);
+    color: #8a5c14;
+    border-radius: 9px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease;
+}
+
+.info-action-btn-danger:hover {
+    background: rgba(227, 162, 76, .3);
+}
+
+.info-action-btn-danger:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
+}
+
+.material-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.material-edit-textarea {
+    display: block;
+    width: 100%;
+    min-height: 260px;
+    max-height: none;
+    resize: vertical;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--card);
+    padding: 14px 16px;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--text);
+    font-family: inherit;
+}
+
+.material-edit-textarea:focus {
+    outline: none;
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px var(--teal-soft);
+}
+
+.material-edit-error {
+    color: #8a5c14;
+    min-height: 18px;
+}
+
+.material-edit-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.profile-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+
+.profile-field:last-of-type { margin-bottom: 0; }
+
+.profile-field label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.profile-field input,
+.profile-field select,
+.profile-field textarea {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    padding: 9px 12px;
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--text);
+    font-family: inherit;
+}
+
+.profile-field input:disabled {
+    color: var(--text-muted);
+    background: var(--bg);
+}
+
+.profile-field input:focus,
+.profile-field select:focus,
+.profile-field textarea:focus {
+    outline: none;
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px var(--teal-soft);
+}
+
+.profile-field textarea {
+    min-height: 90px;
+    resize: vertical;
 }
 
 .report-content-block {
@@ -1356,13 +1473,13 @@ textarea {
             </li>
             <li>
                 <button class="nav-item" data-view="history"
-                        data-title="История / Артефакты" data-subtitle="Архив диалогов и сохранённые ответы">
+                        data-title="Активность" data-subtitle="Журнал действий Ассистента и статус материалов">
                     <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
                          stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="12" cy="12" r="8.5"/>
                         <path d="M12 7.5V12l3 2"/>
                     </svg>
-                    История / Артефакты
+                    Активность
                 </button>
             </li>
             <li>
@@ -1374,19 +1491,6 @@ textarea {
                         <path d="M4.5 20c1.2-3.8 4.2-6 7.5-6s6.3 2.2 7.5 6"/>
                     </svg>
                     Профиль
-                </button>
-            </li>
-            <li>
-                <button class="nav-item" data-view="settings"
-                        data-title="Настройки" data-subtitle="Параметры рабочего пространства">
-                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
-                         stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M4 7h9M17 7h3M4 12h3M9 12h11M4 17h13M19 17h1"/>
-                        <circle cx="13" cy="7" r="2"/>
-                        <circle cx="6" cy="12" r="2"/>
-                        <circle cx="16" cy="17" r="2"/>
-                    </svg>
-                    Настройки
                 </button>
             </li>
         </ul>
@@ -1559,7 +1663,7 @@ textarea {
             <section class="view" id="view-history">
                 <div class="competitors-view">
                     <div class="competitors-head">
-                        <h2>История / Артефакты</h2>
+                        <h2>Активность</h2>
                         <p>Журнал действий Ассистента и статус сохранённых материалов рабочего пространства.</p>
                     </div>
                     <div id="historyState"></div>
@@ -1573,16 +1677,6 @@ textarea {
                         <p>Бизнес-профиль рабочего пространства и личный стиль общения, который уже учитывает Ассистент.</p>
                     </div>
                     <div id="profileState"></div>
-                </div>
-            </section>
-
-            <section class="view" id="view-settings">
-                <div class="competitors-view">
-                    <div class="competitors-head">
-                        <h2>Настройки</h2>
-                        <p>Параметры рабочего пространства.</p>
-                    </div>
-                    <div id="settingsState"></div>
                 </div>
             </section>
 
@@ -2557,7 +2651,7 @@ function renderStateError(container, title, text, retry) {
 
 function appendFactListSection(container, title, lines) {
     const nonEmpty = lines.filter(Boolean);
-    if (nonEmpty.length === 0) return;
+    if (nonEmpty.length === 0) return undefined;
 
     const section = document.createElement("div");
     section.className = "report-section";
@@ -2576,6 +2670,7 @@ function appendFactListSection(container, title, lines) {
     section.appendChild(list);
 
     container.appendChild(section);
+    return section;
 }
 
 /* ---------- база знаний ---------- */
@@ -2890,8 +2985,184 @@ function renderMaterialDetail(material, version) {
         sections.appendChild(card);
     }
 
+    sections.appendChild(buildMaterialActions(material, version));
+
     wrap.appendChild(sections);
     materialsState.appendChild(wrap);
+}
+
+function buildMaterialActions(material, version) {
+    const actions = document.createElement("div");
+    actions.className = "material-actions";
+
+    if (version) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "info-action-btn";
+        editBtn.textContent = "Редактировать";
+        editBtn.addEventListener("click", () => renderMaterialEditForm(material, version));
+        actions.appendChild(editBtn);
+    }
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "info-action-btn-danger";
+    deleteBtn.textContent = "Удалить";
+    deleteBtn.addEventListener("click", () => showDeleteConfirmation(actions, material, version));
+    actions.appendChild(deleteBtn);
+
+    return actions;
+}
+
+/* Общий двухшаговый inline-confirm для любого destructive-действия
+ * (удаление материала, очистка примеров стиля и т.п.) - без нативного
+ * confirm(), в текущем визуальном языке. */
+function requestDestructiveConfirmation(container, message, onConfirm, onCancel) {
+    container.innerHTML = "";
+
+    const text = document.createElement("span");
+    text.className = "info-card-text";
+    text.textContent = message;
+    container.appendChild(text);
+
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "info-action-btn-danger";
+    confirmBtn.textContent = "Да, подтверждаю";
+    confirmBtn.addEventListener("click", onConfirm);
+    container.appendChild(confirmBtn);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "info-action-btn";
+    cancelBtn.textContent = "Отмена";
+    cancelBtn.addEventListener("click", onCancel);
+    container.appendChild(cancelBtn);
+}
+
+function showDeleteConfirmation(container, material, version) {
+    requestDestructiveConfirmation(
+        container,
+        "Удалить материал без возможности восстановления?",
+        () => deleteMaterial(material),
+        () => renderMaterialDetail(material, version),
+    );
+}
+
+async function deleteMaterial(material) {
+    renderMaterialLoading();
+
+    try {
+        const response = await fetch(
+            "/api/materials/" + encodeURIComponent(material.id),
+            { method: "DELETE" },
+        );
+        const data = await response.json();
+
+        if (!response.ok || data.error || !data.deleted) {
+            renderMaterialError(material);
+            return;
+        }
+
+        loadMaterials();
+
+    } catch (_) {
+        renderMaterialError(material);
+    }
+}
+
+function renderMaterialEditForm(material, version) {
+    materialsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "report-view";
+    wrap.appendChild(makeMaterialsBackButton());
+
+    const header = document.createElement("div");
+    header.className = "report-header";
+    const info = document.createElement("div");
+    info.className = "report-header-info";
+    const heading = document.createElement("h2");
+    heading.textContent = "Редактирование: " + (material.title || "Без названия");
+    info.appendChild(heading);
+    header.appendChild(info);
+    wrap.appendChild(header);
+
+    const sections = document.createElement("div");
+    sections.className = "report-sections";
+
+    const section = document.createElement("div");
+    section.className = "report-section";
+
+    const textarea = document.createElement("textarea");
+    textarea.className = "material-edit-textarea";
+    textarea.value = version.content;
+    section.appendChild(textarea);
+
+    const errorText = document.createElement("p");
+    errorText.className = "info-card-text material-edit-error";
+    section.appendChild(errorText);
+
+    const actions = document.createElement("div");
+    actions.className = "material-edit-actions";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "info-action-btn";
+    saveBtn.textContent = "Сохранить";
+    saveBtn.addEventListener("click", async () => {
+        errorText.textContent = "";
+        const content = textarea.value;
+
+        if (!content.trim()) {
+            errorText.textContent = "Текст не должен быть пустым.";
+            return;
+        }
+
+        saveBtn.disabled = true;
+
+        try {
+            const response = await fetch(
+                "/api/materials/" + encodeURIComponent(material.id),
+                {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        content: content,
+                        expected_version_id: version.id,
+                    }),
+                },
+            );
+            const data = await response.json();
+
+            if (!response.ok || data.error) {
+                errorText.textContent = data.error || "Не удалось сохранить материал.";
+                saveBtn.disabled = false;
+                return;
+            }
+
+            renderMaterialDetail(data.material || material, data.version);
+
+        } catch (_) {
+            errorText.textContent = "Не удалось сохранить материал. Проверьте соединение.";
+            saveBtn.disabled = false;
+        }
+    });
+    actions.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "info-action-btn";
+    cancelBtn.textContent = "Отмена";
+    cancelBtn.addEventListener("click", () => renderMaterialDetail(material, version));
+    actions.appendChild(cancelBtn);
+
+    section.appendChild(actions);
+    sections.appendChild(section);
+    wrap.appendChild(sections);
+    materialsState.appendChild(wrap);
+
+    textarea.focus();
 }
 
 async function openMaterial(item) {
@@ -2947,12 +3218,15 @@ async function loadMaterials() {
     }
 }
 
-/* ---------- история / артефакты ---------- */
+/* ---------- активность ---------- */
 
 const historyState = document.getElementById("historyState");
 
+// Человекочитаемое название действия Оркестратора - без слов "чат"/
+// "диалог": это журнал технических AI-действий (usage_events), не архив
+// переписки, содержимого сообщений здесь нет и не будет.
 const USAGE_MODULE_LABELS = {
-    web_chat: "Чат с Ассистентом",
+    web_chat: "Обращение к Ассистенту",
     competitor_intelligence: "Анализ конкурента",
 };
 
@@ -3019,13 +3293,18 @@ function renderHistory(events, statusCounts) {
 
             const meta = document.createElement("div");
             meta.className = "info-meta";
-            const providerText = event.model ? (event.provider + " · " + event.model) : event.provider;
-            meta.appendChild(document.createTextNode(providerText || ""));
-            const dot = document.createElement("span");
-            dot.className = "dot";
-            meta.appendChild(dot);
             meta.appendChild(document.createTextNode(formatSignalDate(event.occurred_at)));
             card.appendChild(meta);
+
+            // provider/model - технические детали, вторичные по отношению
+            // к модулю/действию/времени/статусу выше: мельче и приглушённее.
+            const providerText = event.model ? (event.provider + " · " + event.model) : event.provider;
+            if (providerText) {
+                const technical = document.createElement("div");
+                technical.className = "info-meta-secondary";
+                technical.textContent = providerText;
+                card.appendChild(technical);
+            }
 
             grid.appendChild(card);
         });
@@ -3089,6 +3368,16 @@ function businessTypeLabel(type) {
     return BUSINESS_TYPE_LABELS[type] || type || "";
 }
 
+function appendSectionEditButton(section, onClick) {
+    if (!section) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "info-action-btn";
+    btn.textContent = "Редактировать";
+    btn.addEventListener("click", onClick);
+    section.appendChild(btn);
+}
+
 function renderProfile(business, style) {
     profileState.innerHTML = "";
 
@@ -3106,7 +3395,8 @@ function renderProfile(business, style) {
             business.audiences.length ? ("Аудитории: " + business.audiences.join(", ")) : null,
             business.tone ? ("Стиль общения компании: " + business.tone) : null,
         ];
-        appendFactListSection(sections, "Профиль бизнеса", lines);
+        const businessSection = appendFactListSection(sections, "Профиль бизнеса", lines);
+        appendSectionEditButton(businessSection, () => renderBusinessProfileEditForm(business));
 
         const contactLines = Object.entries(business.public_contacts || {})
             .filter(([, value]) => value && value.trim())
@@ -3126,18 +3416,18 @@ function renderProfile(business, style) {
         }
     }
 
-    if (style) {
-        const lines = [
-            style.style_description
-                ? ("Стиль общения: " + style.style_description)
-                : "Стиль общения: не заполнен.",
-            "Примеров текстов сохранено: " + style.example_posts.length + " из 5.",
-            style.avoid_phrases.length
-                ? ("Не использовать: " + style.avoid_phrases.join(", "))
-                : "Не использовать: список пуст.",
-        ];
-        appendFactListSection(sections, "Личный стиль", lines);
-    }
+    const styleForForm = style || { style_description: "", example_posts: [], avoid_phrases: [] };
+    const styleLines = [
+        styleForForm.style_description
+            ? ("Стиль общения: " + styleForForm.style_description)
+            : "Стиль общения: не заполнен.",
+        "Примеров текстов сохранено: " + styleForForm.example_posts.length + " из 5.",
+        styleForForm.avoid_phrases.length
+            ? ("Не использовать: " + styleForForm.avoid_phrases.join(", "))
+            : "Не использовать: список пуст.",
+    ];
+    const styleSection = appendFactListSection(sections, "Личный стиль", styleLines);
+    appendSectionEditButton(styleSection, () => renderPersonalStyleEditForm(styleForForm));
 
     if (sections.children.length === 0) {
         const card = document.createElement("div");
@@ -3152,6 +3442,349 @@ function renderProfile(business, style) {
     }
 
     profileState.appendChild(sections);
+}
+
+function parseListInput(raw) {
+    return raw.split(/[,;\n]/).map(value => value.trim()).filter(Boolean);
+}
+
+function addProfileFormField(section, labelText, input) {
+    const field = document.createElement("div");
+    field.className = "profile-field";
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    field.appendChild(label);
+    field.appendChild(input);
+    section.appendChild(field);
+    return input;
+}
+
+function renderBusinessProfileEditForm(business) {
+    profileState.innerHTML = "";
+
+    const sections = document.createElement("div");
+    sections.className = "report-sections";
+
+    const section = document.createElement("div");
+    section.className = "report-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = "Редактирование профиля бизнеса";
+    section.appendChild(heading);
+
+    const nameInput = addProfileFormField(
+        section, "Название", document.createElement("input"),
+    );
+    nameInput.type = "text";
+    nameInput.value = business.business_name || "";
+
+    let typeSelect = null;
+    if (business.ta_affiliated) {
+        const readonlyType = addProfileFormField(
+            section, "Тип бизнеса", document.createElement("input"),
+        );
+        readonlyType.type = "text";
+        readonlyType.value = businessTypeLabel(business.business_type);
+        readonlyType.disabled = true;
+    } else {
+        typeSelect = addProfileFormField(
+            section, "Тип бизнеса", document.createElement("select"),
+        );
+        Object.entries(BUSINESS_TYPE_LABELS).forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            if (value === business.business_type) option.selected = true;
+            typeSelect.appendChild(option);
+        });
+    }
+
+    const descriptionInput = addProfileFormField(
+        section, "Описание", document.createElement("textarea"),
+    );
+    descriptionInput.value = business.short_description || "";
+
+    const specializationsInput = addProfileFormField(
+        section, "Специализации (через запятую)", document.createElement("input"),
+    );
+    specializationsInput.type = "text";
+    specializationsInput.value = business.specializations.join(", ");
+
+    const destinationsInput = addProfileFormField(
+        section, "Направления (через запятую)", document.createElement("input"),
+    );
+    destinationsInput.type = "text";
+    destinationsInput.value = business.destinations.join(", ");
+
+    const regionInput = addProfileFormField(
+        section, "Регион работы", document.createElement("input"),
+    );
+    regionInput.type = "text";
+    regionInput.value = business.region || "";
+
+    const audiencesInput = addProfileFormField(
+        section, "Аудитории (через запятую)", document.createElement("input"),
+    );
+    audiencesInput.type = "text";
+    audiencesInput.value = business.audiences.join(", ");
+
+    const toneInput = addProfileFormField(
+        section, "Стиль общения компании", document.createElement("input"),
+    );
+    toneInput.type = "text";
+    toneInput.value = business.tone || "";
+
+    const errorText = document.createElement("p");
+    errorText.className = "info-card-text material-edit-error";
+    section.appendChild(errorText);
+
+    const actions = document.createElement("div");
+    actions.className = "material-edit-actions";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "info-action-btn";
+    saveBtn.textContent = "Сохранить";
+    saveBtn.addEventListener("click", async () => {
+        errorText.textContent = "";
+        const name = nameInput.value.trim();
+
+        if (!name) {
+            errorText.textContent = "Название не должно быть пустым.";
+            return;
+        }
+
+        saveBtn.disabled = true;
+
+        try {
+            const response = await fetch("/api/profile/business", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    business_name: name,
+                    business_type: typeSelect ? typeSelect.value : business.business_type,
+                    short_description: descriptionInput.value.trim(),
+                    specializations: parseListInput(specializationsInput.value),
+                    destinations: parseListInput(destinationsInput.value),
+                    region: regionInput.value.trim(),
+                    audiences: parseListInput(audiencesInput.value),
+                    tone: toneInput.value.trim(),
+                }),
+            });
+            const data = await response.json();
+
+            if (!response.ok || data.error) {
+                errorText.textContent = data.error || "Не удалось сохранить профиль.";
+                saveBtn.disabled = false;
+                return;
+            }
+
+            loadProfile();
+
+        } catch (_) {
+            errorText.textContent = "Не удалось сохранить профиль. Проверьте соединение.";
+            saveBtn.disabled = false;
+        }
+    });
+    actions.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "info-action-btn";
+    cancelBtn.textContent = "Отмена";
+    cancelBtn.addEventListener("click", () => loadProfile());
+    actions.appendChild(cancelBtn);
+
+    section.appendChild(actions);
+    sections.appendChild(section);
+    profileState.appendChild(sections);
+
+    nameInput.focus();
+}
+
+function renderPersonalStyleEditForm(style) {
+    profileState.innerHTML = "";
+
+    const sections = document.createElement("div");
+    sections.className = "report-sections";
+
+    const section = document.createElement("div");
+    section.className = "report-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = "Редактирование личного стиля";
+    section.appendChild(heading);
+
+    const styleInput = addProfileFormField(
+        section, "Стиль общения", document.createElement("textarea"),
+    );
+    styleInput.value = style.style_description || "";
+
+    const avoidInput = addProfileFormField(
+        section, "Чего не использовать (через запятую)", document.createElement("input"),
+    );
+    avoidInput.type = "text";
+    avoidInput.value = style.avoid_phrases.join(", ");
+
+    const errorText = document.createElement("p");
+    errorText.className = "info-card-text material-edit-error";
+    section.appendChild(errorText);
+
+    const actions = document.createElement("div");
+    actions.className = "material-edit-actions";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "info-action-btn";
+    saveBtn.textContent = "Сохранить";
+    saveBtn.addEventListener("click", async () => {
+        errorText.textContent = "";
+        saveBtn.disabled = true;
+
+        try {
+            const response = await fetch("/api/profile/style", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    style_description: styleInput.value.trim(),
+                    avoid_phrases: parseListInput(avoidInput.value),
+                }),
+            });
+            const data = await response.json();
+
+            if (!response.ok || data.error) {
+                errorText.textContent = data.error || "Не удалось сохранить стиль.";
+                saveBtn.disabled = false;
+                return;
+            }
+
+            loadProfile();
+
+        } catch (_) {
+            errorText.textContent = "Не удалось сохранить стиль. Проверьте соединение.";
+            saveBtn.disabled = false;
+        }
+    });
+    actions.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "info-action-btn";
+    cancelBtn.textContent = "Отмена";
+    cancelBtn.addEventListener("click", () => loadProfile());
+    actions.appendChild(cancelBtn);
+
+    section.appendChild(actions);
+    sections.appendChild(section);
+
+    const examplesSection = document.createElement("div");
+    examplesSection.className = "report-section";
+    const examplesHeading = document.createElement("h3");
+    examplesHeading.textContent = "Примеры текстов (" + style.example_posts.length + " из 5)";
+    examplesSection.appendChild(examplesHeading);
+
+    if (style.example_posts.length > 0) {
+        const list = document.createElement("ul");
+        list.className = "report-list";
+        style.example_posts.forEach(text => {
+            const li = document.createElement("li");
+            li.textContent = text;
+            list.appendChild(li);
+        });
+        examplesSection.appendChild(list);
+    }
+
+    const examplesError = document.createElement("p");
+    examplesError.className = "info-card-text material-edit-error";
+    examplesSection.appendChild(examplesError);
+
+    const exampleActions = document.createElement("div");
+    exampleActions.className = "material-actions";
+
+    if (style.example_posts.length < 5) {
+        const addInput = document.createElement("input");
+        addInput.type = "text";
+        addInput.placeholder = "Текст примера…";
+        examplesSection.appendChild(addInput);
+
+        const addBtn = document.createElement("button");
+        addBtn.type = "button";
+        addBtn.className = "info-action-btn";
+        addBtn.textContent = "Добавить пример";
+        addBtn.addEventListener("click", async () => {
+            const text = addInput.value.trim();
+
+            if (!text) {
+                examplesError.textContent = "Текст примера не должен быть пустым.";
+                return;
+            }
+
+            addBtn.disabled = true;
+
+            try {
+                const response = await fetch("/api/profile/style/examples", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text: text }),
+                });
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    examplesError.textContent = data.error || "Не удалось сохранить пример.";
+                    addBtn.disabled = false;
+                    return;
+                }
+
+                renderPersonalStyleEditForm(data.personal_style);
+
+            } catch (_) {
+                examplesError.textContent = "Не удалось сохранить пример. Проверьте соединение.";
+                addBtn.disabled = false;
+            }
+        });
+        exampleActions.appendChild(addBtn);
+    }
+
+    if (style.example_posts.length > 0) {
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.className = "info-action-btn-danger";
+        clearBtn.textContent = "Очистить все примеры";
+        clearBtn.addEventListener("click", () => {
+            requestDestructiveConfirmation(
+                exampleActions,
+                "Удалить все сохранённые примеры без возможности восстановления?",
+                async () => {
+                    try {
+                        const response = await fetch("/api/profile/style/examples", {
+                            method: "DELETE",
+                        });
+                        const data = await response.json();
+
+                        if (!response.ok || data.error) {
+                            examplesError.textContent = data.error || "Не удалось очистить примеры.";
+                            renderPersonalStyleEditForm(style);
+                            return;
+                        }
+
+                        renderPersonalStyleEditForm(data.personal_style);
+
+                    } catch (_) {
+                        examplesError.textContent = "Не удалось очистить примеры. Проверьте соединение.";
+                        renderPersonalStyleEditForm(style);
+                    }
+                },
+                () => renderPersonalStyleEditForm(style),
+            );
+        });
+        exampleActions.appendChild(clearBtn);
+    }
+
+    examplesSection.appendChild(exampleActions);
+    sections.appendChild(examplesSection);
+    profileState.appendChild(sections);
+
+    styleInput.focus();
 }
 
 async function loadProfile() {
@@ -3175,75 +3808,6 @@ async function loadProfile() {
         renderStateError(
             profileState, "Не удалось загрузить профиль",
             "Проверьте соединение и попробуйте ещё раз.", loadProfile,
-        );
-    }
-}
-
-/* ---------- настройки ---------- */
-
-const settingsState = document.getElementById("settingsState");
-
-const WORKSPACE_STATUS_LABELS = {
-    active: "Активно",
-    suspended: "Приостановлено",
-    disabled: "Отключено",
-};
-
-function workspaceStatusLabel(status) {
-    return WORKSPACE_STATUS_LABELS[status] || status || "";
-}
-
-function renderSettings(workspace) {
-    settingsState.innerHTML = "";
-
-    const sections = document.createElement("div");
-    sections.className = "report-sections";
-
-    const lines = [
-        "Название: " + (workspace.name || "—"),
-        "Идентификатор: " + (workspace.slug || "—"),
-        "Статус рабочего пространства: " + workspaceStatusLabel(workspace.status),
-        "Статус доступа: " + workspaceStatusLabel(workspace.access_status),
-        workspace.access_expires_at
-            ? ("Доступ действует до: " + formatSignalDate(workspace.access_expires_at))
-            : "Доступ: без ограничения по сроку.",
-    ];
-    appendFactListSection(sections, "Рабочее пространство", lines);
-
-    const note = document.createElement("div");
-    note.className = "report-section";
-    const noteText = document.createElement("p");
-    noteText.className = "info-card-text";
-    noteText.textContent =
-        "Интеграции и уведомления пока не подключены на бэкенде — здесь появятся, " +
-        "когда для них будет реальное хранилище.";
-    note.appendChild(noteText);
-    sections.appendChild(note);
-
-    settingsState.appendChild(sections);
-}
-
-async function loadSettings() {
-    renderStateLoading(settingsState, "Загружаем настройки…");
-
-    try {
-        const response = await fetch("/api/settings");
-        const data = await response.json();
-
-        if (!response.ok || data.error || !data.workspace) {
-            renderStateError(
-                settingsState, "Не удалось загрузить настройки",
-                "Проверьте соединение и попробуйте ещё раз.", loadSettings,
-            );
-            return;
-        }
-
-        renderSettings(data.workspace);
-
-    } catch (_) {
-        renderStateError(
-            settingsState, "Не удалось загрузить настройки",
-            "Проверьте соединение и попробуйте ещё раз.", loadSettings,
         );
     }
 }
@@ -3308,8 +3872,6 @@ function activateView(key) {
         loadHistory();
     } else if (key === "profile") {
         loadProfile();
-    } else if (key === "settings") {
-        loadSettings();
     }
 }
 
