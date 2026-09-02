@@ -878,34 +878,6 @@ textarea {
     white-space: nowrap;
 }
 
-.report-quick-takeaways {
-    background: var(--teal-soft);
-    border: 1px solid var(--teal-soft-strong);
-    border-radius: 14px;
-    padding: 16px 20px;
-    margin-bottom: 18px;
-}
-
-.report-quick-takeaways h3 {
-    font-size: 12.5px;
-    font-weight: 700;
-    color: var(--teal-dark);
-    text-transform: uppercase;
-    letter-spacing: .04em;
-    margin: 0 0 10px;
-}
-
-.report-quick-takeaways ul {
-    margin: 0;
-    padding-left: 18px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: 13.5px;
-    line-height: 1.5;
-    color: var(--text);
-}
-
 .report-sections {
     display: flex;
     flex-direction: column;
@@ -2124,153 +2096,6 @@ function appendReportOpportunitiesSection(container, opportunities) {
     container.appendChild(section);
 }
 
-function normalizeTakeawayKey(text) {
-    return (text || "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function normalizeTakeawayWhitespace(text) {
-    return (text || "").replace(/\s+/g, " ").trim();
-}
-
-function stripTakeawayTrailingEllipsis(text) {
-    return text.replace(/(\.{2,}|…)\s*$/, "").trim();
-}
-
-const TAKEAWAY_DANGLING_WORDS = new Set([
-    "a", "an", "the", "in", "on", "at", "for", "to", "with", "of", "and",
-    "or", "from", "by", "as", "that", "which", "is", "are", "was", "were",
-    "be", "been", "being", "this", "these", "those", "than", "into", "onto",
-    "about", "over", "under", "not", "but", "so", "such", "via", "you",
-    "can", "will", "should", "would", "could",
-    "в", "на", "и", "или", "для", "от", "по", "из", "как", "что", "с", "к",
-    "у", "о", "за", "до", "при", "над", "под", "без", "про", "между",
-    "среди", "чтобы", "либо", "а", "но", "же", "ли", "не", "это",
-]);
-
-const TAKEAWAY_TERMINAL_PUNCTUATION_RE = /[.!?»"')\]]$/;
-
-/* Реальные обрубки вроде "GPT Apps You Can Use in" не заканчиваются знаком
- * препинания и обрываются на предлоге/союзе - явный признак того, что фраза
- * продолжалась дальше и была разрезана (например, composite-фактом,
- * порезанным по запятой на бэкенде). */
-function isCutOffTakeaway(text) {
-    if (TAKEAWAY_TERMINAL_PUNCTUATION_RE.test(text)) return false;
-    const words = text.split(" ").filter(Boolean);
-    const lastWord = (words[words.length - 1] || "")
-        .toLowerCase()
-        .replace(/[^a-zа-яё0-9-]/gi, "");
-    return TAKEAWAY_DANGLING_WORDS.has(lastWord);
-}
-
-/* Голое слово/сущность (например, всё, что осталось от короткого ярлыка
- * после нормализации) - не самостоятельная мысль. */
-function isTooThinToBeAThought(text) {
-    return text.split(" ").filter(Boolean).length < 2;
-}
-
-/* Заголовки и названия материалов конкурента ("GPT Apps You Can Use in
- * ChatGPT for Travel Planning", "...Which Is Better for Kids?") пишутся в
- * Title Case - почти каждое значимое слово с большой буквы. Обычное
- * предложение (рус. или англ.) капитализирует только первое слово и
- * случайные имена собственные. Порог по доле капитализированных слов ловит
- * именно такие технические заголовки источников, не трогая обычный текст. */
-function looksLikeHeadlineTitle(text) {
-    const words = text.match(/[A-Za-zА-Яа-яЁё]+/g) || [];
-    const rest = words.slice(1).filter(word => word.length >= 3);
-    if (rest.length < 3) return false;
-
-    const capitalized = rest.filter(word => {
-        const first = word[0];
-        return first === first.toUpperCase() && first !== first.toLowerCase();
-    });
-
-    return capitalized.length / rest.length >= 0.6;
-}
-
-const TAKEAWAY_MAX_LENGTH = 140;
-
-/* Длинную, но валидную мысль сокращаем ТОЛЬКО по границе предложения. Если
- * аккуратной границы в пределах лимита нет - оставляем строку целиком: лучше
- * длинный пункт, чем обрубленный смысл. */
-function shortenTakeawayAtSentenceBoundary(text) {
-    if (text.length <= TAKEAWAY_MAX_LENGTH) return text;
-
-    const slice = text.slice(0, TAKEAWAY_MAX_LENGTH);
-    const sentenceMatch = slice.match(/^[\s\S]*[.!?](?=\s|$)/);
-    if (sentenceMatch && sentenceMatch[0].trim().length >= 20) {
-        return sentenceMatch[0].trim();
-    }
-
-    return text;
-}
-
-/* Возвращает законченную, самостоятельную мысль или null, если raw -
- * пустая строка, голый ярлык, заголовок источника или обрывок фразы.
- * Ничего не выдумывает и не "чинит" обрывки - они просто отбрасываются. */
-function prepareTakeawayCandidate(raw) {
-    let text = normalizeTakeawayWhitespace(raw);
-    if (!text) return null;
-
-    text = stripTakeawayTrailingEllipsis(text);
-    if (!text) return null;
-
-    if (isTooThinToBeAThought(text)) return null;
-    if (isCutOffTakeaway(text)) return null;
-    if (looksLikeHeadlineTitle(text)) return null;
-
-    return shortenTakeawayAtSentenceBoundary(text);
-}
-
-/* Краткий вывод строится только из positioning и strengths - без нового
- * LLM-вызова, только уже сохранённый snapshot. opportunities, products,
- * signals и названия/заголовки источников сюда не идут вообще. Дедуп нужен,
- * т.к. strengths в сервисе может дословно повторять positioning. Если
- * валидных мыслей меньше 3 - показываем меньше, никогда не добиваем. */
-function buildQuickTakeaways(intelligence) {
-    const picked = [];
-    const seen = new Set();
-
-    function tryAdd(raw) {
-        if (picked.length >= 3) return;
-        const candidate = prepareTakeawayCandidate(raw);
-        if (!candidate) return;
-        const key = normalizeTakeawayKey(candidate);
-        if (seen.has(key)) return;
-        seen.add(key);
-        picked.push(candidate);
-    }
-
-    const positioning = Array.isArray(intelligence.positioning) ? intelligence.positioning : [];
-    positioning.forEach(tryAdd);
-
-    const strengths = Array.isArray(intelligence.strengths) ? intelligence.strengths : [];
-    strengths.forEach(tryAdd);
-
-    return picked.slice(0, 3);
-}
-
-function appendQuickTakeaways(container, intelligence) {
-    const takeaways = buildQuickTakeaways(intelligence);
-    if (takeaways.length === 0) return;
-
-    const card = document.createElement("div");
-    card.className = "report-quick-takeaways";
-
-    const heading = document.createElement("h3");
-    heading.textContent = "Краткий вывод";
-    card.appendChild(heading);
-
-    const list = document.createElement("ul");
-    takeaways.forEach(text => {
-        const li = document.createElement("li");
-        li.textContent = text;
-        list.appendChild(li);
-    });
-    card.appendChild(list);
-
-    container.appendChild(card);
-}
-
 function renderReport(competitor, intelligence) {
     competitorsState.innerHTML = "";
 
@@ -2303,7 +2128,6 @@ function renderReport(competitor, intelligence) {
     }
 
     wrap.appendChild(header);
-    appendQuickTakeaways(wrap, intelligence);
 
     const sections = document.createElement("div");
     sections.className = "report-sections";
