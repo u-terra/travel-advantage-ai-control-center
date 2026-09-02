@@ -285,6 +285,34 @@ async def list_competitors():
         return {"error": "Не удалось загрузить список конкурентов."}
 
 
+@app.get("/api/competitors/{competitor_id}/intelligence")
+async def get_competitor_intelligence(competitor_id: int):
+    try:
+        competitor = await competitor_repository.get_for_workspace(
+            WEB_WORKSPACE_ID, competitor_id,
+        )
+
+        if competitor is None:
+            return {"error": "Конкурент не найден.", "competitor": None, "intelligence": None}
+
+        intelligence = await competitor_repository.get_intelligence(
+            WEB_WORKSPACE_ID, competitor_id,
+        )
+
+        return {
+            "competitor": {
+                "id": competitor.id,
+                "label": competitor.label,
+                "domain": canonical_domain(competitor.url),
+                "url": competitor.url,
+            },
+            "intelligence": asdict(intelligence) if intelligence is not None else None,
+        }
+
+    except Exception:
+        return {"error": "Не удалось загрузить отчёт по конкуренту."}
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     message = request.message.strip()

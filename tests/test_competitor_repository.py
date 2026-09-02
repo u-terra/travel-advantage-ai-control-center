@@ -204,6 +204,65 @@ def test_update_label_collapses_whitespace(tmp_path: Path) -> None:
     assert updated.label == "Тур Клуб"
 
 
+# ── get_intelligence / get_for_workspace: single saved snapshot lookup ──────
+
+def test_get_intelligence_returns_none_when_not_yet_analyzed(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+
+    assert _run(repository.get_intelligence(workspace_a, competitor.id)) is None
+
+
+def test_get_intelligence_returns_saved_snapshot(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+    _run(repository.save_intelligence(
+        workspace_a, _intelligence(competitor.id, "2026-01-01T00:00:00+00:00"),
+    ))
+
+    result = _run(repository.get_intelligence(workspace_a, competitor.id))
+
+    assert result is not None
+    assert result.competitor_id == competitor.id
+    assert result.analyzed_at == "2026-01-01T00:00:00+00:00"
+
+
+def test_get_intelligence_is_isolated_by_workspace(tmp_path: Path) -> None:
+    """A snapshot saved for workspace A must not be readable via workspace B,
+    even when passing the same competitor_id."""
+    db_path, workspace_a, workspace_b = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+    _run(repository.save_intelligence(
+        workspace_a, _intelligence(competitor.id, "2026-01-01T00:00:00+00:00"),
+    ))
+
+    assert _run(repository.get_intelligence(workspace_b, competitor.id)) is None
+
+
+def test_get_for_workspace_is_isolated_by_workspace(tmp_path: Path) -> None:
+    db_path, workspace_a, workspace_b = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+    competitor = _run(repository.add_competitor(workspace_a, "https://competitor-a.example.com"))
+
+    assert _run(repository.get_for_workspace(workspace_b, competitor.id)) is None
+    assert _run(repository.get_for_workspace(workspace_a, competitor.id)) is not None
+
+
+def test_get_for_workspace_unknown_id_returns_none(tmp_path: Path) -> None:
+    db_path, workspace_a, _ = _two_workspaces(tmp_path)
+    repository = CompetitorRepository(db_path)
+    _run(repository.init())
+
+    assert _run(repository.get_for_workspace(workspace_a, 999999)) is None
+
+
 # ── list_intelligence_dates_for_workspace: cheap last-snapshot lookup for UI ──
 
 def test_intelligence_dates_empty_when_nothing_analyzed_yet(tmp_path: Path) -> None:

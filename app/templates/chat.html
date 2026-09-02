@@ -760,6 +760,12 @@ textarea {
 
 .competitor-meta.analyzed .dot { background: var(--teal); }
 
+.competitor-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 .competitor-analyze-btn {
     align-self: flex-start;
     border: 1px solid var(--border);
@@ -782,6 +788,189 @@ textarea {
 .competitor-analyze-btn:focus-visible {
     outline: 2px solid var(--teal);
     outline-offset: 2px;
+}
+
+.competitor-open-report-btn {
+    align-self: flex-start;
+    border: 1px solid transparent;
+    background: var(--teal);
+    color: #fff;
+    border-radius: 9px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s ease, box-shadow .15s ease;
+}
+
+.competitor-open-report-btn:hover {
+    background: var(--teal-dark);
+    box-shadow: 0 6px 16px rgba(23, 179, 163, .28);
+}
+
+.competitor-open-report-btn:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+}
+
+/* ---------- competitor intelligence report ---------- */
+
+.report-view {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 0 0 40px;
+}
+
+.report-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    border-radius: 9px;
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: 18px;
+    transition: border-color .15s ease, color .15s ease;
+}
+
+.report-back-btn:hover { border-color: var(--teal); color: var(--teal-dark); }
+
+.report-back-btn:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+}
+
+.report-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+}
+
+.report-header-info h2 {
+    font-size: 21px;
+    margin: 0 0 4px;
+    overflow-wrap: anywhere;
+}
+
+.report-header-info .report-domain {
+    color: var(--text-muted);
+    font-size: 13.5px;
+    overflow-wrap: anywhere;
+}
+
+.report-analyzed-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+    border-radius: 999px;
+    padding: 6px 12px;
+    white-space: nowrap;
+}
+
+.report-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.report-section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 22px;
+    box-shadow: 0 4px 14px rgba(16, 24, 40, .045);
+}
+
+.report-section h3 {
+    font-size: 15px;
+    margin: 0 0 12px;
+}
+
+.report-list {
+    margin: 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--text);
+}
+
+.report-source-card, .report-opportunity-card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    background: var(--bg);
+}
+
+.report-source-card + .report-source-card,
+.report-opportunity-card + .report-opportunity-card {
+    margin-top: 10px;
+}
+
+.report-source-title, .report-opportunity-topic {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 13.5px;
+    color: var(--text);
+}
+
+.report-source-title a, .report-opportunity-source a {
+    color: var(--teal-dark);
+    text-decoration: none;
+}
+
+.report-source-title a:hover, .report-opportunity-source a:hover {
+    text-decoration: underline;
+}
+
+.report-source-summary {
+    font-size: 13.5px;
+    color: var(--text);
+    margin: 6px 0 0;
+    line-height: 1.55;
+}
+
+.report-source-facts {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    font-size: 13px;
+    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.report-opportunity-source {
+    margin-top: 8px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+}
+
+.report-freshness-chip {
+    display: inline-block;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 8px;
 }
 
 .competitors-loading {
@@ -1600,9 +1789,23 @@ function renderCompetitorsList(items) {
             message.setSelectionRange(prompt.length, prompt.length);
         });
 
+        const actions = document.createElement("div");
+        actions.className = "competitor-card-actions";
+
+        if (item.last_analyzed_at) {
+            const openReportBtn = document.createElement("button");
+            openReportBtn.type = "button";
+            openReportBtn.className = "competitor-open-report-btn";
+            openReportBtn.textContent = "Открыть отчёт";
+            openReportBtn.addEventListener("click", () => openCompetitorReport(item));
+            actions.appendChild(openReportBtn);
+        }
+
+        actions.appendChild(analyzeBtn);
+
         card.appendChild(top);
         card.appendChild(meta);
-        card.appendChild(analyzeBtn);
+        card.appendChild(actions);
         grid.appendChild(card);
     });
 
@@ -1631,6 +1834,346 @@ async function loadCompetitors() {
 
     } catch (_) {
         renderCompetitorsError();
+    }
+}
+
+/* ---------- competitor intelligence report ---------- */
+
+function makeReportBackButton() {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "report-back-btn";
+    back.textContent = "← Назад к списку конкурентов";
+    back.addEventListener("click", () => loadCompetitors());
+    return back;
+}
+
+function renderReportLoading() {
+    competitorsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "report-view";
+    wrap.appendChild(makeReportBackButton());
+
+    const loading = document.createElement("div");
+    loading.className = "competitors-loading";
+
+    const spinner = document.createElement("div");
+    spinner.className = "competitors-spinner";
+
+    loading.appendChild(spinner);
+    loading.appendChild(document.createTextNode("Загружаем отчёт…"));
+    wrap.appendChild(loading);
+    competitorsState.appendChild(wrap);
+}
+
+function renderReportError(item) {
+    competitorsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "report-view";
+    wrap.appendChild(makeReportBackButton());
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Не удалось загрузить отчёт";
+
+    const text = document.createElement("p");
+    text.textContent = "Проверьте соединение и попробуйте ещё раз.";
+
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "new-chat";
+    retry.textContent = "Повторить";
+    retry.addEventListener("click", () => openCompetitorReport(item));
+
+    card.appendChild(title);
+    card.appendChild(text);
+    card.appendChild(retry);
+    wrap.appendChild(card);
+    competitorsState.appendChild(wrap);
+}
+
+function renderReportEmpty(competitorInfo) {
+    competitorsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "report-view";
+    wrap.appendChild(makeReportBackButton());
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Отчёт ещё не сохранён";
+
+    const text = document.createElement("p");
+    text.textContent =
+        "Для " + competitorDisplayName(competitorInfo) + " ещё нет сохранённого " +
+        "Competitor Intelligence. Запустите анализ в разделе «Ассистент».";
+
+    card.appendChild(title);
+    card.appendChild(text);
+    wrap.appendChild(card);
+    competitorsState.appendChild(wrap);
+}
+
+const REPORT_LIST_SECTIONS = [
+    { key: "positioning", title: "Позиционирование" },
+    { key: "products", title: "Продукты" },
+    { key: "destinations_and_categories", title: "Направления и категории" },
+    { key: "promotions", title: "Акции и промо" },
+    { key: "loyalty_mechanics", title: "Механики лояльности" },
+    { key: "service_and_ux", title: "Сервис и UX" },
+    { key: "strengths", title: "Сильные стороны" },
+    { key: "travel_advantage_comparison", title: "Сравнение с Travel Advantage" },
+    { key: "fresh_signals", title: "Свежие сигналы" },
+];
+
+function appendReportListSection(container, title, items) {
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    const section = document.createElement("div");
+    section.className = "report-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    const list = document.createElement("ul");
+    list.className = "report-list";
+
+    items.forEach(text => {
+        const li = document.createElement("li");
+        li.textContent = text;
+        list.appendChild(li);
+    });
+
+    section.appendChild(list);
+    container.appendChild(section);
+}
+
+function safeHttpUrl(value) {
+    if (typeof value !== "string" || !value.trim()) return null;
+
+    try {
+        const url = new URL(value.trim());
+        if (url.protocol === "http:" || url.protocol === "https:") {
+            return url.href;
+        }
+    } catch (_) {
+        // not a valid absolute URL — fall through
+    }
+
+    return null;
+}
+
+function appendSafeLinkOrText(container, url, label) {
+    const safeUrl = safeHttpUrl(url);
+
+    if (safeUrl) {
+        const link = document.createElement("a");
+        link.href = safeUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = label;
+        container.appendChild(link);
+    } else {
+        const span = document.createElement("span");
+        span.textContent = label;
+        container.appendChild(span);
+    }
+}
+
+function appendReportSourcesSection(container, sources) {
+    if (!Array.isArray(sources) || sources.length === 0) return;
+
+    const section = document.createElement("div");
+    section.className = "report-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = "Источники";
+    section.appendChild(heading);
+
+    sources.forEach(source => {
+        const item = document.createElement("div");
+        item.className = "report-source-card";
+
+        const titleRow = document.createElement("div");
+        titleRow.className = "report-source-title";
+
+        appendSafeLinkOrText(
+            titleRow,
+            source.final_url || source.url,
+            source.title || source.final_url || source.url || "Источник",
+        );
+
+        if (source.freshness) {
+            const chip = document.createElement("span");
+            chip.className = "report-freshness-chip";
+            chip.textContent = source.freshness;
+            titleRow.appendChild(chip);
+        }
+
+        item.appendChild(titleRow);
+
+        if (source.summary) {
+            const summary = document.createElement("div");
+            summary.className = "report-source-summary";
+            summary.textContent = source.summary;
+            item.appendChild(summary);
+        }
+
+        if (Array.isArray(source.key_facts) && source.key_facts.length > 0) {
+            const facts = document.createElement("ul");
+            facts.className = "report-source-facts";
+            source.key_facts.forEach(fact => {
+                const li = document.createElement("li");
+                li.textContent = fact;
+                facts.appendChild(li);
+            });
+            item.appendChild(facts);
+        }
+
+        section.appendChild(item);
+    });
+
+    container.appendChild(section);
+}
+
+function appendReportOpportunitiesSection(container, opportunities) {
+    if (!Array.isArray(opportunities) || opportunities.length === 0) return;
+
+    const section = document.createElement("div");
+    section.className = "report-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = "Возможности и рекомендации";
+    section.appendChild(heading);
+
+    opportunities.forEach(opp => {
+        const item = document.createElement("div");
+        item.className = "report-opportunity-card";
+
+        const topicRow = document.createElement("div");
+        topicRow.className = "report-opportunity-topic";
+        topicRow.textContent = opp.topic || "Идея для контента";
+        item.appendChild(topicRow);
+
+        if (opp.key_thesis) {
+            const thesis = document.createElement("div");
+            thesis.className = "report-source-summary";
+            thesis.textContent = opp.key_thesis;
+            item.appendChild(thesis);
+        }
+
+        if (opp.own_post_angle) {
+            const angle = document.createElement("div");
+            angle.className = "report-source-summary";
+            angle.textContent = "Наш угол: " + opp.own_post_angle;
+            item.appendChild(angle);
+        }
+
+        if (opp.audience_value) {
+            const value = document.createElement("div");
+            value.className = "report-source-summary";
+            value.textContent = "Ценность для аудитории: " + opp.audience_value;
+            item.appendChild(value);
+        }
+
+        if (opp.source_url) {
+            const sourceLine = document.createElement("div");
+            sourceLine.className = "report-opportunity-source";
+            appendSafeLinkOrText(sourceLine, opp.source_url, opp.source_title || opp.source_url);
+            item.appendChild(sourceLine);
+        }
+
+        section.appendChild(item);
+    });
+
+    container.appendChild(section);
+}
+
+function renderReport(competitor, intelligence) {
+    competitorsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "report-view";
+    wrap.appendChild(makeReportBackButton());
+
+    const header = document.createElement("div");
+    header.className = "report-header";
+
+    const info = document.createElement("div");
+    info.className = "report-header-info";
+
+    const heading = document.createElement("h2");
+    heading.textContent = "Отчёт: " + competitorDisplayName(competitor);
+    info.appendChild(heading);
+
+    const domain = document.createElement("div");
+    domain.className = "report-domain";
+    domain.textContent = competitor.domain || competitor.url || "";
+    info.appendChild(domain);
+
+    header.appendChild(info);
+
+    if (intelligence.analyzed_at) {
+        const badge = document.createElement("div");
+        badge.className = "report-analyzed-badge";
+        badge.textContent = formatAnalyzedAt(intelligence.analyzed_at);
+        header.appendChild(badge);
+    }
+
+    wrap.appendChild(header);
+
+    const sections = document.createElement("div");
+    sections.className = "report-sections";
+
+    REPORT_LIST_SECTIONS.forEach(def => {
+        appendReportListSection(sections, def.title, intelligence[def.key]);
+    });
+    appendReportSourcesSection(sections, intelligence.sources);
+    appendReportOpportunitiesSection(sections, intelligence.opportunities);
+
+    if (sections.children.length === 0) {
+        const card = document.createElement("div");
+        card.className = "state-card";
+        const title = document.createElement("h3");
+        title.textContent = "В сохранённом отчёте пока нет данных для отображения";
+        card.appendChild(title);
+        sections.appendChild(card);
+    }
+
+    wrap.appendChild(sections);
+    competitorsState.appendChild(wrap);
+}
+
+async function openCompetitorReport(item) {
+    renderReportLoading();
+
+    try {
+        const response = await fetch(
+            "/api/competitors/" + encodeURIComponent(item.id) + "/intelligence"
+        );
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderReportError(item);
+            return;
+        }
+
+        if (!data.intelligence) {
+            renderReportEmpty(data.competitor || item);
+            return;
+        }
+
+        renderReport(data.competitor || item, data.intelligence);
+
+    } catch (_) {
+        renderReportError(item);
     }
 }
 
