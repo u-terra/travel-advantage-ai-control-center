@@ -18,6 +18,7 @@ from app.domain.business_profiles import (
 )
 from app.domain.competitor_discovery import canonical_domain
 from app.domain.usage import UsageStatus
+from app.domain.web_conversation import ROLE_ASSISTANT, ROLE_USER
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
@@ -27,6 +28,10 @@ from app.repositories.partner_repository import (
     business_context_to_dict,
 )
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
+from app.repositories.web_conversation_repository import (
+    WebConversationRepository,
+    derive_conversation_title,
+)
 from app.repositories.workspace_memory_repository import WorkspaceMemoryRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.business_profile_context import (
@@ -63,6 +68,7 @@ competitor_repository = CompetitorRepository(settings.journal_db_path)
 partner_repository = PartnerRepository(settings.journal_db_path)
 workspace_memory_repository = WorkspaceMemoryRepository(settings.journal_db_path)
 artifact_repository = ArtifactRepository(settings.journal_db_path)
+web_conversation_repository = WebConversationRepository(settings.journal_db_path)
 workspace_signal_repository = WorkspaceSignalRepository(
     settings.journal_db_path, settings.lead_radar_db_path
 )
@@ -106,7 +112,7 @@ competitor_intelligence_service = CompetitorIntelligenceService(
 
 class ChatRequest(BaseModel):
     message: str
-    history: list[dict[str, str]] = Field(default_factory=list)
+    conversation_id: int
 
 
 @app.on_event("startup")
@@ -117,6 +123,7 @@ async def startup() -> None:
     await partner_repository.init()
     await workspace_memory_repository.init()
     await artifact_repository.init()
+    await web_conversation_repository.init()
     # legacy_owner_workspace_id=None: the one-time legacy-Radar backfill is
     # already owned by the bot process (app/main.py) against the same shared
     # journal DB - this just ensures the schema exists, it never re-runs
@@ -780,6 +787,93 @@ async def clear_personal_style_examples():
         return {"error": "Не удалось очистить примеры.", "personal_style": None}
 
 
+def _render_markdown(text: str) -> str:
+    return markdown.markdown(
+        text,
+        extensions=["tables", "fenced_code", "sane_lists"],
+    )
+
+
+def _conversation_payload(conversation) -> dict:
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+    }
+
+
+def _message_payload(message) -> dict:
+    payload = {
+        "id": message.id,
+        "role": message.role,
+        "content": message.content,
+        "created_at": message.created_at,
+    }
+    # HTML is never stored (see app.domain.web_conversation) - it's rendered
+    # here on read, through the exact same markdown.markdown() call /api/chat
+    # uses for a live answer, so restored messages go through the same safe
+    # rendering path as new ones.
+    if message.role == ROLE_ASSISTANT:
+        payload["content_html"] = _render_markdown(message.content)
+    return payload
+
+
+@app.post("/api/conversations")
+async def create_conversation():
+    """Создаёт новый диалог Ассистента - пустой, с title по умолчанию.
+    Реальный title подставится после первого сообщения (см. /api/chat)."""
+    try:
+        conversation = await web_conversation_repository.create_conversation(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID,
+        )
+        return {"conversation": _conversation_payload(conversation)}
+
+    except Exception:
+        return {"error": "Не удалось создать диалог.", "conversation": None}
+
+
+@app.get("/api/conversations")
+async def list_conversations():
+    """Список диалогов текущего workspace/user, свежие сверху (по последней
+    активности) - для раздела «История» в sidebar."""
+    try:
+        conversations = await web_conversation_repository.list_conversations(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID,
+        )
+        return {"conversations": [_conversation_payload(c) for c in conversations]}
+
+    except Exception:
+        return {"error": "Не удалось загрузить историю диалогов.", "conversations": []}
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+async def get_conversation_messages(conversation_id: int):
+    """Сообщения одного диалога, в хронологическом порядке. Строго
+    workspace + user scoped: get_conversation() возвращает None для чужого
+    или несуществующего conversation_id, что здесь трактуется как «не
+    найден», без утечки чужих данных."""
+    try:
+        conversation = await web_conversation_repository.get_conversation(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, conversation_id,
+        )
+
+        if conversation is None:
+            return {"error": "Диалог не найден.", "conversation": None, "messages": []}
+
+        messages = await web_conversation_repository.list_messages(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, conversation_id,
+        )
+
+        return {
+            "conversation": _conversation_payload(conversation),
+            "messages": [_message_payload(item) for item in messages],
+        }
+
+    except Exception:
+        return {"error": "Не удалось загрузить сообщения диалога.", "conversation": None, "messages": []}
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     message = request.message.strip()
@@ -788,10 +882,40 @@ async def chat(request: ChatRequest):
         return {"error": "Введите вопрос."}
 
     try:
+        conversation = await web_conversation_repository.get_conversation(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, request.conversation_id,
+        )
+        if conversation is None:
+            return {"error": "Диалог не найден или недоступен."}
+
+        # История этого диалога, взятая с сервера (а не от клиента) - до
+        # добавления текущего сообщения. Источник истины для generate() и
+        # для решения "это первое сообщение диалога?" (title).
+        prior_messages = await web_conversation_repository.list_messages(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, request.conversation_id,
+        )
+        is_first_message = not prior_messages
+        history = [
+            {"role": item.role, "content": item.content} for item in prior_messages
+        ]
+
+        saved_user_message = await web_conversation_repository.add_message(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, request.conversation_id,
+            ROLE_USER, message,
+        )
+        if saved_user_message is None:
+            return {"error": "Диалог не найден или недоступен."}
+
+        if is_first_message:
+            await web_conversation_repository.set_conversation_title(
+                WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, request.conversation_id,
+                derive_conversation_title(message),
+            )
+
         recent_user_context = [
-            item.get("content", "")
-            for item in request.history[-6:]
-            if item.get("role") == "user"
+            item["content"]
+            for item in history[-6:]
+            if item["role"] == "user"
         ]
 
         retrieval_query = "\n".join(
@@ -871,7 +995,7 @@ async def chat(request: ChatRequest):
             chat_result = await asyncio.to_thread(
                 chat_provider.generate,
                 message=message,
-                history=request.history[-12:],
+                history=history[-12:],
                 knowledge_context=knowledge_context,
                 personal_style=personal_style,
                 workspace_memory=workspace_memory_text,
@@ -913,9 +1037,18 @@ async def chat(request: ChatRequest):
             .replace("\u00a0", " ")
         )
 
-        answer_html = markdown.markdown(
-            clean_answer,
-            extensions=["tables", "fenced_code", "sane_lists"],
+        answer_html = _render_markdown(clean_answer)
+
+        # Оригинальный текст ответа, не HTML - HTML восстанавливается тем же
+        # markdown.markdown() при чтении истории (GET .../messages),
+        # никогда не хранится как источник истины.
+        await web_conversation_repository.add_message(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, request.conversation_id,
+            ROLE_ASSISTANT, clean_answer,
+        )
+
+        updated_conversation = await web_conversation_repository.get_conversation(
+            WEB_WORKSPACE_ID, WEB_TELEGRAM_USER_ID, request.conversation_id,
         )
 
         return {
@@ -931,6 +1064,10 @@ async def chat(request: ChatRequest):
                 }
                 for source in bundle.sources[:8]
             ],
+            "conversation": (
+                _conversation_payload(updated_conversation)
+                if updated_conversation is not None else None
+            ),
         }
 
     except Exception:

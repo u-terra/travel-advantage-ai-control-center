@@ -229,7 +229,10 @@ def test_update_business_profile_is_used_by_assistant_on_next_chat_call(api, mon
 
     monkeypatch.setattr(web_api.chat_provider, "generate", fake_generate)
 
-    response = client.post("/api/chat", json={"message": "Привет", "history": []})
+    conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
+    response = client.post(
+        "/api/chat", json={"message": "Привет", "conversation_id": conversation_id},
+    )
 
     assert response.status_code == 200
     assert "Компания Феникс" in captured["knowledge_context"]
@@ -358,7 +361,10 @@ def test_update_personal_style_is_used_by_assistant_on_next_chat_call(api, monke
 
     monkeypatch.setattr(web_api.chat_provider, "generate", fake_generate)
 
-    response = client.post("/api/chat", json={"message": "Привет", "history": []})
+    conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
+    response = client.post(
+        "/api/chat", json={"message": "Привет", "conversation_id": conversation_id},
+    )
 
     assert response.status_code == 200
     assert captured["personal_style"] == "Пишу тепло и просто, всегда на «вы»."

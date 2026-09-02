@@ -1437,6 +1437,17 @@ textarea {
                 </button>
             </li>
             <li>
+                <button class="nav-item" data-view="history"
+                        data-title="История" data-subtitle="Сохранённые диалоги с Ассистентом">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="8.5"/>
+                        <path d="M12 7.5V12l3 2"/>
+                    </svg>
+                    История
+                </button>
+            </li>
+            <li>
                 <button class="nav-item" data-view="profile"
                         data-title="Профиль" data-subtitle="Бизнес-профиль и личный стиль общения">
                     <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
@@ -1624,6 +1635,16 @@ textarea {
                 </div>
             </section>
 
+            <section class="view" id="view-history">
+                <div class="competitors-view">
+                    <div class="competitors-head">
+                        <h2>История</h2>
+                        <p>Сохранённые диалоги с Ассистентом — открывайте и продолжайте с любого устройства.</p>
+                    </div>
+                    <div id="historyState"></div>
+                </div>
+            </section>
+
         </div>
     </div>
 </div>
@@ -1643,16 +1664,10 @@ const navItems = document.querySelectorAll(".nav-item");
 const sectionTitle = document.getElementById("sectionTitle");
 const sectionSubtitle = document.getElementById("sectionSubtitle");
 
-let history = [];
-
-try {
-    const stored = JSON.parse(
-        sessionStorage.getItem("ta_chat_history") || "[]"
-    );
-    if (Array.isArray(stored)) history = stored;
-} catch (_) {
-    history = [];
-}
+// Сервер - источник истины для истории диалога (см. /api/conversations*).
+// currentConversationId === null значит "диалог ещё не создан на сервере";
+// ensureConversationId() лениво создаёт его при первом сообщении.
+let currentConversationId = null;
 
 function scrollBottom() {
     requestAnimationFrame(() => {
@@ -1697,35 +1712,23 @@ function addAssistant(html, plainText) {
     return bubble;
 }
 
-function saveHistory() {
-    sessionStorage.setItem(
-        "ta_chat_history",
-        JSON.stringify(history.slice(-12))
-    );
-}
+async function ensureConversationId() {
+    if (currentConversationId) return currentConversationId;
 
-function restoreHistory() {
-    if (!history.length) return;
+    const response = await fetch("/api/conversations", { method: "POST" });
+    const data = await response.json();
 
-    welcome.style.display = "none";
-
-    for (const item of history) {
-        if (item.role === "user") {
-            addUser(item.content);
-        } else if (item.role === "assistant") {
-            addAssistant(item.html || "", item.content);
-        }
+    if (!response.ok || !data.conversation) {
+        throw new Error("conversation_create_failed");
     }
+
+    currentConversationId = data.conversation.id;
+    return currentConversationId;
 }
 
 async function submitMessage() {
     const text = message.value.trim();
     if (!text || send.disabled) return;
-
-    const apiHistory = history.map(item => ({
-        role: item.role,
-        content: item.content
-    }));
 
     addUser(text);
 
@@ -1739,6 +1742,8 @@ async function submitMessage() {
     thinking.classList.add("thinking");
 
     try {
+        const conversationId = await ensureConversationId();
+
         const response = await fetch("/api/chat", {
             method: "POST",
             headers: {
@@ -1746,7 +1751,7 @@ async function submitMessage() {
             },
             body: JSON.stringify({
                 message: text,
-                history: apiHistory
+                conversation_id: conversationId
             })
         });
 
@@ -1762,19 +1767,6 @@ async function submitMessage() {
         thinking.innerHTML =
             data.answer_html || data.answer;
 
-        history.push({
-            role: "user",
-            content: text
-        });
-
-        history.push({
-            role: "assistant",
-            content: data.answer,
-            html: data.answer_html || ""
-        });
-
-        history = history.slice(-12);
-        saveHistory();
         scrollBottom();
 
     } catch (_) {
@@ -3632,10 +3624,7 @@ document.querySelectorAll(".quick-card").forEach(card => {
     });
 });
 
-function resetChat() {
-    history = [];
-    sessionStorage.removeItem("ta_chat_history");
-
+function clearChatArea() {
     chat.querySelectorAll(".message").forEach(
         element => element.remove()
     );
@@ -3644,11 +3633,155 @@ function resetChat() {
     message.value = "";
 }
 
-newChat.addEventListener("click", () => {
+async function startNewConversation() {
     activateView("assistant");
-    resetChat();
+    clearChatArea();
+    currentConversationId = null;
+
+    try {
+        const response = await fetch("/api/conversations", { method: "POST" });
+        const data = await response.json();
+        if (response.ok && data.conversation) {
+            currentConversationId = data.conversation.id;
+        }
+    } catch (_) {
+        // конкретный диалог не создался заранее - ensureConversationId()
+        // лениво создаст его при отправке первого сообщения.
+    }
+
     message.focus();
-});
+}
+
+newChat.addEventListener("click", startNewConversation);
+
+/* ---------- история диалогов ---------- */
+
+const historyState = document.getElementById("historyState");
+
+function formatConversationDate(value) {
+    if (!value) return "Дата неизвестна";
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Дата неизвестна";
+
+    return date.toLocaleString("ru-RU", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit"
+    });
+}
+
+function renderConversationsList(items) {
+    historyState.innerHTML = "";
+
+    const grid = document.createElement("div");
+    grid.className = "info-grid";
+
+    items.forEach(item => {
+        const card = document.createElement("div");
+        card.className = "info-card";
+
+        const title = document.createElement("div");
+        title.className = "info-card-title";
+        title.textContent = item.title || "Новый диалог";
+        card.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.className = "info-meta";
+        meta.appendChild(document.createTextNode(formatConversationDate(item.updated_at)));
+        card.appendChild(meta);
+
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "info-action-btn";
+        openBtn.textContent = "Открыть";
+        openBtn.addEventListener("click", () => openConversation(item));
+        card.appendChild(openBtn);
+
+        grid.appendChild(card);
+    });
+
+    historyState.appendChild(grid);
+}
+
+async function loadConversations() {
+    renderStateLoading(historyState, "Загружаем историю диалогов…");
+
+    try {
+        const response = await fetch("/api/conversations");
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderStateError(
+                historyState, "Не удалось загрузить историю диалогов",
+                "Проверьте соединение и попробуйте ещё раз.", loadConversations,
+            );
+            return;
+        }
+
+        const items = Array.isArray(data.conversations) ? data.conversations : [];
+
+        if (items.length === 0) {
+            renderStateEmpty(
+                historyState, "Пока нет сохранённых диалогов",
+                "Диалоги с Ассистентом появятся здесь после первого сообщения.",
+            );
+        } else {
+            renderConversationsList(items);
+        }
+
+    } catch (_) {
+        renderStateError(
+            historyState, "Не удалось загрузить историю диалогов",
+            "Проверьте соединение и попробуйте ещё раз.", loadConversations,
+        );
+    }
+}
+
+async function openConversation(item) {
+    activateView("assistant");
+    clearChatArea();
+    currentConversationId = item.id;
+
+    const thinking = addAssistant("", "Загружаем диалог…");
+    thinking.classList.add("thinking");
+
+    try {
+        const response = await fetch(
+            "/api/conversations/" + encodeURIComponent(item.id) + "/messages"
+        );
+        const data = await response.json();
+
+        thinking.remove();
+
+        if (!response.ok || data.error || !data.conversation) {
+            addAssistant("", "Не удалось загрузить диалог. Попробуйте ещё раз.");
+            return;
+        }
+
+        const items = Array.isArray(data.messages) ? data.messages : [];
+
+        if (items.length === 0) {
+            welcome.style.display = "block";
+        } else {
+            welcome.style.display = "none";
+            items.forEach(entry => {
+                if (entry.role === "user") {
+                    addUser(entry.content);
+                } else if (entry.role === "assistant") {
+                    addAssistant(entry.content_html || "", entry.content);
+                }
+            });
+        }
+
+        scrollBottom();
+
+    } catch (_) {
+        thinking.remove();
+        addAssistant("", "Не удалось загрузить диалог. Попробуйте ещё раз.");
+    } finally {
+        message.focus();
+    }
+}
 
 /* ---------- sidebar navigation ---------- */
 
@@ -3680,6 +3813,8 @@ function activateView(key) {
         loadMaterials();
     } else if (key === "profile") {
         loadProfile();
+    } else if (key === "history") {
+        loadConversations();
     }
 }
 
@@ -3711,8 +3846,6 @@ document.addEventListener("keydown", event => {
     if (event.key === "Escape") closeSidebar();
 });
 
-restoreHistory();
-scrollBottom();
 message.focus();
 </script>
 
