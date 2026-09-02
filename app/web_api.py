@@ -598,50 +598,6 @@ async def delete_material(artifact_id: int):
         return {"error": "Не удалось удалить материал.", "deleted": False}
 
 
-_ARTIFACT_STATUSES = ("draft", "review_required", "ready", "used", "archived")
-
-
-@app.get("/api/history")
-async def get_history():
-    """Read-only activity view for «История / Артефакты»: real recorded AI
-    usage events (usage_ledger_repository - already populated by every
-    chat/competitor-analysis call, see record_llm_call()) plus a status
-    breakdown of real saved Artifacts. Deliberately not a chat-message
-    history - the Assistant's conversation is only kept in the browser's
-    sessionStorage today, nothing server-side to read here honestly.
-    """
-    try:
-        events = await usage_ledger_repository.list_for_workspace(
-            WEB_WORKSPACE_ID, limit=30,
-        )
-        artifacts = await artifact_repository.list_artifacts(WEB_WORKSPACE_ID, limit=200)
-
-        status_counts = {status: 0 for status in _ARTIFACT_STATUSES}
-        for artifact in artifacts:
-            status_counts[artifact.status] = status_counts.get(artifact.status, 0) + 1
-
-        return {
-            "usage_events": [
-                {
-                    "occurred_at": event.occurred_at,
-                    "module": event.module,
-                    "provider": event.provider,
-                    "model": event.model,
-                    "status": event.status.value,
-                }
-                for event in events
-            ],
-            "artifact_status_counts": status_counts,
-        }
-
-    except Exception:
-        return {
-            "error": "Не удалось загрузить историю.",
-            "usage_events": [],
-            "artifact_status_counts": {},
-        }
-
-
 def _business_profile_payload(profile) -> dict | None:
     if profile is None:
         return None

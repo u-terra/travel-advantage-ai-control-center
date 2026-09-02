@@ -1,11 +1,10 @@
-"""XSS/security regression tests for the 5 newly wired web-shell sections
-(База знаний, Материалы, История/Артефакты, Профиль, Настройки) in
-app/templates/chat.html.
+"""XSS/security regression tests for the web-shell sections wired to real
+backend data (База знаний, Материалы, Профиль) in app/templates/chat.html.
 
 All data rendered by these sections comes from real backend records
-(knowledge items, saved artifact content, business profile fields,
-usage-ledger events) - i.e. external/user-controlled text, not something
-this app authored. It must never reach the DOM as parsed HTML.
+(knowledge items, saved artifact content, business profile fields) - i.e.
+external/user-controlled text, not something this app authored. It must
+never reach the DOM as parsed HTML.
 
 As with the report/competitor/signals sections, there's no jsdom/npm
 toolchain in this repo, so these tests run the *actual* shipped functions
@@ -287,56 +286,6 @@ renderProfile(null, null, "секретный внутренний конспе�
     all_text = " ".join(_collect_text(tree))
     assert "секретный внутренний конспект Ассистента" not in all_text
     assert "О проекте" not in all_text
-
-
-# ── renderHistory (Активность): same discipline, plus no chat/dialogue wording ──
-
-def test_render_history_treats_module_text_as_data() -> None:
-    source = _script_source()
-    script = f"""
-{_FAKE_DOM}
-{_extract_const(source, "USAGE_MODULE_LABELS")}
-{_extract_function(source, "usageModuleLabel")}
-{_extract_const(source, "MATERIAL_STATUS_LABELS")}
-{_extract_function(source, "materialStatusLabel")}
-{_extract_function(source, "formatSignalDate")}
-const historyState = document.createElement("div");
-const ARTIFACT_STATUS_ORDER = ["draft", "review_required", "ready", "used", "archived"];
-{_extract_function(source, "renderHistory")}
-
-renderHistory(
-    [{{ occurred_at: "2026-01-01T00:00:00+00:00", module: {json.dumps(_XSS_PAYLOAD)}, provider: "openai", model: null, status: "success" }}],
-    {{ draft: 1, review_required: 0, ready: 0, used: 0, archived: 0 }},
-);
-{_serializable_script("historyState")}
-"""
-    result = _run_node(script)
-    assert result.returncode == 0, result.stderr
-    tree = json.loads(result.stdout.strip())
-
-    assert any(_XSS_PAYLOAD in item for item in _collect_text(tree))
-
-
-def test_activity_module_labels_never_say_chat_or_dialogue() -> None:
-    """The Активность section is a usage_events/artifact-status journal, not
-    a chat-message archive - none of its human-readable labels may use
-    "чат"/"диалог" wording that would imply stored conversation content."""
-    source = _script_source()
-    usage_labels_block = _extract_const(source, "USAGE_MODULE_LABELS")
-
-    lowered = usage_labels_block.lower()
-    assert "чат" not in lowered
-    assert "диалог" not in lowered
-
-
-def test_provider_model_rendered_as_secondary_technical_detail() -> None:
-    """provider/model must be visually secondary (separate, muted element)
-    relative to the module/action label, not folded into the same
-    prominent line."""
-    source = _script_source()
-    render_history = _extract_function(source, "renderHistory")
-
-    assert "info-meta-secondary" in render_history
 
 
 # ── destructive actions require explicit two-step confirmation ──────────────

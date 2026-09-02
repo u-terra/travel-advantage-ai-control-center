@@ -1145,12 +1145,6 @@ textarea {
     flex: 0 0 auto;
 }
 
-.info-meta-secondary {
-    font-size: 11px;
-    color: var(--text-muted);
-    opacity: .75;
-}
-
 .info-action-btn {
     align-self: flex-start;
     border: 1px solid var(--border);
@@ -1292,35 +1286,6 @@ textarea {
     line-height: 1.6;
     color: var(--text);
     overflow-wrap: anywhere;
-}
-
-.stat-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-}
-
-.stat-chip {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 10px 14px;
-    background: var(--bg);
-    min-width: 96px;
-}
-
-.stat-chip .stat-value {
-    font-size: 19px;
-    font-weight: 700;
-    color: var(--text);
-}
-
-.stat-chip .stat-label {
-    font-size: 11.5px;
-    color: var(--text-muted);
 }
 
 .subsection-heading {
@@ -1469,17 +1434,6 @@ textarea {
                         <path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z"/>
                     </svg>
                     Материалы
-                </button>
-            </li>
-            <li>
-                <button class="nav-item" data-view="history"
-                        data-title="Активность" data-subtitle="Журнал действий Ассистента и статус материалов">
-                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
-                         stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="8.5"/>
-                        <path d="M12 7.5V12l3 2"/>
-                    </svg>
-                    Активность
                 </button>
             </li>
             <li>
@@ -1657,16 +1611,6 @@ textarea {
                         <p>Сохранённые материалы рабочего пространства — тексты и черновики, созданные вместе с Ассистентом.</p>
                     </div>
                     <div id="materialsState"></div>
-                </div>
-            </section>
-
-            <section class="view" id="view-history">
-                <div class="competitors-view">
-                    <div class="competitors-head">
-                        <h2>Активность</h2>
-                        <p>Журнал действий Ассистента и статус сохранённых материалов рабочего пространства.</p>
-                    </div>
-                    <div id="historyState"></div>
                 </div>
             </section>
 
@@ -3218,140 +3162,6 @@ async function loadMaterials() {
     }
 }
 
-/* ---------- активность ---------- */
-
-const historyState = document.getElementById("historyState");
-
-// Человекочитаемое название действия Оркестратора - без слов "чат"/
-// "диалог": это журнал технических AI-действий (usage_events), не архив
-// переписки, содержимого сообщений здесь нет и не будет.
-const USAGE_MODULE_LABELS = {
-    web_chat: "Обращение к Ассистенту",
-    competitor_intelligence: "Анализ конкурента",
-};
-
-function usageModuleLabel(module) {
-    return USAGE_MODULE_LABELS[module] || module;
-}
-
-const ARTIFACT_STATUS_ORDER = ["draft", "review_required", "ready", "used", "archived"];
-
-function renderHistory(events, statusCounts) {
-    historyState.innerHTML = "";
-
-    const wrap = document.createElement("div");
-
-    const countsHeading = document.createElement("h3");
-    countsHeading.className = "subsection-heading";
-    countsHeading.textContent = "Материалы по статусам";
-    wrap.appendChild(countsHeading);
-
-    const chips = document.createElement("div");
-    chips.className = "stat-chips";
-    ARTIFACT_STATUS_ORDER.forEach(status => {
-        const count = Number(statusCounts[status]) || 0;
-        const chip = document.createElement("div");
-        chip.className = "stat-chip";
-        const value = document.createElement("div");
-        value.className = "stat-value";
-        value.textContent = String(count);
-        const label = document.createElement("div");
-        label.className = "stat-label";
-        label.textContent = materialStatusLabel(status);
-        chip.appendChild(value);
-        chip.appendChild(label);
-        chips.appendChild(chip);
-    });
-    wrap.appendChild(chips);
-
-    const eventsHeading = document.createElement("h3");
-    eventsHeading.className = "subsection-heading";
-    eventsHeading.textContent = "Журнал действий";
-    wrap.appendChild(eventsHeading);
-
-    if (events.length === 0) {
-        const empty = document.createElement("p");
-        empty.className = "info-card-text";
-        empty.textContent = "Действий пока не записано.";
-        wrap.appendChild(empty);
-    } else {
-        const grid = document.createElement("div");
-        grid.className = "info-grid";
-        events.forEach(event => {
-            const card = document.createElement("div");
-            card.className = "info-card";
-
-            const badge = document.createElement("div");
-            badge.className = "info-card-badge";
-            badge.textContent = event.status === "success" ? "Успешно" : "Ошибка";
-            card.appendChild(badge);
-
-            const title = document.createElement("div");
-            title.className = "info-card-title";
-            title.textContent = usageModuleLabel(event.module);
-            card.appendChild(title);
-
-            const meta = document.createElement("div");
-            meta.className = "info-meta";
-            meta.appendChild(document.createTextNode(formatSignalDate(event.occurred_at)));
-            card.appendChild(meta);
-
-            // provider/model - технические детали, вторичные по отношению
-            // к модулю/действию/времени/статусу выше: мельче и приглушённее.
-            const providerText = event.model ? (event.provider + " · " + event.model) : event.provider;
-            if (providerText) {
-                const technical = document.createElement("div");
-                technical.className = "info-meta-secondary";
-                technical.textContent = providerText;
-                card.appendChild(technical);
-            }
-
-            grid.appendChild(card);
-        });
-        wrap.appendChild(grid);
-    }
-
-    historyState.appendChild(wrap);
-}
-
-async function loadHistory() {
-    renderStateLoading(historyState, "Загружаем историю…");
-
-    try {
-        const response = await fetch("/api/history");
-        const data = await response.json();
-
-        if (!response.ok || data.error) {
-            renderStateError(
-                historyState, "Не удалось загрузить историю",
-                "Проверьте соединение и попробуйте ещё раз.", loadHistory,
-            );
-            return;
-        }
-
-        const events = Array.isArray(data.usage_events) ? data.usage_events : [];
-        const statusCounts = (data.artifact_status_counts && typeof data.artifact_status_counts === "object")
-            ? data.artifact_status_counts : {};
-        const totalArtifacts = Object.values(statusCounts)
-            .reduce((sum, value) => sum + (Number(value) || 0), 0);
-
-        if (events.length === 0 && totalArtifacts === 0) {
-            renderStateEmpty(
-                historyState, "Пока нет истории",
-                "Здесь появится журнал действий Ассистента и статус ваших материалов.",
-            );
-        } else {
-            renderHistory(events, statusCounts);
-        }
-
-    } catch (_) {
-        renderStateError(
-            historyState, "Не удалось загрузить историю",
-            "Проверьте соединение и попробуйте ещё раз.", loadHistory,
-        );
-    }
-}
-
 /* ---------- профиль ---------- */
 
 const profileState = document.getElementById("profileState");
@@ -3868,8 +3678,6 @@ function activateView(key) {
         loadKnowledge();
     } else if (key === "materials") {
         loadMaterials();
-    } else if (key === "history") {
-        loadHistory();
     } else if (key === "profile") {
         loadProfile();
     }
