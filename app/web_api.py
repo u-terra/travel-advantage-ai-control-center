@@ -19,12 +19,14 @@ from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.workspace_memory_repository import WorkspaceMemoryRepository
+from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.competitor_intelligence import (
     CompetitorIntelligenceService,
     CompetitorIntelligenceUnavailable,
 )
 from app.services.content_factory import ContentFactoryConfig
 from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
+from app.services.lead_radar import LeadRadarConfig, build_workspace_signals, category_label
 from app.services.llm.factory import create_llm_provider
 from app.services.usage_recorder import record_llm_call
 
@@ -46,6 +48,10 @@ usage_ledger_repository = UsageLedgerRepository(settings.journal_db_path)
 competitor_repository = CompetitorRepository(settings.journal_db_path)
 partner_repository = PartnerRepository(settings.journal_db_path)
 workspace_memory_repository = WorkspaceMemoryRepository(settings.journal_db_path)
+workspace_signal_repository = WorkspaceSignalRepository(
+    settings.journal_db_path, settings.lead_radar_db_path
+)
+lead_radar_config = LeadRadarConfig(db_path=settings.lead_radar_db_path)
 
 # Temporary until web authentication is implemented.
 WEB_WORKSPACE_ID = 1
@@ -95,6 +101,11 @@ async def startup() -> None:
     await competitor_repository.init()
     await partner_repository.init()
     await workspace_memory_repository.init()
+    # legacy_owner_workspace_id=None: the one-time legacy-Radar backfill is
+    # already owned by the bot process (app/main.py) against the same shared
+    # journal DB - this just ensures the schema exists, it never re-runs
+    # that backfill from the web process.
+    await workspace_signal_repository.init(None)
 
 
 def _fact_value(fact) -> str:
@@ -311,6 +322,56 @@ async def get_competitor_intelligence(competitor_id: int):
 
     except Exception:
         return {"error": "Не удалось загрузить отчёт по конкуренту."}
+
+
+@app.get("/api/signals")
+async def list_signals():
+    """Read-only: свежие сигналы Radar для текущего workspace.
+
+    Использует ровно тот же путь чтения, что и Telegram-хэндлер
+    on_find_signals() (app/handlers/menu.py) - list_for_workspace() затем
+    build_workspace_signals() с теми же лимитами (200 -> 5). В отличие от
+    Telegram-хэндлера здесь намеренно НЕ вызывается sync_eligible(): это
+    write-операция (материализация новых interpretation-строк), а этот
+    эндпоинт должен оставаться строго read-only. Синхронизация уже
+    выполняется процессом бота (app/main.py, при старте и при каждом
+    /find_signals) в ту же общую БД. Никакого нового LLM-вызова - и
+    list_for_workspace(), и build_workspace_signals() только читают и
+    фильтруют уже сохранённые данные.
+    """
+    try:
+        records = await workspace_signal_repository.list_for_workspace(
+            WEB_WORKSPACE_ID, limit=200,
+        )
+        signals = build_workspace_signals(lead_radar_config, records, limit=5)
+
+        if signals is None:
+            return {"error": "Радар сигналов сейчас недоступен.", "signals": []}
+
+        source_names = {
+            record.interpretation_id: record.source_name for record in records
+        }
+
+        return {
+            "signals": [
+                {
+                    "id": signal.id,
+                    "title": signal.title or "(без заголовка)",
+                    "category": signal.category,
+                    "category_label": category_label(signal.category),
+                    "source_type": signal.source_type,
+                    "source_name": source_names.get(signal.id) or "",
+                    "created_at": signal.created_at,
+                    "score": signal.score,
+                    "url": signal.url,
+                    "action_reason": signal.action_reason,
+                }
+                for signal in signals
+            ]
+        }
+
+    except Exception:
+        return {"error": "Не удалось загрузить сигналы.", "signals": []}
 
 
 @app.post("/api/chat")

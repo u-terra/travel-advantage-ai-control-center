@@ -994,6 +994,90 @@ textarea {
     to { transform: rotate(360deg); }
 }
 
+/* ---------- signals (Radar) ---------- */
+
+.signals-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
+}
+
+.signal-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px 18px 16px;
+    box-shadow: 0 4px 14px rgba(16, 24, 40, .045);
+    transition: box-shadow .15s ease, border-color .15s ease;
+}
+
+.signal-card:hover {
+    border-color: var(--teal);
+    box-shadow: 0 14px 30px rgba(16, 24, 40, .09);
+}
+
+.signal-category-badge {
+    align-self: flex-start;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+    border-radius: 999px;
+    padding: 4px 10px;
+}
+
+.signal-title {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.signal-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.signal-meta .dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--border);
+    flex: 0 0 auto;
+}
+
+.signal-discuss-btn {
+    align-self: flex-start;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    border-radius: 9px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+
+.signal-discuss-btn:hover {
+    border-color: var(--teal);
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+}
+
+.signal-discuss-btn:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+}
+
 .state-card {
     max-width: 460px;
     margin: 36px auto 0;
@@ -1304,25 +1388,12 @@ textarea {
             </section>
 
             <section class="view" id="view-signals">
-                <div class="placeholder-view">
-                    <div class="placeholder-card">
-                        <div class="placeholder-icon">
-                            <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                                <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/>
-                            </svg>
-                        </div>
-                        <span class="badge-soon">Раздел подключается</span>
+                <div class="competitors-view">
+                    <div class="competitors-head">
                         <h2>Сигналы и идеи</h2>
-                        <p>
-                            Лента рыночных сигналов и идей для контента: то, что радар
-                            находит в отрасли, и подсказки, что с этим можно сделать.
-                        </p>
-                        <ul>
-                            <li>Радар сигналов рынка и трендов</li>
-                            <li>Идеи для постов и материалов на их основе</li>
-                            <li>Фильтр по источникам и актуальности</li>
-                        </ul>
+                        <p>Свежие сигналы Radar для вашего рабочего пространства.</p>
                     </div>
+                    <div id="signalsState"></div>
                 </div>
             </section>
 
@@ -2177,6 +2248,191 @@ async function openCompetitorReport(item) {
     }
 }
 
+/* ---------- signals (Radar) ---------- */
+
+const signalsState = document.getElementById("signalsState");
+
+function renderSignalsLoading() {
+    signalsState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "competitors-loading";
+
+    const spinner = document.createElement("div");
+    spinner.className = "competitors-spinner";
+
+    wrap.appendChild(spinner);
+    wrap.appendChild(document.createTextNode("Загружаем сигналы…"));
+    signalsState.appendChild(wrap);
+}
+
+function renderSignalsEmpty() {
+    signalsState.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Пока нет свежих сигналов";
+
+    const text = document.createElement("p");
+    text.textContent =
+        "Как только радар найдёт что-то релевантное для подключённых " +
+        "источников, сигналы появятся здесь.";
+
+    card.appendChild(title);
+    card.appendChild(text);
+    signalsState.appendChild(card);
+}
+
+function renderSignalsError() {
+    signalsState.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Не удалось загрузить сигналы";
+
+    const text = document.createElement("p");
+    text.textContent = "Проверьте соединение и попробуйте ещё раз.";
+
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "new-chat";
+    retry.textContent = "Повторить";
+    retry.addEventListener("click", loadSignals);
+
+    card.appendChild(title);
+    card.appendChild(text);
+    card.appendChild(retry);
+    signalsState.appendChild(card);
+}
+
+function formatSignalDate(value) {
+    if (!value) return "Дата неизвестна";
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Дата неизвестна";
+
+    return date.toLocaleDateString("ru-RU", {
+        day: "2-digit", month: "2-digit", year: "numeric"
+    });
+}
+
+function buildSignalPrompt(item) {
+    const lines = [
+        "Разбери сигнал из раздела «Сигналы и идеи»:",
+        "",
+        "Тема: " + (item.title || "(без заголовка)"),
+        "Тип сигнала: " + (item.category_label || "Сигнал"),
+    ];
+
+    if (item.source_name) lines.push("Источник: " + item.source_name);
+    if (item.action_reason) lines.push("Почему это важно: " + item.action_reason);
+    if (item.url) lines.push("Ссылка: " + item.url);
+
+    lines.push(
+        "",
+        "Помоги понять, что с этим делать: стоит ли ответить клиенту, " +
+        "последить за темой или сделать из неё контент."
+    );
+
+    return lines.join("\n");
+}
+
+function openSignalInAssistant(item) {
+    const prompt = buildSignalPrompt(item);
+
+    activateView("assistant");
+    message.value = prompt;
+    message.dispatchEvent(new Event("input"));
+    message.focus();
+    message.setSelectionRange(prompt.length, prompt.length);
+}
+
+function renderSignalsList(items) {
+    signalsState.innerHTML = "";
+
+    const grid = document.createElement("div");
+    grid.className = "signals-grid";
+
+    items.forEach(item => {
+        const card = document.createElement("div");
+        card.className = "signal-card";
+
+        const badge = document.createElement("div");
+        badge.className = "signal-category-badge";
+        badge.textContent = item.category_label || "Сигнал";
+        card.appendChild(badge);
+
+        const title = document.createElement("div");
+        title.className = "signal-title";
+        title.textContent = item.title || "(без заголовка)";
+        card.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.className = "signal-meta";
+
+        const sourceText = item.source_name || item.source_type || "";
+        if (sourceText) {
+            meta.appendChild(document.createTextNode(sourceText));
+        }
+
+        if (sourceText) {
+            const dot = document.createElement("span");
+            dot.className = "dot";
+            meta.appendChild(dot);
+        }
+        meta.appendChild(document.createTextNode(formatSignalDate(item.created_at)));
+
+        if (typeof item.score === "number") {
+            const dot = document.createElement("span");
+            dot.className = "dot";
+            meta.appendChild(dot);
+            meta.appendChild(document.createTextNode("Score: " + Math.round(item.score)));
+        }
+
+        card.appendChild(meta);
+
+        const discussBtn = document.createElement("button");
+        discussBtn.type = "button";
+        discussBtn.className = "signal-discuss-btn";
+        discussBtn.textContent = "Разобрать в Ассистенте";
+        discussBtn.addEventListener("click", () => openSignalInAssistant(item));
+        card.appendChild(discussBtn);
+
+        grid.appendChild(card);
+    });
+
+    signalsState.appendChild(grid);
+}
+
+async function loadSignals() {
+    renderSignalsLoading();
+
+    try {
+        const response = await fetch("/api/signals");
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            renderSignalsError();
+            return;
+        }
+
+        const items = Array.isArray(data.signals) ? data.signals : [];
+
+        if (items.length === 0) {
+            renderSignalsEmpty();
+        } else {
+            renderSignalsList(items);
+        }
+
+    } catch (_) {
+        renderSignalsError();
+    }
+}
+
 document.querySelectorAll(".quick-card").forEach(card => {
     card.addEventListener("click", () => {
         const prompt = card.dataset.prompt || "";
@@ -2227,6 +2483,8 @@ function activateView(key) {
         message.focus();
     } else if (key === "competitors") {
         loadCompetitors();
+    } else if (key === "signals") {
+        loadSignals();
     }
 }
 
