@@ -112,7 +112,13 @@ class CompetitorIntelligenceService:
         self._fetcher = fetcher
         self._usage_ledger = usage_ledger_repository
 
-    async def analyze(self, competitor: Competitor) -> CompetitorIntelligence:
+    async def analyze(
+        self, competitor: Competitor, *, ta_affiliated: bool,
+    ) -> CompetitorIntelligence:
+        """ta_affiliated is resolved by the caller from BusinessProfile.ta_affiliated
+        (fail-closed - see app.web_api._is_ta_affiliated / app.handlers.competitors),
+        never here - this service has no workspace/tenant lookup of its own by
+        design, so both the bot and the web caller must pass it explicitly."""
         discovered_at = datetime.now(timezone.utc).isoformat()
         fetched: list[FetchedPublicSource] = []
         for url in _candidate_urls(competitor.url):
@@ -158,11 +164,19 @@ class CompetitorIntelligenceService:
         if not analyses:
             raise CompetitorIntelligenceUnavailable("Источники прочитаны, но анализ недоступен.")
 
-        bundle = await self._knowledge.retrieve("Что такое Travel Advantage и какие услуги доступны")
-        ta_facts = tuple(
-            f"Travel Advantage — {item.content} [источник: {item.source_ref}]"
-            for item in bundle.primary_items[:3]
-        )
+        if ta_affiliated:
+            bundle = await self._knowledge.retrieve(
+                "Что такое Travel Advantage и какие услуги доступны"
+            )
+            ta_facts = tuple(
+                f"Travel Advantage — {item.content} [источник: {item.source_ref}]"
+                for item in bundle.primary_items[:3]
+            )
+        else:
+            # Independent workspace: no Travel Advantage knowledge lookup
+            # at all, not just an unpopulated comparison - see the
+            # isolation audit this fixes.
+            ta_facts = ()
         ta_link = ta_facts[0] if ta_facts else None
         opportunities = _opportunities(competitor.id, analyses, ta_link)
         all_facts = tuple(fact for _, a in analyses for fact in a.key_facts)

@@ -77,7 +77,7 @@ def test_trip_com_vertical_slice_has_provenance_and_aligned_opportunities():
     service, provider, calls = _service()
     competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
 
-    result = run(service.analyze(competitor))
+    result = run(service.analyze(competitor, ta_affiliated=True))
 
     assert result.competitor_id == 7
     assert len(result.sources) == 4
@@ -90,6 +90,32 @@ def test_trip_com_vertical_slice_has_provenance_and_aligned_opportunities():
     assert "https://www.trip.com/blog" in calls
 
 
+def test_ta_affiliated_true_queries_ta_knowledge_exactly_once():
+    """Regression guard for category A (unchanged behaviour): a TA-affiliated
+    workspace still triggers exactly one Travel Advantage knowledge lookup."""
+    service, _, _ = _service()
+    competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    service._knowledge.retrieve.assert_awaited_once()
+    assert result.travel_advantage_comparison
+
+
+def test_ta_affiliated_false_never_queries_or_includes_ta_knowledge():
+    """Isolation audit fix: an independent (ta_affiliated=False) workspace's
+    competitor analysis must not look up Travel Advantage knowledge at
+    all - not just leave the comparison unpopulated."""
+    service, _, _ = _service()
+    competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=False))
+
+    service._knowledge.retrieve.assert_not_awaited()
+    assert result.travel_advantage_comparison == ()
+    assert all(item.travel_advantage_link is None for item in result.opportunities)
+
+
 def test_existing_competitor_list_opens_saved_entity():
     keyboard = competitors_list_keyboard(((7, "Trip.com"),))
     button = keyboard.inline_keyboard[0][0]
@@ -100,7 +126,7 @@ def test_existing_competitor_list_opens_saved_entity():
 def test_provider_failure_keeps_real_sources_and_content_opportunities():
     service, _, _ = _service(analysis=None)
     competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
-    result = run(service.analyze(competitor))
+    result = run(service.analyze(competitor, ta_affiliated=True))
     assert len(result.sources) == 4
     assert len(result.opportunities) == 1
     assert all(item.topic for item in result.opportunities)
@@ -116,7 +142,7 @@ def test_intelligence_round_trip_and_selected_opportunity_uses_content_factory(t
         workspace.id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
     ))
     service, _, _ = _service()
-    intelligence: CompetitorIntelligence = run(service.analyze(competitor))
+    intelligence: CompetitorIntelligence = run(service.analyze(competitor, ta_affiliated=True))
     run(repository.save_intelligence(workspace.id, intelligence))
     restored = run(repository.get_intelligence(workspace.id, competitor.id))
     assert restored is not None and len(restored.opportunities) == 3
@@ -150,7 +176,7 @@ def test_competitor_opportunity_draft_inherits_personal_style(tmp_path):
         workspace.id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
     ))
     service, _, _ = _service()
-    intelligence = run(service.analyze(competitor))
+    intelligence = run(service.analyze(competitor, ta_affiliated=True))
     run(repository.save_intelligence(workspace.id, intelligence))
 
     callback = Callback()

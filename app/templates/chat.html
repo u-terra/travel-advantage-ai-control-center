@@ -1444,8 +1444,8 @@ textarea {
                 </button>
             </li>
             <li>
-                <button class="nav-item" data-view="knowledge"
-                        data-title="База знаний" data-subtitle="Проверенные факты Travel Advantage и MWR Life">
+                <button class="nav-item" data-view="knowledge" id="navKnowledge"
+                        data-title="База знаний" data-subtitle="Проверенные факты для вашей работы">
                     <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
                          stroke-linecap="round" stroke-linejoin="round">
                         <path d="M4 5.5C4 4.7 4.7 4 5.5 4H12v16H5.5C4.7 20 4 19.3 4 18.5v-13z"/>
@@ -1584,7 +1584,7 @@ textarea {
                                 </button>
 
                                 <button type="button" class="quick-card" id="qaKnowledge"
-                                        data-prompt="Объясни просто: что такое Travel Advantage и как рассказать об этом клиенту?">
+                                        data-prompt="Помоги разобраться с вопросом: ">
                                     <span class="quick-card-icon">
                                         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
                                              stroke-linecap="round" stroke-linejoin="round">
@@ -1592,8 +1592,8 @@ textarea {
                                             <path d="M20 5.5C20 4.7 19.3 4 18.5 4H12v16h6.5c.8 0 1.5-.7 1.5-1.5v-13z"/>
                                         </svg>
                                     </span>
-                                    <span class="quick-card-title">Спросить о Travel Advantage</span>
-                                    <span class="quick-card-desc">Проверенные факты из базы знаний</span>
+                                    <span class="quick-card-title" id="qaKnowledgeTitle">Задать рабочий вопрос</span>
+                                    <span class="quick-card-desc" id="qaKnowledgeDesc">О рынке, клиентах или вашей работе</span>
                                 </button>
                             </div>
                         </div>
@@ -1638,7 +1638,7 @@ textarea {
                 <div class="competitors-view">
                     <div class="competitors-head">
                         <h2>База знаний</h2>
-                        <p>Проверенные факты Travel Advantage и MWR Life — та же база, которую уже использует Ассистент в чате.</p>
+                        <p id="knowledgeViewSubtitle">Проверенные факты для вашего рабочего пространства.</p>
                     </div>
                     <div id="knowledgeState"></div>
                 </div>
@@ -1741,6 +1741,55 @@ logoutBtn.addEventListener("click", async () => {
 });
 
 loadCurrentUser();
+
+/* ---------- Travel Advantage / MWR Life isolation (tenant-aware UI) ----------
+   The static markup above defaults to the NEUTRAL copy (fail-closed): a
+   workspace only gets the Travel Advantage-branded wording once the
+   backend confirms BusinessProfile.ta_affiliated === true. Never trust a
+   client-side flag for this - always re-fetch from /api/profile, which
+   reads the real BusinessProfile for the current session's workspace. */
+const TA_QUICK_ACTION = {
+    title: "Спросить о Travel Advantage",
+    desc: "Проверенные факты из базы знаний",
+    prompt: "Объясни просто: что такое Travel Advantage и как рассказать об этом клиенту?",
+};
+const TA_KNOWLEDGE_NAV_SUBTITLE = "Проверенные факты Travel Advantage и MWR Life";
+const TA_KNOWLEDGE_VIEW_SUBTITLE =
+    "Проверенные факты Travel Advantage и MWR Life — та же база, которую уже использует Ассистент в чате.";
+
+function applyTaAffiliatedUI() {
+    const qaKnowledge = document.getElementById("qaKnowledge");
+    const qaKnowledgeTitle = document.getElementById("qaKnowledgeTitle");
+    const qaKnowledgeDesc = document.getElementById("qaKnowledgeDesc");
+    if (qaKnowledge) qaKnowledge.dataset.prompt = TA_QUICK_ACTION.prompt;
+    if (qaKnowledgeTitle) qaKnowledgeTitle.textContent = TA_QUICK_ACTION.title;
+    if (qaKnowledgeDesc) qaKnowledgeDesc.textContent = TA_QUICK_ACTION.desc;
+
+    const navKnowledge = document.getElementById("navKnowledge");
+    if (navKnowledge) navKnowledge.dataset.subtitle = TA_KNOWLEDGE_NAV_SUBTITLE;
+
+    const knowledgeViewSubtitle = document.getElementById("knowledgeViewSubtitle");
+    if (knowledgeViewSubtitle) knowledgeViewSubtitle.textContent = TA_KNOWLEDGE_VIEW_SUBTITLE;
+}
+
+async function applyTenantAffiliation() {
+    try {
+        const response = await fetch("/api/profile");
+        if (!response.ok) return;
+        const data = await response.json();
+        const taAffiliated = Boolean(
+            data.business_profile && data.business_profile.ta_affiliated,
+        );
+        if (taAffiliated) applyTaAffiliatedUI();
+        // taAffiliated === false (or profile missing/request failed):
+        // fail-closed - the markup already shows the neutral copy, so
+        // there is nothing to do.
+    } catch (_) {
+        // fail-closed: остаёмся с нейтральным UI из статической разметки
+    }
+}
+
+applyTenantAffiliation();
 
 const chat = document.getElementById("chat");
 const scrollBox = document.getElementById("scroll");

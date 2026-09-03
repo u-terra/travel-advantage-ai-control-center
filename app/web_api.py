@@ -99,6 +99,28 @@ knowledge_service = KnowledgeService(
     max_examples=2,
 )
 
+# knowledge_repository is currently one shared Travel Advantage/MWR Life
+# reference base with no workspace_id column (see GET /api/knowledge) - a
+# workspace that isn't ta_affiliated must get none of it, not a filtered
+# view. _EMPTY_KNOWLEDGE_BUNDLE is the fail-closed substitute for a real
+# retrieve() call: every bundle.<field> access downstream stays valid
+# without special-casing "no bundle". This is a deliberate all-or-nothing
+# switch, not a schema change - the seam where a separate general/neutral
+# knowledge base could be added later without touching tenant logic here.
+_EMPTY_KNOWLEDGE_BUNDLE = KnowledgeBundle(
+    question="", primary_items=(), related_items=(), facts=(),
+    compliance_facts=(), examples=(), sources=(),
+    potentially_ambiguous=False, ambiguity_reasons=(), missing_definitions=(),
+)
+
+
+async def _is_ta_affiliated(workspace_id: int) -> bool:
+    """Authoritative source for any Travel Advantage/MWR Life-gated
+    content: BusinessProfile.ta_affiliated only - never business_type,
+    workspace_id, or role. Fail-closed: no profile means not affiliated."""
+    profile = await partner_repository.get_business_profile(workspace_id)
+    return profile is not None and profile.ta_affiliated
+
 
 content_factory_config = ContentFactoryConfig(
     url=settings.content_factory_url,
@@ -707,8 +729,16 @@ async def list_knowledge(principal: WebPrincipal = Depends(get_current_principal
     shared reference data with no workspace_id column, exactly like the
     existing chat retrieval path. Still requires a valid session - it's
     part of the cabinet, not public.
+
+    Tenant-gated on top of that (isolation audit fix): a workspace that
+    isn't ta_affiliated (see _is_ta_affiliated()) gets an empty result
+    here, never any of this TA/MWR content - independent workspaces must
+    not see it just because it exists in the system.
     """
     try:
+        if not await _is_ta_affiliated(principal.workspace_id):
+            return {"sources": [], "items": []}
+
         sources = await knowledge_repository.get_sources()
         items = await knowledge_repository.list_items()
         sources_by_id = {source.id: source for source in sources}
@@ -1363,10 +1393,20 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
             ]
         )
 
-        bundle = await knowledge_service.retrieve(retrieval_query)
+        business_profile = await partner_repository.get_business_profile(principal.workspace_id)
+        # Authoritative + fail-closed: BusinessProfile.ta_affiliated only,
+        # no profile means not affiliated (same rule as _is_ta_affiliated()
+        # above - kept inline here since business_profile is already
+        # fetched for _business_profile_context below, no need for a
+        # second query).
+        ta_affiliated = business_profile is not None and business_profile.ta_affiliated
+
+        bundle = (
+            await knowledge_service.retrieve(retrieval_query)
+            if ta_affiliated else _EMPTY_KNOWLEDGE_BUNDLE
+        )
         knowledge_context = _knowledge_context(bundle)
 
-        business_profile = await partner_repository.get_business_profile(principal.workspace_id)
         if business_profile is not None:
             knowledge_context = "\n\n".join(
                 part for part in (
@@ -1381,7 +1421,7 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         if competitor is not None:
             try:
                 intelligence = await competitor_intelligence_service.analyze(
-                    competitor
+                    competitor, ta_affiliated=ta_affiliated,
                 )
 
                 await competitor_repository.save_intelligence(

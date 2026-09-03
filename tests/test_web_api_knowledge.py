@@ -120,3 +120,94 @@ def test_endpoint_never_returns_500_on_backend_error(api, monkeypatch) -> None:
     assert "error" in body
     assert body["sources"] == []
     assert body["items"] == []
+
+
+# ── Travel Advantage isolation (see the isolation audit fix) ───────────────
+#
+# ensure_owner_workspace() (used by the `api` fixture above) is the one
+# workspace ta_affiliated=True is ever hardcoded for - it keeps seeing the
+# real, populated knowledge base below (category A). A regular
+# provision_partner() workspace defaults to ta_affiliated=False - it must
+# get an empty result even though the same knowledge base is populated for
+# workspace 1 in the same database (category B). Authoritative source:
+# BusinessProfile.ta_affiliated only - fail-closed when the profile is
+# missing entirely.
+
+INDEPENDENT_ID = 700000003
+
+
+def test_ta_affiliated_workspace_still_receives_the_real_knowledge_base(api) -> None:
+    """Category A regression guard: unchanged behaviour for the TA owner
+    workspace after gating GET /api/knowledge by ta_affiliated."""
+    client, web_api = api
+    from pathlib import Path
+    _run(import_dataset(Path(DATASET), web_api.knowledge_repository))
+
+    response = client.get("/api/knowledge")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["items"]) == 2
+
+
+def test_independent_workspace_gets_empty_result_even_though_ta_data_exists(api) -> None:
+    """Category B / BLOCKER fix: an independent (ta_affiliated=False)
+    workspace must never see the TA/MWR knowledge base just because it
+    exists and is populated in the system for another (TA) workspace."""
+    client, web_api = api
+    from pathlib import Path
+    _run(import_dataset(Path(DATASET), web_api.knowledge_repository))
+
+    provisioned = _run(web_api.partner_repository.provision_partner(
+        INDEPENDENT_ID, "Independent Agent", "independent-agent-knowledge-test",
+        business_name="Мария Турагент", business_type="independent_agent",
+        short_description="", context={},
+    ))
+    assert provisioned.profile.ta_affiliated is False
+
+    with TestClient(web_api.app, base_url="https://testserver") as independent_client:
+        login_as(
+            independent_client, web_api, provisioned.workspace.id, INDEPENDENT_ID,
+            email="independent-knowledge@example.com",
+        )
+        response = independent_client.get("/api/knowledge")
+
+    assert response.status_code == 200
+    assert response.json() == {"sources": [], "items": []}
+
+
+def test_missing_business_profile_behaves_as_not_ta_affiliated(api) -> None:
+    """Fail-closed: no BusinessProfile row at all must behave exactly like
+    ta_affiliated=false, never like ta_affiliated=true."""
+    client, web_api = api
+    from pathlib import Path
+    _run(import_dataset(Path(DATASET), web_api.knowledge_repository))
+
+    provisioned = _run(web_api.partner_repository.provision_partner(
+        INDEPENDENT_ID, "No Profile Agent", "no-profile-knowledge-test",
+        business_name="Без профиля", business_type="other",
+        short_description="", context={},
+    ))
+
+    import aiosqlite
+
+    async def _delete_profile():
+        async with aiosqlite.connect(web_api.settings.journal_db_path) as db:
+            await db.execute(
+                "DELETE FROM partner_profiles WHERE workspace_id = ?",
+                (provisioned.workspace.id,),
+            )
+            await db.commit()
+
+    _run(_delete_profile())
+    assert _run(web_api.partner_repository.get_business_profile(provisioned.workspace.id)) is None
+
+    with TestClient(web_api.app, base_url="https://testserver") as no_profile_client:
+        login_as(
+            no_profile_client, web_api, provisioned.workspace.id, INDEPENDENT_ID,
+            email="no-profile-knowledge@example.com",
+        )
+        response = no_profile_client.get("/api/knowledge")
+
+    assert response.status_code == 200
+    assert response.json() == {"sources": [], "items": []}
