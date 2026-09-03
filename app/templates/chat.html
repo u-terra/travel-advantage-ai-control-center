@@ -1352,6 +1352,12 @@ textarea {
 
 .state-card .new-chat { margin-top: 16px; }
 
+.state-card-cta {
+    color: var(--text) !important;
+    font-weight: 600;
+    margin-bottom: 8px !important;
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 960px) {
@@ -1959,15 +1965,19 @@ function renderCompetitorsEmpty() {
     card.className = "state-card";
 
     const title = document.createElement("h3");
-    title.textContent = "Пока нет сохранённых конкурентов";
+    title.textContent = "Конкуренты ещё не добавлены";
+
+    const cta = document.createElement("p");
+    cta.className = "state-card-cta";
+    cta.textContent = "Добавить конкурента можно в Telegram-боте.";
 
     const text = document.createElement("p");
     text.textContent =
-        "Добавление конкурентов пока делается в Telegram-боте. Как только " +
-        "они появятся в рабочем пространстве, здесь будет их список и " +
-        "статус последнего анализа.";
+        "Как только конкурент появится в рабочем пространстве, здесь " +
+        "будет его карточка и статус последнего анализа.";
 
     card.appendChild(title);
+    card.appendChild(cta);
     card.appendChild(text);
     competitorsState.appendChild(card);
 }
@@ -2510,11 +2520,21 @@ function renderSignalsEmpty() {
 
     const text = document.createElement("p");
     text.textContent =
-        "Как только радар найдёт что-то релевантное для подключённых " +
-        "источников, сигналы появятся здесь.";
+        "Здесь появятся рыночные сигналы и идеи для контента, как только " +
+        "они найдутся для подключённых источников.";
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "new-chat";
+    button.textContent = "Спросить Ассистента об идеях";
+    button.addEventListener("click", () => {
+        const qaSignals = document.getElementById("qaSignals");
+        goToAssistantWithPrompt(qaSignals ? qaSignals.dataset.prompt : "");
+    });
 
     card.appendChild(title);
     card.appendChild(text);
+    card.appendChild(button);
     signalsState.appendChild(card);
 }
 
@@ -2682,7 +2702,7 @@ function renderStateLoading(container, text) {
     container.appendChild(wrap);
 }
 
-function renderStateEmpty(container, title, text) {
+function renderStateEmpty(container, title, text, cta) {
     container.innerHTML = "";
 
     const card = document.createElement("div");
@@ -2696,7 +2716,28 @@ function renderStateEmpty(container, title, text) {
 
     card.appendChild(heading);
     card.appendChild(paragraph);
+
+    if (cta) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "new-chat";
+        button.textContent = cta.label;
+        button.addEventListener("click", cta.onClick);
+        card.appendChild(button);
+    }
+
     container.appendChild(card);
+}
+
+// Empty-state CTAs reuse the exact same "insert a prompt into the composer
+// and switch to Ассистент" mechanism the welcome screen's quick-action
+// cards already use - no second, parallel way to talk to the Assistant.
+function goToAssistantWithPrompt(prompt) {
+    activateView("assistant");
+    message.value = prompt || "";
+    message.dispatchEvent(new Event("input"));
+    message.focus();
+    message.setSelectionRange(message.value.length, message.value.length);
 }
 
 function renderStateError(container, title, text, retry) {
@@ -2869,8 +2910,9 @@ async function loadKnowledge() {
 
         if (sources.length === 0 && items.length === 0) {
             renderStateEmpty(
-                knowledgeState, "База знаний пока пуста",
-                "Проверенные факты появятся здесь, как только будут загружены.",
+                knowledgeState, "Ваша база знаний пока пуста",
+                "Здесь появятся проверенные факты для вашей работы, когда " +
+                "они будут добавлены в базу знаний вашего рабочего пространства.",
             );
         } else {
             renderKnowledge(sources, items);
@@ -3280,8 +3322,15 @@ async function loadMaterials() {
 
         if (items.length === 0) {
             renderStateEmpty(
-                materialsState, "Пока нет сохранённых материалов",
+                materialsState, "Вы ещё не создавали материалы",
                 "Материалы, созданные вместе с Ассистентом, появятся здесь.",
+                {
+                    label: "Создать материал",
+                    onClick: () => {
+                        const qaMaterial = document.getElementById("qaMaterial");
+                        goToAssistantWithPrompt(qaMaterial ? qaMaterial.dataset.prompt : "");
+                    },
+                },
             );
         } else {
             renderMaterialsList(items);
@@ -3863,8 +3912,9 @@ async function loadConversations() {
 
         if (items.length === 0) {
             renderStateEmpty(
-                historyState, "Пока нет сохранённых диалогов",
+                historyState, "Здесь появятся ваши диалоги",
                 "Диалоги с Ассистентом появятся здесь после первого сообщения.",
+                { label: "Начать новый диалог", onClick: startNewConversation },
             );
         } else {
             renderConversationsList(items);

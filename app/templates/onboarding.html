@@ -428,7 +428,15 @@ async function loadCurrentProfile() {
         const business = data.business_profile;
         if (business) {
             if (business.business_type && BUSINESS_TYPE_TO_WHO[business.business_type]) {
-                state.who = BUSINESS_TYPE_TO_WHO[business.business_type];
+                const mapped = BUSINESS_TYPE_TO_WHO[business.business_type];
+                // "Партнёр Travel Advantage" must never be the pre-selected
+                // default for a workspace that isn't actually ta_affiliated -
+                // a mismatched/leftover business_type=club_partner must not
+                // resurface as a TA choice here (see the onboarding UX fix).
+                // Safe default for everyone else: "Независимый турагент".
+                state.who = (mapped === "ta_partner" && !business.ta_affiliated)
+                    ? "independent_agent"
+                    : mapped;
             }
             state.businessName = business.business_name || "";
             state.shortDescription = business.short_description || "";
@@ -556,7 +564,7 @@ function renderStepClients(container) {
 }
 
 function renderStepStyle(container) {
-    container.appendChild(el("h1", "step-title", "Как общаться Ассистенту"));
+    container.appendChild(el("h1", "step-title", "Как Ассистенту общаться с вами"));
     container.appendChild(el("p", "step-sub", "Выберите то, что вам ближе - в любой момент можно изменить в профиле."));
 
     container.appendChild(el("label", null, "Стиль ответа"));
