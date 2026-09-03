@@ -142,6 +142,20 @@ def test_profile_business_update_requires_csrf(api) -> None:
     assert response.status_code == 403
 
 
+def test_add_competitor_requires_csrf(api) -> None:
+    client, web_api, workspace_id = api
+
+    token = client.headers.pop("X-CSRF-Token")
+    try:
+        response = client.post("/api/competitors", json={
+            "url": "https://захват.example.com", "label": "CSRF захват",
+        })
+    finally:
+        client.headers["X-CSRF-Token"] = token
+    assert response.status_code == 403
+    assert _run(web_api.competitor_repository.list_for_workspace(workspace_id)) == []
+
+
 def test_wrong_csrf_token_is_also_rejected(api) -> None:
     """Not just missing - a value that doesn't match this session's stored
     hash must be rejected too (rules out a naive 'header present' check)."""

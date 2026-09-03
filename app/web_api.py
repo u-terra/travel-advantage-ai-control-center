@@ -22,7 +22,11 @@ from app.domain.usage import UsageStatus
 from app.domain.web_auth import WebPrincipal
 from app.domain.web_conversation import ROLE_ASSISTANT, ROLE_USER
 from app.repositories.artifact_repository import ArtifactRepository
-from app.repositories.competitor_repository import CompetitorRepository
+from app.repositories.competitor_repository import (
+    CompetitorAddressError,
+    CompetitorLabelError,
+    CompetitorRepository,
+)
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.partner_repository import (
     PartnerRepository,
@@ -639,6 +643,47 @@ async def list_competitors(principal: WebPrincipal = Depends(get_current_princip
 
     except Exception:
         return {"error": "Не удалось загрузить список конкурентов."}
+
+
+class AddCompetitorRequest(BaseModel):
+    url: str
+    label: str = ""
+
+
+@app.post("/api/competitors")
+async def add_competitor_endpoint(
+    request: AddCompetitorRequest,
+    principal: WebPrincipal = Depends(require_csrf),
+):
+    """Web-first path for the same competitor_repository.add_competitor()
+    call the Telegram "➕ Добавить конкурента" flow uses (see
+    app/handlers/competitors.py) - no parallel competitor model, and the
+    same CompetitorAddressError/CompetitorLabelError validation. Any
+    active workspace member can add one, same as Telegram (no owner/admin
+    gate there either - only BusinessProfile writes are role-restricted).
+
+    workspace_id comes only from principal (the server-verified session,
+    re-checked against workspace_memberships on every request by
+    get_current_principal) - never from the request body, so a client
+    can't add a competitor into someone else's workspace."""
+    try:
+        competitor = await competitor_repository.add_competitor(
+            principal.workspace_id, request.url, label=request.label,
+        )
+        return {
+            "competitor": {
+                "id": competitor.id,
+                "label": competitor.label,
+                "domain": canonical_domain(competitor.url),
+                "url": competitor.url,
+                "last_analyzed_at": None,
+            }
+        }
+
+    except (CompetitorAddressError, CompetitorLabelError) as exc:
+        return {"error": str(exc), "competitor": None}
+    except Exception:
+        return {"error": "Не удалось добавить конкурента.", "competitor": None}
 
 
 @app.get("/api/competitors/{competitor_id}/intelligence")

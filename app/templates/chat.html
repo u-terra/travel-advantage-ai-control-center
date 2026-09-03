@@ -699,7 +699,16 @@ textarea {
     padding: 32px 24px 40px;
 }
 
-.competitors-head { margin-bottom: 22px; }
+.competitors-head {
+    margin-bottom: 22px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.competitors-head-text { min-width: 0; }
 
 .competitors-head h2 {
     font-size: 21px;
@@ -1623,8 +1632,11 @@ textarea {
             <section class="view" id="view-competitors">
                 <div class="competitors-view">
                     <div class="competitors-head">
-                        <h2>Конкуренты</h2>
-                        <p>Сохранённые конкуренты рабочего пространства и статус последнего анализа.</p>
+                        <div class="competitors-head-text">
+                            <h2>Конкуренты</h2>
+                            <p>Сохранённые конкуренты рабочего пространства и статус последнего анализа.</p>
+                        </div>
+                        <button type="button" class="new-chat" id="addCompetitorBtn">Добавить конкурента</button>
                     </div>
                     <div id="competitorsState"></div>
                 </div>
@@ -1943,6 +1955,8 @@ message.addEventListener("input", () => {
 /* ---------- competitors ---------- */
 
 const competitorsState = document.getElementById("competitorsState");
+const addCompetitorBtn = document.getElementById("addCompetitorBtn");
+addCompetitorBtn.addEventListener("click", () => renderAddCompetitorForm());
 
 function renderCompetitorsLoading() {
     competitorsState.innerHTML = "";
@@ -1967,19 +1981,110 @@ function renderCompetitorsEmpty() {
     const title = document.createElement("h3");
     title.textContent = "Конкуренты ещё не добавлены";
 
-    const cta = document.createElement("p");
-    cta.className = "state-card-cta";
-    cta.textContent = "Добавить конкурента можно в Telegram-боте.";
-
     const text = document.createElement("p");
     text.textContent =
-        "Как только конкурент появится в рабочем пространстве, здесь " +
-        "будет его карточка и статус последнего анализа.";
+        "Добавьте сайт или ресурс конкурента — он появится в рабочем " +
+        "пространстве вместе с карточкой и статусом последнего анализа.";
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "new-chat";
+    addBtn.textContent = "Добавить конкурента";
+    addBtn.addEventListener("click", () => renderAddCompetitorForm());
 
     card.appendChild(title);
-    card.appendChild(cta);
     card.appendChild(text);
+    card.appendChild(addBtn);
     competitorsState.appendChild(card);
+}
+
+function renderAddCompetitorForm() {
+    competitorsState.innerHTML = "";
+
+    const sections = document.createElement("div");
+    sections.className = "report-sections";
+
+    const section = document.createElement("div");
+    section.className = "report-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = "Добавить конкурента";
+    section.appendChild(heading);
+
+    const labelInput = addProfileFormField(
+        section, "Название (необязательно)", document.createElement("input"),
+    );
+    labelInput.type = "text";
+    labelInput.placeholder = "Например: ТурКлуб";
+    labelInput.maxLength = 100;
+
+    const urlInput = addProfileFormField(
+        section, "Ссылка на сайт конкурента", document.createElement("input"),
+    );
+    urlInput.type = "text";
+    urlInput.placeholder = "https://example.com";
+    urlInput.maxLength = 500;
+
+    const errorText = document.createElement("p");
+    errorText.className = "info-card-text material-edit-error";
+    section.appendChild(errorText);
+
+    const actions = document.createElement("div");
+    actions.className = "material-edit-actions";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "info-action-btn";
+    saveBtn.textContent = "Сохранить";
+    saveBtn.addEventListener("click", async () => {
+        errorText.textContent = "";
+        const url = urlInput.value.trim();
+
+        if (!url) {
+            errorText.textContent = "Ссылка не должна быть пустой.";
+            return;
+        }
+
+        saveBtn.disabled = true;
+
+        try {
+            const response = await fetch("/api/competitors", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    url,
+                    label: labelInput.value.trim(),
+                }),
+            });
+            const data = await response.json();
+
+            if (!response.ok || data.error) {
+                errorText.textContent = data.error || "Не удалось добавить конкурента.";
+                saveBtn.disabled = false;
+                return;
+            }
+
+            loadCompetitors();
+
+        } catch (_) {
+            errorText.textContent = "Не удалось добавить конкурента. Проверьте соединение.";
+            saveBtn.disabled = false;
+        }
+    });
+    actions.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "info-action-btn";
+    cancelBtn.textContent = "Отмена";
+    cancelBtn.addEventListener("click", () => loadCompetitors());
+    actions.appendChild(cancelBtn);
+
+    section.appendChild(actions);
+    sections.appendChild(section);
+    competitorsState.appendChild(sections);
+
+    urlInput.focus();
 }
 
 function renderCompetitorsError() {

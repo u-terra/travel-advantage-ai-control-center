@@ -231,6 +231,169 @@ def test_intelligence_report_not_leaked_across_workspaces(api) -> None:
     assert "error" in body
 
 
+# ── POST /api/competitors - web-native add flow (no Telegram required) ────
+
+def test_add_competitor_from_web_returns_the_new_competitor(api) -> None:
+    client, web_api, _ = api
+    _login(client, web_api)
+
+    response = client.post("/api/competitors", json={
+        "url": "https://competitor.example.com", "label": "Example Co",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" not in body
+    assert body["competitor"]["label"] == "Example Co"
+    assert body["competitor"]["domain"] == "competitor.example.com"
+    assert body["competitor"]["url"] == "https://competitor.example.com"
+    assert body["competitor"]["last_analyzed_at"] is None
+    assert isinstance(body["competitor"]["id"], int)
+
+
+def test_added_competitor_appears_in_the_list(api) -> None:
+    client, web_api, _ = api
+    _login(client, web_api)
+
+    add_response = client.post("/api/competitors", json={
+        "url": "https://competitor.example.com", "label": "Example Co",
+    })
+    competitor_id = add_response.json()["competitor"]["id"]
+
+    response = client.get("/api/competitors")
+
+    labels = [item["label"] for item in response.json()["competitors"]]
+    ids = [item["id"] for item in response.json()["competitors"]]
+    assert "Example Co" in labels
+    assert competitor_id in ids
+
+
+def test_add_competitor_label_is_optional_and_defaults_to_url(api) -> None:
+    client, web_api, _ = api
+    _login(client, web_api)
+
+    response = client.post("/api/competitors", json={"url": "https://noLabel.example.com"})
+
+    body = response.json()
+    assert "error" not in body
+    assert body["competitor"]["label"] == "https://noLabel.example.com"
+
+
+def test_add_competitor_rejects_invalid_url(api) -> None:
+    client, web_api, _ = api
+    _login(client, web_api)
+
+    response = client.post("/api/competitors", json={"url": "not-a-url"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["competitor"] is None
+    assert "error" in body
+
+
+def test_add_competitor_rejects_empty_url(api) -> None:
+    client, web_api, _ = api
+    _login(client, web_api)
+
+    response = client.post("/api/competitors", json={"url": "   "})
+
+    body = response.json()
+    assert body["competitor"] is None
+    assert "error" in body
+
+
+def test_add_competitor_rejects_url_with_embedded_whitespace(api) -> None:
+    """Guards against e.g. a URL with a trailing CR/LF or embedded space
+    slipping through, the same rule the Telegram add-competitor flow
+    already enforces (app/repositories/competitor_repository.py)."""
+    client, web_api, _ = api
+    _login(client, web_api)
+
+    response = client.post(
+        "/api/competitors", json={"url": "https://example.com/ evil"},
+    )
+
+    body = response.json()
+    assert body["competitor"] is None
+    assert "error" in body
+
+
+def test_add_competitor_ignores_client_supplied_workspace_and_user_ids(api) -> None:
+    """Extra JSON fields the Pydantic model doesn't declare are simply
+    ignored - the competitor is always created in principal.workspace_id,
+    never a client-supplied one."""
+    client, web_api, _ = api
+    workspace_id = _login(client, web_api)
+
+    response = client.post("/api/competitors", json={
+        "url": "https://competitor.example.com",
+        "label": "Example",
+        "workspace_id": 999999,
+        "telegram_user_id": 999999,
+    })
+
+    assert response.status_code == 200
+    competitor_id = response.json()["competitor"]["id"]
+    saved = _run(web_api.competitor_repository.get_for_workspace(workspace_id, competitor_id))
+    assert saved is not None
+    assert saved.workspace_id == workspace_id
+
+
+def test_added_competitor_is_isolated_to_its_own_workspace(api) -> None:
+    client, web_api, _ = api
+    _login(client, web_api)
+    client.post("/api/competitors", json={
+        "url": "https://mine.example.com", "label": "Mine",
+    })
+
+    other = _run(web_api.partner_repository.provision_partner(
+        222333666, "Other Agency 3", "other-agency-3",
+        business_name="Other Agency 3", business_type="independent_agent",
+        short_description="Другое рабочее пространство.",
+        context={},
+    ))
+    from fastapi.testclient import TestClient
+    with TestClient(web_api.app, base_url="https://testserver") as other_client:
+        login_as(
+            other_client, web_api, other.workspace.id, 222333666,
+            email="other-workspace-add@example.com",
+        )
+
+        other_client.post("/api/competitors", json={
+            "url": "https://theirs.example.com", "label": "Theirs",
+        })
+
+        own_labels = [item["label"] for item in other_client.get("/api/competitors").json()["competitors"]]
+        assert own_labels == ["Theirs"]
+
+    labels = [item["label"] for item in client.get("/api/competitors").json()["competitors"]]
+    assert labels == ["Mine"]
+
+
+def test_added_competitor_analysis_flow_still_works(api) -> None:
+    """After adding a competitor from the web, the existing Competitor
+    Intelligence read path (already used by the "Analyze" web flow) keeps
+    working unchanged for it - both before and after a snapshot exists."""
+    client, web_api, _ = api
+    workspace_id = _login(client, web_api)
+    add_response = client.post("/api/competitors", json={
+        "url": "https://nl.trip.com/?locale=nl-nl", "label": "Trip.com",
+    })
+    competitor_id = add_response.json()["competitor"]["id"]
+
+    before = client.get(f"/api/competitors/{competitor_id}/intelligence")
+    assert before.status_code == 200
+    assert before.json()["intelligence"] is None
+    assert "error" not in before.json()
+
+    _run(web_api.competitor_repository.save_intelligence(
+        workspace_id, _intelligence(competitor_id, "2026-01-01T00:00:00+00:00"),
+    ))
+
+    after = client.get(f"/api/competitors/{competitor_id}/intelligence")
+    assert after.json()["intelligence"]["analyzed_at"] == "2026-01-01T00:00:00+00:00"
+
+
 def test_only_current_web_workspace_competitors_are_returned(api) -> None:
     client, web_api, _ = api
     workspace_id = _login(client, web_api)

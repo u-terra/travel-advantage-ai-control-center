@@ -41,22 +41,26 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-# ── Competitors: text-only CTA (no web mechanism exists to add one) ────────
+# ── Competitors: web-native add flow, no Telegram dependency ───────────────
 
-def test_competitors_empty_state_explains_and_points_to_telegram() -> None:
+def test_competitors_empty_state_has_a_working_add_cta() -> None:
     assert "Конкуренты ещё не добавлены" in CHAT_HTML
-    assert "Добавить конкурента можно в Telegram-боте." in CHAT_HTML
+    assert "Telegram-боте" not in CHAT_HTML
+    block = CHAT_HTML.split("function renderCompetitorsEmpty", 1)[1][:900]
+    assert "renderAddCompetitorForm" in block
 
 
-def test_competitors_empty_state_has_no_second_add_mechanism() -> None:
-    """Explicit guard against inventing a new add-competitor flow - the
-    only real one stays the Telegram bot; the web has no POST endpoint
-    for it and this task must not add one."""
+def test_competitors_add_form_posts_to_the_real_endpoint() -> None:
+    """The compact add-competitor form must call the actual web endpoint,
+    not just switch to Telegram instructions or a fake success state."""
     import re
 
-    assert not re.search(r'@app\.post\("/api/competitors', "".join(
+    assert re.search(r'@app\.post\("/api/competitors"\)', "".join(
         Path("app/web_api.py").read_text(encoding="utf-8"),
     ))
+    block = CHAT_HTML.split("function renderAddCompetitorForm", 1)[1][:2200]
+    assert '"/api/competitors"' in block
+    assert '"POST"' in block
 
 
 # ── Signals: CTA reuses the existing "Ассистент" quick-action prompt ───────
