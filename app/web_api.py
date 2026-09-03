@@ -957,8 +957,12 @@ ONBOARDING_ADDRESS_LABELS: dict[str, str] = {
 
 
 class OnboardingCompleteRequest(BaseModel):
-    who: str
-    business_name: str
+    # who/business_name are required only for the owner/admin business-
+    # profile branch below - a 'member' onboarding (no BusinessProfile
+    # write access) never has them, so they default to "" rather than
+    # being mandatory on the wire.
+    who: str = ""
+    business_name: str = ""
     short_description: str = ""
     specializations: list[str] = Field(default_factory=list)
     audiences: list[str] = Field(default_factory=list)
@@ -1125,27 +1129,23 @@ async def complete_onboarding(
     edits (no parallel onboarding-data model), then flips the
     binding-scoped onboarding flag so "/" stops redirecting here.
 
-    Business fields (who/name/description/specializations/audiences/
-    region) go through BusinessProfileService, which enforces the exact
-    same owner/admin-only write rule as PUT /api/profile/business - a
-    'member' binding completing onboarding does NOT get a bypass around
-    that. Personal style (tone/address form) has no such restriction
-    (see UserStyleService) and always saves. Either way, onboarding
-    completion itself always succeeds once CSRF+session are valid - a
-    workspace permission edge case must not trap a new user on this page.
+    Role-aware (see onboarding.html's OWNER_STEPS/MEMBER_STEPS): only
+    owner/admin ever attempt a BusinessProfile write here, matching the
+    exact same rule PUT /api/profile/business already enforces - this
+    endpoint never gets a bypass around that. A 'member' binding's request
+    has no business fields to begin with (the UI never collects them), so
+    who/business_name validation only applies inside the owner/admin
+    branch below - it must not reject a member's (business-field-less)
+    request. Personal style (tone/address form) has no role restriction
+    (see UserStyleService) and always saves for everyone. Either way,
+    onboarding completion itself always succeeds once CSRF+session are
+    valid - a workspace permission edge case must not trap a new user on
+    this page.
     """
     tone_label = ONBOARDING_TONE_LABELS.get(request.tone)
     address_label = ONBOARDING_ADDRESS_LABELS.get(request.address_form)
     if tone_label is None or address_label is None:
         return {"error": "Недопустимые значения стиля общения."}
-
-    business_type = _ONBOARDING_WHO_TO_BUSINESS_TYPE.get(request.who)
-    if business_type is None:
-        return {"error": "Недопустимое значение «кто вы»."}
-
-    business_name = request.business_name.strip()
-    if not business_name:
-        return {"error": "Название/имя обязательно."}
 
     try:
         workspace_context = await partner_repository.resolve_workspace_context(
@@ -1154,12 +1154,22 @@ async def complete_onboarding(
     except Exception:
         workspace_context = None
 
-    business_profile_saved = False
-    if (
+    can_write_business_profile = (
         workspace_context is not None
         and workspace_context.workspace_id == principal.workspace_id
         and workspace_context.role in {"owner", "admin"}
-    ):
+    )
+
+    business_profile_saved = False
+    if can_write_business_profile:
+        business_type = _ONBOARDING_WHO_TO_BUSINESS_TYPE.get(request.who)
+        if business_type is None:
+            return {"error": "Недопустимое значение «кто вы»."}
+
+        business_name = request.business_name.strip()
+        if not business_name:
+            return {"error": "Название/имя обязательно."}
+
         try:
             profile = await partner_repository.get_business_profile(principal.workspace_id)
             if profile is not None:

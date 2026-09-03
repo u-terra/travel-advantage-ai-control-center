@@ -285,3 +285,122 @@ def test_onboarding_data_reaches_the_assistant_profile_context(api) -> None:
     assert "Компания Онбординг" in captured["knowledge_context"]
     assert "Горнолыжные туры" in captured["knowledge_context"]
     assert captured["personal_style"] == "Дружелюбно. Обращайся на «ты»."
+
+
+# ── member: role-aware onboarding (no BusinessProfile write access) ──────
+#
+# A 'member' binding has no write access to BusinessProfile - same rule as
+# PUT /api/profile/business (see BusinessProfileService._require_write).
+# onboarding.html's MEMBER_STEPS never collects/sends business fields for
+# this role; these tests hit /api/onboarding/complete directly (as a
+# member session) to prove the SERVER itself never saves them either and
+# never claims it did, regardless of what a client sends.
+
+MEMBER_ID = OWNER_ID + 1
+
+
+def _login_as_member(client, web_api, workspace_id):
+    return login_as(
+        client, web_api, workspace_id, MEMBER_ID,
+        email="member@example.com", role="member",
+    )
+
+
+def test_member_new_binding_is_redirected_to_onboarding(api) -> None:
+    client, web_api, workspace_id = api
+    _login_as_member(client, web_api, workspace_id)
+
+    response = client.get("/")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/onboarding"
+
+
+def test_member_cannot_change_business_profile_via_onboarding(api) -> None:
+    client, web_api, workspace_id = api
+    original = _run(web_api.partner_repository.get_business_profile(workspace_id))
+    _login_as_member(client, web_api, workspace_id)
+
+    # Even a hand-crafted request with business fields attached (a stale
+    # or tampered client) must not move the needle - the role check in
+    # complete_onboarding() is server-side, not just onboarding.html
+    # choosing not to send these fields.
+    response = client.post("/api/onboarding/complete", json={
+        "who": "agency", "business_name": "Захват через member",
+        "short_description": "x", "specializations": ["x"],
+        "tone": "expert", "address_form": "vy",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" not in body
+    assert body["business_profile_saved"] is False
+    assert body["business_profile"]["business_name"] == original.business_name
+    assert body["business_profile"]["business_name"] != "Захват через member"
+
+    unchanged = _run(web_api.partner_repository.get_business_profile(workspace_id))
+    assert unchanged.business_name == original.business_name
+    assert unchanged.revision == original.revision
+
+
+def test_member_personal_style_is_saved(api) -> None:
+    client, web_api, workspace_id = api
+    _login_as_member(client, web_api, workspace_id)
+
+    response = client.post("/api/onboarding/complete", json={
+        "tone": "expert", "address_form": "vy",
+    })
+
+    assert response.status_code == 200
+    expected_style = "Экспертно. Обращайся на «вы»."
+    assert response.json()["personal_style"]["style_description"] == expected_style
+
+    preferences = _run(web_api.partner_repository.get_user_preferences(
+        workspace_id, MEMBER_ID,
+    ))
+    assert preferences.style_description == expected_style
+
+
+def test_member_onboarding_completes_and_reaches_the_cabinet(api) -> None:
+    client, web_api, workspace_id = api
+    _login_as_member(client, web_api, workspace_id)
+
+    me = client.get("/api/auth/me").json()
+    assert me["role"] == "member"
+    binding_before = _run(web_api.web_auth_repository.get_default_binding(
+        _run(web_api.web_auth_repository.get_user_by_email(me["email"])).id
+    ))
+    assert binding_before.onboarding_completed_at is None
+
+    complete = client.post("/api/onboarding/complete", json={
+        "tone": "expert", "address_form": "vy",
+    })
+    assert complete.status_code == 200
+    assert complete.json()["onboarding_completed"] is True
+
+    binding_after = _run(web_api.web_auth_repository.get_binding_by_id(binding_before.id))
+    assert binding_after.onboarding_completed_at is not None
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "ORCHESTRAVEL" in response.text
+
+
+def test_member_response_never_implies_business_fields_were_saved(api) -> None:
+    """UI/API surface check for the fixed UX defect: even when a member's
+    request carries business fields, the response must not create the
+    impression they were saved - business_profile_saved must be False and
+    the returned business_profile must reflect the real (unchanged) one,
+    not an echo of what was submitted."""
+    client, web_api, workspace_id = api
+    _login_as_member(client, web_api, workspace_id)
+
+    response = client.post("/api/onboarding/complete", json={
+        "who": "other", "business_name": "Псевдо-сохранение",
+        "tone": "friendly", "address_form": "ty",
+    })
+
+    body = response.json()
+    assert body["business_profile_saved"] is False
+    assert body["business_profile"] is not None
+    assert body["business_profile"]["business_name"] != "Псевдо-сохранение"

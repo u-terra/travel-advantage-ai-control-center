@@ -379,7 +379,14 @@ const BUSINESS_TYPE_TO_WHO = {
     other: "other",
 };
 
-const STEP_COUNT = 6;
+// Set once the caller's role is known (see init()) - owner/admin get the
+// full 6-step business setup; everyone else (member, or role unknown -
+// see init()'s fail-safe default) only gets the 3 steps that don't touch
+// BusinessProfile, so the UI never offers to save something the backend
+// will silently refuse (see complete_onboarding()'s can_write_business_profile).
+let IS_OWNER_LIKE = false;
+let STEPS = [];
+let STEP_COUNT = 0;
 
 const state = {
     who: "",
@@ -438,8 +445,6 @@ async function loadCurrentProfile() {
         }
     } catch (_) {
         // нет сохранённых данных - просто покажем пустую форму
-    } finally {
-        renderStep();
     }
 }
 
@@ -590,27 +595,81 @@ function renderStepReview(container) {
     container.appendChild(list);
 }
 
-const STEP_RENDERERS = [
-    renderStepWho,
-    renderStepBusiness,
-    renderStepSpecialization,
-    renderStepClients,
-    renderStepStyle,
-    renderStepReview,
+// ---- member flow: read-only org context + personal-only steps ----
+// A 'member' binding has no write access to BusinessProfile (same rule as
+// PUT /api/profile/business - see complete_onboarding()). Showing them
+// editable business fields here would look saved but silently not
+// persist, so this flow never renders them: one read-only recap step,
+// then only the two things a member's onboarding actually saves
+// (style + address form, into workspace_user_preferences).
+
+function renderStepOrgReadonly(container) {
+    container.appendChild(el("h1", "step-title", "О вашей организации"));
+    container.appendChild(el("p", "step-sub",
+        "Эти данные настраивает владелец или администратор рабочего пространства. "
+        + "Здесь их можно только посмотреть."));
+
+    const hasData = Boolean(
+        state.businessName || state.shortDescription
+        || state.specializationsText || state.audiencesText || state.region,
+    );
+
+    if (!hasData) {
+        const card = el("div", "field");
+        card.appendChild(el("span", "hint", "Бизнес-профиль пока не заполнен владельцем рабочего пространства."));
+        container.appendChild(card);
+        return;
+    }
+
+    const list = el("ul", "review-list");
+    if (state.businessName) reviewRow(list, "Название", state.businessName);
+    if (state.shortDescription) reviewRow(list, "Описание", state.shortDescription);
+    if (state.specializationsText) reviewRow(list, "Специализация", state.specializationsText);
+    if (state.audiencesText) reviewRow(list, "Аудитория", state.audiencesText);
+    if (state.region) reviewRow(list, "Регион", state.region);
+    container.appendChild(list);
+}
+
+function renderStepReviewMember(container) {
+    container.appendChild(el("h1", "step-title", "Проверка"));
+    container.appendChild(el("p", "step-sub", "Будет сохранено в вашем личном стиле общения."));
+
+    const toneLabel = (TONE_OPTIONS.find(o => o.value === state.tone) || {}).label || "—";
+    const addressLabel = (ADDRESS_OPTIONS.find(o => o.value === state.addressForm) || {}).label || "—";
+
+    const list = el("ul", "review-list");
+    reviewRow(list, "Стиль общения", toneLabel + ", на " + addressLabel);
+    container.appendChild(list);
+}
+
+const OWNER_STEPS = [
+    { kind: "who", render: renderStepWho },
+    { kind: "business", render: renderStepBusiness },
+    { kind: "specialization", render: renderStepSpecialization },
+    { kind: "clients", render: renderStepClients },
+    { kind: "style", render: renderStepStyle },
+    { kind: "review", render: renderStepReview },
+];
+
+const MEMBER_STEPS = [
+    { kind: "org_readonly", render: renderStepOrgReadonly },
+    { kind: "style", render: renderStepStyle },
+    { kind: "review_member", render: renderStepReviewMember },
 ];
 
 function collectStepInputs() {
-    if (step === 1) {
+    const kind = STEPS[step] ? STEPS[step].kind : null;
+    if (kind === "business") {
         const nameInput = document.getElementById("businessNameInput");
         const descInput = document.getElementById("shortDescriptionInput");
         if (nameInput) state.businessName = nameInput.value.trim();
         if (descInput) state.shortDescription = descInput.value.trim();
     }
-    if (step === 2) {
+    if (kind === "specialization") {
         const specInput = document.getElementById("specializationsInput");
         if (specInput) state.specializationsText = specInput.value.trim();
     }
-    if (step === 3) {
+    if (kind === "clients") {
         const audienceInput = document.getElementById("audiencesInput");
         const regionInput = document.getElementById("regionInput");
         if (audienceInput) state.audiencesText = audienceInput.value.trim();
@@ -631,11 +690,12 @@ function showError(text) {
 }
 
 function validateStep() {
-    if (step === 0 && !state.who) {
+    const kind = STEPS[step] ? STEPS[step].kind : null;
+    if (kind === "who" && !state.who) {
         showError("Выберите один из вариантов.");
         return false;
     }
-    if (step === 1 && !state.businessName) {
+    if (kind === "business" && !state.businessName) {
         showError("Название / имя обязательно.");
         return false;
     }
@@ -648,7 +708,7 @@ function renderStep() {
 
     const content = document.getElementById("stepContent");
     content.innerHTML = "";
-    STEP_RENDERERS[step](content);
+    STEPS[step].render(content);
 
     const backBtn = document.getElementById("backBtn");
     const nextBtn = document.getElementById("nextBtn");
@@ -677,20 +737,32 @@ document.getElementById("nextBtn").addEventListener("click", async () => {
     const nextBtn = document.getElementById("nextBtn");
     nextBtn.disabled = true;
 
+    // A member's request never includes business fields at all - the
+    // server only honours them for owner/admin anyway (see
+    // complete_onboarding()'s can_write_business_profile), but leaving
+    // them out here too keeps what's sent matching what's actually shown
+    // to the user on this device.
+    const payload = IS_OWNER_LIKE
+        ? {
+            who: state.who,
+            business_name: state.businessName,
+            short_description: state.shortDescription,
+            specializations: parseListInput(state.specializationsText),
+            audiences: parseListInput(state.audiencesText),
+            region: state.region,
+            tone: state.tone,
+            address_form: state.addressForm,
+        }
+        : {
+            tone: state.tone,
+            address_form: state.addressForm,
+        };
+
     try {
         const response = await fetch("/api/onboarding/complete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                who: state.who,
-                business_name: state.businessName,
-                short_description: state.shortDescription,
-                specializations: parseListInput(state.specializationsText),
-                audiences: parseListInput(state.audiencesText),
-                region: state.region,
-                tone: state.tone,
-                address_form: state.addressForm,
-            }),
+            body: JSON.stringify(payload),
         });
 
         const data = await response.json();
@@ -709,7 +781,31 @@ document.getElementById("nextBtn").addEventListener("click", async () => {
     }
 });
 
-loadCurrentProfile();
+async function init() {
+    // Fail-safe default: if the role fetch itself fails, fall back to the
+    // member flow (no editable BusinessProfile fields) rather than owner -
+    // showing fields that might silently fail to save is exactly the bug
+    // this is fixing, so an uncertain role must never render them.
+    let role = "member";
+    try {
+        const response = await fetch("/api/auth/me");
+        if (response.ok) {
+            const me = await response.json();
+            role = me.role || "member";
+        }
+    } catch (_) {
+        // остаёмся на member-сценарии
+    }
+
+    IS_OWNER_LIKE = role === "owner" || role === "admin";
+    STEPS = IS_OWNER_LIKE ? OWNER_STEPS : MEMBER_STEPS;
+    STEP_COUNT = STEPS.length;
+
+    await loadCurrentProfile();
+    renderStep();
+}
+
+init();
 </script>
 
 </body>
