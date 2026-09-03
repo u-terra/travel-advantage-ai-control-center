@@ -39,6 +39,11 @@ class WebAuthBinding:
     workspace_id: int
     telegram_user_id: int
     created_at: str
+    # Web-only onboarding gate, scoped to THIS binding (not the web-user or
+    # the workspace) - see app.repositories.web_auth_repository migration.
+    # None means "onboarding not completed yet". Default keeps positional
+    # WebAuthBinding(...) construction in existing code/tests working.
+    onboarding_completed_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,3 +71,7 @@ class WebPrincipal:
     role: str
     session_id: int
     csrf_token_hash: str
+    # Which web_auth_bindings row this session acts as - onboarding
+    # completion is tracked per binding (see WebAuthBinding), so callers
+    # that need to read/set it need this, not just workspace_id.
+    binding_id: int = 0

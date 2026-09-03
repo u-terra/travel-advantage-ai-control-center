@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS web_auth_bindings (
     workspace_id INTEGER NOT NULL,
     telegram_user_id INTEGER NOT NULL,
     created_at TEXT NOT NULL,
+    onboarding_completed_at TEXT,
     FOREIGN KEY (web_user_id) REFERENCES web_auth_users(id),
     FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id),
     UNIQUE (web_user_id, workspace_id, telegram_user_id)
@@ -113,7 +114,36 @@ class WebAuthRepository:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA foreign_keys = ON")
             await db.executescript(_SCHEMA)
+            await self._migrate_onboarding_column(db)
             await db.commit()
+
+    @staticmethod
+    async def _migrate_onboarding_column(db: aiosqlite.Connection) -> None:
+        """Additive migration for bindings created before the onboarding
+        flag existed. CREATE TABLE IF NOT EXISTS in _SCHEMA is a no-op
+        against an already-existing production table, so a pre-existing
+        web_auth_bindings table won't pick up the new column on its own.
+
+        Grandfathers in every binding that existed at migration time as
+        already onboarded (onboarding_completed_at = now) - a production
+        user must never be dropped into a first-run onboarding form just
+        because we deployed this column. Only runs the ALTER/backfill once:
+        on every later startup the column already exists and this is a
+        no-op. Bindings created after this point (create_binding()) don't
+        set the column, so they correctly start out NULL/incomplete.
+        """
+        cursor = await db.execute("PRAGMA table_info(web_auth_bindings)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "onboarding_completed_at" in columns:
+            return
+        await db.execute(
+            "ALTER TABLE web_auth_bindings ADD COLUMN onboarding_completed_at TEXT"
+        )
+        await db.execute(
+            "UPDATE web_auth_bindings SET onboarding_completed_at = ? "
+            "WHERE onboarding_completed_at IS NULL",
+            (_now(),),
+        )
 
     # ── users ────────────────────────────────────────────────────────
 
@@ -200,6 +230,30 @@ class WebAuthRepository:
             )
             row = await cursor.fetchone()
         return _binding_from_row(row) if row is not None else None
+
+    async def get_binding_by_id(self, binding_id: int) -> WebAuthBinding | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await self._binding_row_by_id(db, binding_id)
+        return _binding_from_row(row) if row is not None else None
+
+    async def mark_onboarding_completed(self, binding_id: int) -> WebAuthBinding:
+        """Idempotent - COALESCE keeps the original completion timestamp if
+        the user re-opens /onboarding and saves again later (see
+        web_api.py's onboarding_complete endpoint), rather than sliding it
+        forward on every re-save."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "UPDATE web_auth_bindings SET onboarding_completed_at = "
+                "COALESCE(onboarding_completed_at, ?) WHERE id = ?",
+                (_now(), binding_id),
+            )
+            await db.commit()
+            row = await self._binding_row_by_id(db, binding_id)
+        if row is None:
+            raise RuntimeError("Привязка web-аккаунта не найдена")
+        return _binding_from_row(row)
 
     # ── sessions ─────────────────────────────────────────────────────
 
@@ -408,6 +462,7 @@ def _binding_from_row(row: aiosqlite.Row) -> WebAuthBinding:
         workspace_id=row["workspace_id"],
         telegram_user_id=row["telegram_user_id"],
         created_at=row["created_at"],
+        onboarding_completed_at=row["onboarding_completed_at"],
     )
 
 

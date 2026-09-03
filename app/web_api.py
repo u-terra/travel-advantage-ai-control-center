@@ -225,6 +225,7 @@ async def get_current_principal(request: Request) -> WebPrincipal:
         role=workspace_context.role,
         session_id=ctx.session_id,
         csrf_token_hash=ctx.csrf_token_hash,
+        binding_id=ctx.binding_id,
     )
 
 
@@ -939,6 +940,41 @@ class ExamplePostRequest(BaseModel):
     text: str
 
 
+# ── onboarding: controlled vocabulary for the "how should the Assistant
+# talk to me" step - kept as short server-side allow-lists (not free text)
+# so the resulting personal_style stays a clean, predictable sentence
+# instead of arbitrary client-supplied prose.
+ONBOARDING_TONE_LABELS: dict[str, str] = {
+    "concise": "Кратко и по делу",
+    "friendly": "Дружелюбно",
+    "formal": "Делово",
+    "expert": "Экспертно",
+}
+ONBOARDING_ADDRESS_LABELS: dict[str, str] = {
+    "ty": "«ты»",
+    "vy": "«вы»",
+}
+
+
+class OnboardingCompleteRequest(BaseModel):
+    who: str
+    business_name: str
+    short_description: str = ""
+    specializations: list[str] = Field(default_factory=list)
+    audiences: list[str] = Field(default_factory=list)
+    region: str = ""
+    tone: str
+    address_form: str
+
+
+_ONBOARDING_WHO_TO_BUSINESS_TYPE: dict[str, str] = {
+    "ta_partner": "club_partner",
+    "independent_agent": "independent_agent",
+    "agency": "agency",
+    "other": "other",
+}
+
+
 @app.get("/api/profile")
 async def get_profile(principal: WebPrincipal = Depends(get_current_principal)):
     """Read-only: реальный BusinessProfile workspace + личный стиль текущего
@@ -1077,6 +1113,104 @@ async def clear_personal_style_examples(
 
     except Exception:
         return {"error": "Не удалось очистить примеры.", "personal_style": None}
+
+
+@app.post("/api/onboarding/complete")
+async def complete_onboarding(
+    request: OnboardingCompleteRequest,
+    principal: WebPrincipal = Depends(require_csrf),
+):
+    """First-run setup for a new web binding - writes into the SAME
+    BusinessProfile / WorkspaceUserPreferences the "Профиль" tab already
+    edits (no parallel onboarding-data model), then flips the
+    binding-scoped onboarding flag so "/" stops redirecting here.
+
+    Business fields (who/name/description/specializations/audiences/
+    region) go through BusinessProfileService, which enforces the exact
+    same owner/admin-only write rule as PUT /api/profile/business - a
+    'member' binding completing onboarding does NOT get a bypass around
+    that. Personal style (tone/address form) has no such restriction
+    (see UserStyleService) and always saves. Either way, onboarding
+    completion itself always succeeds once CSRF+session are valid - a
+    workspace permission edge case must not trap a new user on this page.
+    """
+    tone_label = ONBOARDING_TONE_LABELS.get(request.tone)
+    address_label = ONBOARDING_ADDRESS_LABELS.get(request.address_form)
+    if tone_label is None or address_label is None:
+        return {"error": "Недопустимые значения стиля общения."}
+
+    business_type = _ONBOARDING_WHO_TO_BUSINESS_TYPE.get(request.who)
+    if business_type is None:
+        return {"error": "Недопустимое значение «кто вы»."}
+
+    business_name = request.business_name.strip()
+    if not business_name:
+        return {"error": "Название/имя обязательно."}
+
+    try:
+        workspace_context = await partner_repository.resolve_workspace_context(
+            principal.telegram_user_id,
+        )
+    except Exception:
+        workspace_context = None
+
+    business_profile_saved = False
+    if (
+        workspace_context is not None
+        and workspace_context.workspace_id == principal.workspace_id
+        and workspace_context.role in {"owner", "admin"}
+    ):
+        try:
+            profile = await partner_repository.get_business_profile(principal.workspace_id)
+            if profile is not None:
+                context_dict = business_context_to_dict(profile.context)
+                context_dict["specializations"] = request.specializations
+                context_dict["audiences"] = request.audiences
+                context_dict["region"] = request.region
+                context_dict["communication"]["tone"] = tone_label
+
+                # Same ta_affiliated lock as PUT /api/profile/business - an
+                # already-TA-affiliated workspace can't have its type
+                # changed from the web, onboarding included.
+                effective_type = (
+                    profile.business_type if profile.ta_affiliated else business_type
+                )
+
+                await BusinessProfileService(partner_repository).update(
+                    workspace_context, profile.revision,
+                    business_name=business_name, business_type=effective_type,
+                    short_description=request.short_description.strip(),
+                    context=context_dict,
+                )
+                business_profile_saved = True
+        except (
+            BusinessProfileAccessError,
+            BusinessProfileValidationError,
+            StaleBusinessProfileError,
+        ):
+            # Best-effort: a permission/concurrency hiccup on the shared
+            # business profile must not block this user from finishing
+            # their own onboarding (personal style + completion below).
+            business_profile_saved = False
+
+    style_text = f"{tone_label}. Обращайся на {address_label}."
+    await partner_repository.set_user_style_description(
+        principal.workspace_id, principal.telegram_user_id, style_text,
+    )
+
+    await web_auth_repository.mark_onboarding_completed(principal.binding_id)
+
+    profile = await partner_repository.get_business_profile(principal.workspace_id)
+    preferences = await partner_repository.get_user_preferences(
+        principal.workspace_id, principal.telegram_user_id,
+    )
+
+    return {
+        "business_profile": _business_profile_payload(profile),
+        "personal_style": _personal_style_payload(preferences),
+        "business_profile_saved": business_profile_saved,
+        "onboarding_completed": True,
+    }
 
 
 def _render_markdown(text: str) -> str:
@@ -1370,25 +1504,44 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         }
 
 
-async def _has_valid_session(request: Request) -> bool:
+async def _valid_session_context(request: Request):
+    """None if unauthenticated/expired/revoked/disabled - same checks as
+    get_current_principal(), but for page routes that need to branch on
+    "logged in or not" without raising a 401 (this serves HTML, not JSON)."""
     raw_token = request.cookies.get(SESSION_COOKIE_NAME)
     if not raw_token:
-        return False
+        return None
     ctx = await web_auth_repository.get_session_context(hash_token(raw_token))
-    return (
-        ctx is not None
-        and ctx.revoked_at is None
-        and ctx.expires_at > _now_iso()
-        and ctx.user_status == "active"
-    )
+    if (
+        ctx is None
+        or ctx.revoked_at is not None
+        or ctx.expires_at <= _now_iso()
+        or ctx.user_status != "active"
+    ):
+        return None
+    return ctx
+
+
+async def _has_valid_session(request: Request) -> bool:
+    return await _valid_session_context(request) is not None
+
+
+async def _onboarding_pending(binding_id: int) -> bool:
+    binding = await web_auth_repository.get_binding_by_id(binding_id)
+    return binding is not None and binding.onboarding_completed_at is None
 
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Unauthenticated visitors never see the cabinet - a plain redirect
-    to /login, not a 401 (this is a browser page, not a JSON API call)."""
-    if not await _has_valid_session(request):
+    to /login, not a 401 (this is a browser page, not a JSON API call).
+    A first-time (or otherwise not-yet-onboarded) binding is sent to
+    /onboarding instead of the cabinet - see _onboarding_pending()."""
+    ctx = await _valid_session_context(request)
+    if ctx is None:
         return RedirectResponse(url="/login", status_code=303)
+    if await _onboarding_pending(ctx.binding_id):
+        return RedirectResponse(url="/onboarding", status_code=303)
     return Path(
         "app/templates/chat.html"
     ).read_text(encoding="utf-8")
@@ -1409,4 +1562,18 @@ async def register_page(request: Request):
         return RedirectResponse(url="/", status_code=303)
     return Path(
         "app/templates/register.html"
+    ).read_text(encoding="utf-8")
+
+
+@app.get("/onboarding", response_class=HTMLResponse)
+async def onboarding_page(request: Request):
+    """Reachable both for a brand-new binding (redirected here by "/") and
+    by a completed one opening the URL by hand - either way we just serve
+    the page; onboarding.html itself loads current values from
+    /api/profile and always allows saving again (see task: reopening
+    /onboarding after completion shows current values, not a hard block)."""
+    if not await _has_valid_session(request):
+        return RedirectResponse(url="/login", status_code=303)
+    return Path(
+        "app/templates/onboarding.html"
     ).read_text(encoding="utf-8")

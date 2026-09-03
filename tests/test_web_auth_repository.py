@@ -135,6 +135,84 @@ def test_get_default_binding_for_unbound_user_is_none(tmp_path: Path) -> None:
     assert _run(auth.get_default_binding(user.id)) is None
 
 
+# ── onboarding flag ──────────────────────────────────────────────────────
+
+def test_new_binding_starts_with_onboarding_incomplete(tmp_path: Path) -> None:
+    """A binding created after the onboarding column exists must start out
+    NOT onboarded - see create_binding()'s INSERT, which never sets the
+    column, so it defaults to NULL."""
+    auth, workspace_id = _setup(tmp_path)
+    user = _run(auth.create_user("owner@example.com", "hash"))
+
+    binding = _run(auth.create_binding(user.id, workspace_id, OWNER_ID))
+
+    assert binding.onboarding_completed_at is None
+
+
+def test_mark_onboarding_completed_sets_timestamp_and_is_idempotent(tmp_path: Path) -> None:
+    auth, workspace_id = _setup(tmp_path)
+    user = _run(auth.create_user("owner@example.com", "hash"))
+    binding = _run(auth.create_binding(user.id, workspace_id, OWNER_ID))
+    assert binding.onboarding_completed_at is None
+
+    completed = _run(auth.mark_onboarding_completed(binding.id))
+    assert completed.onboarding_completed_at is not None
+    first_timestamp = completed.onboarding_completed_at
+
+    # Re-saving onboarding later (see task: reopening /onboarding after
+    # completion) must not slide the original completion time forward.
+    completed_again = _run(auth.mark_onboarding_completed(binding.id))
+    assert completed_again.onboarding_completed_at == first_timestamp
+
+
+def test_existing_binding_before_migration_is_grandfathered_as_completed(
+    tmp_path: Path,
+) -> None:
+    """Simulates a production DB whose web_auth_bindings table predates the
+    onboarding_completed_at column: a binding inserted against the OLD
+    schema must come out of the next init() already marked as onboarded,
+    never dropped into a first-run onboarding form after deploy."""
+    import aiosqlite
+
+    db_path = tmp_path / "journal.sqlite3"
+    partners = PartnerRepository(db_path)
+    _run(partners.init())
+    owner_workspace, _ = _run(partners.ensure_owner_workspace(OWNER_ID))
+
+    async def _create_pre_migration_binding() -> int:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "CREATE TABLE web_auth_bindings ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "web_user_id INTEGER NOT NULL,"
+                "workspace_id INTEGER NOT NULL,"
+                "telegram_user_id INTEGER NOT NULL,"
+                "created_at TEXT NOT NULL)"
+            )
+            cursor = await db.execute(
+                "INSERT INTO web_auth_bindings "
+                "(web_user_id, workspace_id, telegram_user_id, created_at) "
+                "VALUES (1, ?, ?, ?)",
+                (owner_workspace.id, OWNER_ID, _future(hours=-1000)),
+            )
+            await db.commit()
+            return cursor.lastrowid or 0
+
+    pre_migration_binding_id = _run(_create_pre_migration_binding())
+
+    auth = WebAuthRepository(db_path)
+    _run(auth.init())
+
+    grandfathered = _run(auth.get_binding_by_id(pre_migration_binding_id))
+    assert grandfathered is not None
+    assert grandfathered.onboarding_completed_at is not None
+
+    # And init() staying idempotent afterwards must not disturb it.
+    _run(auth.init())
+    still_grandfathered = _run(auth.get_binding_by_id(pre_migration_binding_id))
+    assert still_grandfathered.onboarding_completed_at == grandfathered.onboarding_completed_at
+
+
 # ── sessions ─────────────────────────────────────────────────────────────
 
 def _create_session(auth: WebAuthRepository, user_id: int, binding_id: int):

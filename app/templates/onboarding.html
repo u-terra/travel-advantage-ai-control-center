@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Настройка — ORCHESTRAVEL</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+    --navy-950: #0a0f1c;
+    --navy-900: #0d1424;
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --teal-soft: rgba(23, 179, 163, .12);
+    --bg: #f4f6fa;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+    --danger: #c94b4b;
+    --danger-soft: rgba(201, 75, 75, .1);
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--sidebar-grad);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+button, textarea, input, select { font-family: inherit; }
+
+.onboarding-shell {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+}
+
+.onboarding-card {
+    width: 100%;
+    max-width: 480px;
+    background: var(--card);
+    border-radius: 16px;
+    padding: 28px 26px 26px;
+    box-shadow: 0 20px 60px rgba(5, 10, 20, .35);
+}
+
+.onboarding-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.brand-mark {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, var(--teal) 0%, #3fd1c4 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 16px rgba(23, 179, 163, .35);
+}
+
+.brand-mark svg { width: 16px; height: 16px; }
+
+.brand-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.logout-link {
+    border: 0;
+    background: none;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    cursor: pointer;
+    padding: 4px 0;
+}
+
+.logout-link:hover { color: var(--text); }
+
+.progress-track {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.progress-seg {
+    flex: 1 1 0;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+}
+
+.progress-seg.done, .progress-seg.active { background: var(--teal); }
+
+.progress-label {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin: 0 0 20px;
+}
+
+.step-title {
+    font-size: 19px;
+    font-weight: 700;
+    margin: 0 0 4px;
+}
+
+.step-sub {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: 0 0 20px;
+}
+
+.field { margin-bottom: 14px; }
+
+.field label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.field .hint {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-top: 5px;
+}
+
+.field input[type="text"],
+.field textarea {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    padding: 10px 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text);
+}
+
+.field textarea { resize: vertical; min-height: 64px; }
+
+.field input:focus, .field textarea:focus {
+    outline: none;
+    border-color: var(--teal);
+}
+
+.option-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.option-card {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    padding: 11px 14px;
+    font-size: 14px;
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color .12s ease, background .12s ease;
+}
+
+.option-card:hover { border-color: var(--teal); }
+
+.option-card.selected {
+    border-color: var(--teal);
+    background: var(--teal-soft);
+    font-weight: 600;
+}
+
+.option-row {
+    display: flex;
+    gap: 8px;
+}
+
+.option-row .option-card { flex: 1 1 0; text-align: center; }
+
+.error-box {
+    display: none;
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-bottom: 14px;
+}
+
+.error-box.show { display: block; }
+
+.review-list {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+}
+
+.review-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13.5px;
+}
+
+.review-list li:last-child { border-bottom: none; }
+
+.review-key { color: var(--text-muted); flex: 0 0 auto; }
+
+.review-value {
+    text-align: right;
+    color: var(--text);
+    word-break: break-word;
+}
+
+.nav-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 22px;
+}
+
+.btn {
+    flex: 1 1 0;
+    border: 0;
+    border-radius: 10px;
+    padding: 11px 16px;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter .15s ease, transform .1s ease;
+}
+
+.btn:disabled { opacity: .6; cursor: wait; }
+
+.btn-primary {
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: white;
+    box-shadow: 0 4px 14px rgba(15, 148, 136, .28);
+}
+
+.btn-primary:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
+
+.btn-secondary {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.btn-secondary:hover:not(:disabled) { border-color: var(--teal); }
+
+@media (max-width: 420px) {
+    .onboarding-card { padding: 22px 18px 20px; border-radius: 14px; }
+    .step-title { font-size: 17px; }
+}
+</style>
+</head>
+<body>
+
+<div class="onboarding-shell">
+    <div class="onboarding-card">
+        <div class="onboarding-top">
+            <div class="brand">
+                <div class="brand-mark">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2l2.6 6.6L21 11l-6.4 2.4L12 20l-2.6-6.6L3 11l6.4-2.4z"/>
+                    </svg>
+                </div>
+                <span class="brand-name">ORCHESTRAVEL</span>
+            </div>
+            <button type="button" class="logout-link" id="logoutBtn">Выйти</button>
+        </div>
+
+        <div class="progress-track" id="progressTrack"></div>
+        <p class="progress-label" id="progressLabel"></p>
+
+        <div class="error-box" id="errorBox"></div>
+
+        <div id="stepContent"></div>
+
+        <div class="nav-row">
+            <button type="button" class="btn btn-secondary" id="backBtn">Назад</button>
+            <button type="button" class="btn btn-primary" id="nextBtn">Далее</button>
+        </div>
+    </div>
+</div>
+
+<script>
+/* ---------- auth: CSRF auto-attach + 401 -> /login (same wrapper as the
+   main cabinet, chat.html) ---------- */
+(function installAuthFetch() {
+    const realFetch = window.fetch.bind(window);
+    const MUTATING = new Set(["POST", "PUT", "DELETE", "PATCH"]);
+
+    function csrfCookie() {
+        const match = document.cookie.match(/(?:^|; )ta_csrf=([^;]*)/);
+        return match ? decodeURIComponent(match[1]) : "";
+    }
+
+    window.fetch = async function (input, init) {
+        const options = init ? Object.assign({}, init) : {};
+        const method = (options.method || "GET").toUpperCase();
+
+        if (MUTATING.has(method)) {
+            const headers = new Headers(options.headers || {});
+            const token = csrfCookie();
+            if (token) headers.set("X-CSRF-Token", token);
+            options.headers = headers;
+        }
+
+        const response = await realFetch(input, options);
+
+        if (response.status === 401 && !String(input).includes("/api/auth/")) {
+            window.location.href = "/login";
+        }
+
+        return response;
+    };
+})();
+
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+    try {
+        await fetch("/api/auth/logout", { method: "POST" });
+    } catch (_) {
+        // всё равно уходим на /login - без валидной cookie сервер уже не
+        // даст пользоваться кабинетом
+    }
+    window.location.href = "/login";
+});
+
+const WHO_OPTIONS = [
+    { value: "ta_partner", label: "Партнёр Travel Advantage" },
+    { value: "independent_agent", label: "Независимый турагент" },
+    { value: "agency", label: "Турагентство" },
+    { value: "other", label: "Другое" },
+];
+
+const TONE_OPTIONS = [
+    { value: "concise", label: "Кратко и по делу" },
+    { value: "friendly", label: "Дружелюбно" },
+    { value: "formal", label: "Делово" },
+    { value: "expert", label: "Экспертно" },
+];
+
+const ADDRESS_OPTIONS = [
+    { value: "ty", label: "«ты»" },
+    { value: "vy", label: "«вы»" },
+];
+
+const BUSINESS_TYPE_TO_WHO = {
+    club_partner: "ta_partner",
+    independent_agent: "independent_agent",
+    agency: "agency",
+    other: "other",
+};
+
+const STEP_COUNT = 6;
+
+const state = {
+    who: "",
+    businessName: "",
+    shortDescription: "",
+    specializationsText: "",
+    audiencesText: "",
+    region: "",
+    tone: "concise",
+    addressForm: "vy",
+};
+
+let step = 0;
+
+function parseListInput(raw) {
+    return raw.split(/[,;\n]/).map(value => value.trim()).filter(Boolean);
+}
+
+function parseStyleDescription(text) {
+    const result = { tone: "concise", addressForm: "vy" };
+    if (!text) return result;
+    for (const option of TONE_OPTIONS) {
+        if (text.indexOf(option.label) === 0) {
+            result.tone = option.value;
+            break;
+        }
+    }
+    if (text.indexOf("«ты»") !== -1) result.addressForm = "ty";
+    else if (text.indexOf("«вы»") !== -1) result.addressForm = "vy";
+    return result;
+}
+
+async function loadCurrentProfile() {
+    try {
+        const response = await fetch("/api/profile");
+        if (!response.ok) return;
+        const data = await response.json();
+
+        const business = data.business_profile;
+        if (business) {
+            if (business.business_type && BUSINESS_TYPE_TO_WHO[business.business_type]) {
+                state.who = BUSINESS_TYPE_TO_WHO[business.business_type];
+            }
+            state.businessName = business.business_name || "";
+            state.shortDescription = business.short_description || "";
+            state.specializationsText = (business.specializations || []).join(", ");
+            state.audiencesText = (business.audiences || []).join(", ");
+            state.region = business.region || "";
+        }
+
+        const style = data.personal_style;
+        if (style && style.style_description) {
+            const parsed = parseStyleDescription(style.style_description);
+            state.tone = parsed.tone;
+            state.addressForm = parsed.addressForm;
+        }
+    } catch (_) {
+        // нет сохранённых данных - просто покажем пустую форму
+    } finally {
+        renderStep();
+    }
+}
+
+function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+}
+
+function renderProgress() {
+    const track = document.getElementById("progressTrack");
+    track.innerHTML = "";
+    for (let i = 0; i < STEP_COUNT; i++) {
+        const seg = el("div", "progress-seg");
+        if (i < step) seg.classList.add("done");
+        if (i === step) seg.classList.add("active");
+        track.appendChild(seg);
+    }
+    document.getElementById("progressLabel").textContent = `Шаг ${step + 1} из ${STEP_COUNT}`;
+}
+
+function renderOptionGrid(container, options, selectedValue, onSelect, rowLayout) {
+    const grid = el("div", "option-grid");
+    if (rowLayout) grid.classList.add("option-row");
+    options.forEach(option => {
+        const btn = el("button", "option-card", option.label);
+        btn.type = "button";
+        if (option.value === selectedValue) btn.classList.add("selected");
+        btn.addEventListener("click", () => {
+            onSelect(option.value);
+            renderStep();
+        });
+        grid.appendChild(btn);
+    });
+    container.appendChild(grid);
+}
+
+function renderStepWho(container) {
+    container.appendChild(el("h1", "step-title", "Кто вы?"));
+    container.appendChild(el("p", "step-sub", "Это поможет точнее настроить Ассистента."));
+    renderOptionGrid(container, WHO_OPTIONS, state.who, value => { state.who = value; });
+}
+
+function renderStepBusiness(container) {
+    container.appendChild(el("h1", "step-title", "О бизнесе"));
+    container.appendChild(el("p", "step-sub", "Название и краткое описание того, чем вы занимаетесь."));
+
+    const nameField = el("div", "field");
+    nameField.appendChild(el("label", null, "Название / имя / бренд"));
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.id = "businessNameInput";
+    nameInput.value = state.businessName;
+    nameInput.maxLength = 200;
+    nameField.appendChild(nameInput);
+    container.appendChild(nameField);
+
+    const descField = el("div", "field");
+    descField.appendChild(el("label", null, "Чем занимаетесь / что продаёте"));
+    const descInput = document.createElement("textarea");
+    descInput.id = "shortDescriptionInput";
+    descInput.value = state.shortDescription;
+    descInput.rows = 3;
+    descField.appendChild(descInput);
+    const descHint = el("span", "hint", "Необязательно, но поможет Ассистенту давать более точные ответы.");
+    descField.appendChild(descHint);
+    container.appendChild(descField);
+}
+
+function renderStepSpecialization(container) {
+    container.appendChild(el("h1", "step-title", "Специализация"));
+    container.appendChild(el("p", "step-sub", "Основные направления, страны или виды отдыха/услуг."));
+
+    const field = el("div", "field");
+    const textarea = document.createElement("textarea");
+    textarea.id = "specializationsInput";
+    textarea.value = state.specializationsText;
+    textarea.rows = 3;
+    textarea.placeholder = "Например: пляжный отдых, горнолыжные туры, ОАЭ, Турция";
+    field.appendChild(textarea);
+    field.appendChild(el("span", "hint", "Необязательно. Пишите свободным текстом."));
+    container.appendChild(field);
+}
+
+function renderStepClients(container) {
+    container.appendChild(el("h1", "step-title", "Клиенты"));
+    container.appendChild(el("p", "step-sub", "Кто ваши клиенты и где вы работаете."));
+
+    const audienceField = el("div", "field");
+    audienceField.appendChild(el("label", null, "Основная аудитория"));
+    const audienceInput = document.createElement("textarea");
+    audienceInput.id = "audiencesInput";
+    audienceInput.value = state.audiencesText;
+    audienceInput.rows = 2;
+    audienceField.appendChild(audienceInput);
+    audienceField.appendChild(el("span", "hint", "Необязательно."));
+    container.appendChild(audienceField);
+
+    const regionField = el("div", "field");
+    regionField.appendChild(el("label", null, "Регион / рынок работы"));
+    const regionInput = document.createElement("input");
+    regionInput.type = "text";
+    regionInput.id = "regionInput";
+    regionInput.value = state.region;
+    regionField.appendChild(regionInput);
+    regionField.appendChild(el("span", "hint", "Например: Москва и область, вся Россия."));
+    container.appendChild(regionField);
+}
+
+function renderStepStyle(container) {
+    container.appendChild(el("h1", "step-title", "Как общаться Ассистенту"));
+    container.appendChild(el("p", "step-sub", "Выберите то, что вам ближе - в любой момент можно изменить в профиле."));
+
+    container.appendChild(el("label", null, "Стиль ответа"));
+    renderOptionGrid(container, TONE_OPTIONS, state.tone, value => { state.tone = value; });
+
+    container.appendChild(el("label", null, "Обращение"));
+    renderOptionGrid(
+        container, ADDRESS_OPTIONS, state.addressForm,
+        value => { state.addressForm = value; }, true,
+    );
+}
+
+function reviewRow(list, key, value) {
+    const item = document.createElement("li");
+    item.appendChild(el("span", "review-key", key));
+    item.appendChild(el("span", "review-value", value));
+    list.appendChild(item);
+}
+
+function renderStepReview(container) {
+    container.appendChild(el("h1", "step-title", "Проверка"));
+    container.appendChild(el("p", "step-sub", "Всё верно? Это можно будет изменить позже в разделе «Профиль»."));
+
+    const whoLabel = (WHO_OPTIONS.find(o => o.value === state.who) || {}).label || "—";
+    const toneLabel = (TONE_OPTIONS.find(o => o.value === state.tone) || {}).label || "—";
+    const addressLabel = (ADDRESS_OPTIONS.find(o => o.value === state.addressForm) || {}).label || "—";
+
+    const list = el("ul", "review-list");
+    reviewRow(list, "Кто вы", whoLabel);
+    reviewRow(list, "Название", state.businessName || "—");
+    if (state.shortDescription) reviewRow(list, "Описание", state.shortDescription);
+    if (state.specializationsText) reviewRow(list, "Специализация", state.specializationsText);
+    if (state.audiencesText) reviewRow(list, "Аудитория", state.audiencesText);
+    if (state.region) reviewRow(list, "Регион", state.region);
+    reviewRow(list, "Стиль общения", toneLabel + ", на " + addressLabel);
+    container.appendChild(list);
+}
+
+const STEP_RENDERERS = [
+    renderStepWho,
+    renderStepBusiness,
+    renderStepSpecialization,
+    renderStepClients,
+    renderStepStyle,
+    renderStepReview,
+];
+
+function collectStepInputs() {
+    if (step === 1) {
+        const nameInput = document.getElementById("businessNameInput");
+        const descInput = document.getElementById("shortDescriptionInput");
+        if (nameInput) state.businessName = nameInput.value.trim();
+        if (descInput) state.shortDescription = descInput.value.trim();
+    }
+    if (step === 2) {
+        const specInput = document.getElementById("specializationsInput");
+        if (specInput) state.specializationsText = specInput.value.trim();
+    }
+    if (step === 3) {
+        const audienceInput = document.getElementById("audiencesInput");
+        const regionInput = document.getElementById("regionInput");
+        if (audienceInput) state.audiencesText = audienceInput.value.trim();
+        if (regionInput) state.region = regionInput.value.trim();
+    }
+}
+
+function hideError() {
+    const box = document.getElementById("errorBox");
+    box.classList.remove("show");
+    box.textContent = "";
+}
+
+function showError(text) {
+    const box = document.getElementById("errorBox");
+    box.textContent = text;
+    box.classList.add("show");
+}
+
+function validateStep() {
+    if (step === 0 && !state.who) {
+        showError("Выберите один из вариантов.");
+        return false;
+    }
+    if (step === 1 && !state.businessName) {
+        showError("Название / имя обязательно.");
+        return false;
+    }
+    return true;
+}
+
+function renderStep() {
+    hideError();
+    renderProgress();
+
+    const content = document.getElementById("stepContent");
+    content.innerHTML = "";
+    STEP_RENDERERS[step](content);
+
+    const backBtn = document.getElementById("backBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    backBtn.style.visibility = step === 0 ? "hidden" : "visible";
+    nextBtn.textContent = step === STEP_COUNT - 1 ? "Начать работу" : "Далее";
+    nextBtn.disabled = false;
+}
+
+document.getElementById("backBtn").addEventListener("click", () => {
+    if (step === 0) return;
+    collectStepInputs();
+    step -= 1;
+    renderStep();
+});
+
+document.getElementById("nextBtn").addEventListener("click", async () => {
+    collectStepInputs();
+    if (!validateStep()) return;
+
+    if (step < STEP_COUNT - 1) {
+        step += 1;
+        renderStep();
+        return;
+    }
+
+    const nextBtn = document.getElementById("nextBtn");
+    nextBtn.disabled = true;
+
+    try {
+        const response = await fetch("/api/onboarding/complete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                who: state.who,
+                business_name: state.businessName,
+                short_description: state.shortDescription,
+                specializations: parseListInput(state.specializationsText),
+                audiences: parseListInput(state.audiencesText),
+                region: state.region,
+                tone: state.tone,
+                address_form: state.addressForm,
+            }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            showError(data.error || "Не удалось сохранить. Попробуйте ещё раз.");
+            nextBtn.disabled = false;
+            return;
+        }
+
+        window.location.href = "/";
+
+    } catch (_) {
+        showError("Ошибка соединения. Попробуйте ещё раз.");
+        nextBtn.disabled = false;
+    }
+});
+
+loadCurrentProfile();
+</script>
+
+</body>
+</html>
