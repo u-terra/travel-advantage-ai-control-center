@@ -23,6 +23,68 @@ class ChatResult:
     usage: LLMUsage | None
 
 
+@dataclass(frozen=True)
+class AttachmentInput:
+    """One attachment for the CURRENT turn only - see generate()'s
+    docstring for why prior turns' attachments are never resent.
+
+    kind == "text": ``text`` holds the already-decoded (and
+    length-capped) file content; ``data_base64`` is unused.
+    kind in {"image", "pdf"}: ``data_base64`` holds the raw file bytes,
+    base64-encoded, sent to the model as a data URI; ``text`` is unused.
+    """
+    kind: str
+    content_type: str
+    filename: str
+    text: str | None = None
+    data_base64: str | None = None
+
+
+def _data_uri(content_type: str, data_base64: str) -> str:
+    return f"data:{content_type};base64,{data_base64}"
+
+
+def _user_turn_content(message: str, attachments: list[AttachmentInput] | None):
+    """No attachments -> plain string, byte-identical to the payload this
+    provider sent before attachments existed (see tests/test_chat_provider.py).
+    With attachments -> a Responses API multi-part content list: text
+    parts (the message plus any inline text-file content) merged into one
+    input_text block, followed by one input_image/input_file part per
+    image/PDF attachment."""
+    if not attachments:
+        return message
+
+    text_parts = [message] if message else []
+    media_items: list[dict[str, str]] = []
+
+    for attachment in attachments:
+        if attachment.kind == "text":
+            text_parts.append(
+                f"=== Файл: {attachment.filename} ===\n{attachment.text or ''}"
+            )
+        elif attachment.kind == "image":
+            media_items.append({
+                "type": "input_image",
+                "image_url": _data_uri(attachment.content_type, attachment.data_base64 or ""),
+            })
+        elif attachment.kind == "pdf":
+            media_items.append({
+                "type": "input_file",
+                "filename": attachment.filename,
+                "file_data": _data_uri(attachment.content_type, attachment.data_base64 or ""),
+            })
+
+    combined_text = "\n\n".join(part for part in text_parts if part)
+
+    if not media_items:
+        return combined_text or message
+
+    return [
+        {"type": "input_text", "text": combined_text or "Проанализируй прикреплённые файлы."},
+        *media_items,
+    ]
+
+
 class OpenAIChatProvider:
     def __init__(self, config: ChatConfig) -> None:
         self.config = config
@@ -35,7 +97,15 @@ class OpenAIChatProvider:
         knowledge_context: str | None = None,
         personal_style: str | None = None,
         workspace_memory: str | None = None,
+        attachments: list[AttachmentInput] | None = None,
     ) -> ChatResult:
+        """``attachments`` (if any) belong to THIS turn's user message
+        only - prior turns in ``history`` are always plain text, even if
+        they originally had attachments. Resending every historical
+        image/PDF on every new turn would balloon request size and cost
+        for no benefit in most conversations; real cross-turn file recall
+        (e.g. "compare this to the doc from earlier") is a deliberate v1
+        limitation, not an oversight."""
         input_items: list[dict[str, str]] = []
 
         for item in (history or [])[-12:]:
@@ -54,7 +124,7 @@ class OpenAIChatProvider:
 
         input_items.append({
             "role": "user",
-            "content": message,
+            "content": _user_turn_content(message, attachments),
         })
 
         instructions = (

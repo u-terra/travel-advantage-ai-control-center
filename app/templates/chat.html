@@ -489,7 +489,9 @@ button, textarea { font-family: inherit; }
 
 .message.user {
     display: flex;
-    justify-content: flex-end;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
 }
 
 .user-bubble {
@@ -499,6 +501,122 @@ button, textarea { font-family: inherit; }
     border-radius: 18px 18px 5px 18px;
     padding: 13px 17px;
     white-space: pre-wrap;
+}
+
+/* ---------- attachments (composer chips + message/history chips) ---------- */
+
+.attachment-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.attachment-chips-message { max-width: 75%; justify-content: flex-end; }
+
+#attachmentChips {
+    padding: 8px 6px 0;
+}
+
+.attachment-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 6px 10px 6px 6px;
+    max-width: 220px;
+}
+
+.attachment-chip-readonly { background: var(--teal-soft); }
+
+.attachment-chip-thumb {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex: 0 0 auto;
+    background: var(--bg);
+}
+
+.attachment-chip-badge {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: var(--teal-soft);
+    color: var(--teal-dark);
+    font-size: 10.5px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.attachment-chip-info { min-width: 0; }
+
+.attachment-chip-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text);
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attachment-chip-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.attachment-chip-remove {
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 6px;
+}
+
+.attachment-chip-remove:hover {
+    background: var(--bg);
+    color: var(--text);
+}
+
+.attach-btn {
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text-muted);
+    border-radius: 9px;
+    width: 34px;
+    height: 34px;
+    font-size: 15px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin-right: auto;
+}
+
+.attach-btn:hover {
+    border-color: var(--teal);
+    color: var(--teal-dark);
+    background: var(--teal-soft);
+}
+
+.attach-btn:disabled {
+    opacity: .5;
+    cursor: wait;
+}
+
+.attachment-error {
+    display: none;
+    color: #8a5c14;
+    font-size: 12.5px;
+    padding: 4px 6px 0;
 }
 
 .assistant-bubble {
@@ -1617,12 +1735,18 @@ textarea {
 
                 <div class="composer-wrap">
                     <div class="composer">
+                        <div id="attachmentChips" class="attachment-chips" style="display:none;"></div>
                         <textarea
                             id="message"
                             rows="1"
                             placeholder="Напишите вопрос или задачу..."
                         ></textarea>
+                        <div id="attachmentError" class="attachment-error"></div>
                         <div class="composer-actions">
+                            <button type="button" class="attach-btn" id="attachBtn"
+                                    title="Прикрепить файл" aria-label="Прикрепить файл">📎</button>
+                            <input type="file" id="fileInput" multiple hidden
+                                   accept=".jpg,.jpeg,.png,.webp,.pdf,.txt,.md,image/jpeg,image/png,image/webp,application/pdf,text/plain,text/markdown">
                             <button class="send" id="send">Отправить</button>
                         </div>
                     </div>
@@ -1816,6 +1940,11 @@ const send = document.getElementById("send");
 const welcome = document.getElementById("welcome");
 const newChat = document.getElementById("newChat");
 
+const attachBtn = document.getElementById("attachBtn");
+const fileInput = document.getElementById("fileInput");
+const attachmentChips = document.getElementById("attachmentChips");
+const attachmentError = document.getElementById("attachmentError");
+
 const sidebar = document.getElementById("sidebar");
 const overlay = document.getElementById("overlay");
 const hamburger = document.getElementById("hamburger");
@@ -1834,20 +1963,197 @@ function scrollBottom() {
     });
 }
 
-function addUser(text) {
+function addUser(text, attachments) {
     welcome.style.display = "none";
 
     const row = document.createElement("div");
     row.className = "message user";
 
-    const bubble = document.createElement("div");
-    bubble.className = "user-bubble";
-    bubble.textContent = text;
+    if (attachments && attachments.length) {
+        const list = document.createElement("div");
+        list.className = "attachment-chips attachment-chips-message";
+        attachments.forEach(item => list.appendChild(buildAttachmentChip(item, false)));
+        row.appendChild(list);
+    }
 
-    row.appendChild(bubble);
+    if (text) {
+        const bubble = document.createElement("div");
+        bubble.className = "user-bubble";
+        bubble.textContent = text;
+        row.appendChild(bubble);
+    }
+
     chat.appendChild(row);
     scrollBottom();
 }
+
+/* ---------- attachments: composer upload, chips, staged state ---------- */
+/* Mirrors app/services/attachment_validation.py's limits for instant
+   client-side feedback - the server re-validates everything for real
+   (magic bytes, not just extension) and is the actual authority; these
+   client-side checks only save a round trip for the common-case mistake. */
+
+const MAX_ATTACHMENTS_PER_MESSAGE = 5;
+const MAX_ATTACHMENT_MB = 15;
+const ALLOWED_ATTACHMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "txt", "md"];
+
+let pendingAttachments = [];
+let attachmentErrorTimer = null;
+
+function showAttachmentError(text) {
+    attachmentError.textContent = text;
+    attachmentError.style.display = "block";
+    clearTimeout(attachmentErrorTimer);
+    attachmentErrorTimer = setTimeout(() => {
+        attachmentError.style.display = "none";
+    }, 6000);
+}
+
+function formatAttachmentSize(bytes) {
+    if (bytes < 1024) return bytes + " Б";
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " КБ";
+    return (bytes / (1024 * 1024)).toFixed(1) + " МБ";
+}
+
+function attachmentKindLabel(kind) {
+    if (kind === "pdf") return "PDF";
+    if (kind === "text") return "TXT";
+    return "IMG";
+}
+
+function buildAttachmentChip(attachment, removable) {
+    const chip = document.createElement("div");
+    chip.className = "attachment-chip" + (removable ? "" : " attachment-chip-readonly");
+
+    if (attachment.kind === "image") {
+        const thumb = document.createElement("img");
+        thumb.className = "attachment-chip-thumb";
+        thumb.alt = "";
+        thumb.src = attachment._previewUrl ||
+            ("/api/attachments/" + encodeURIComponent(attachment.id) + "/content");
+        chip.appendChild(thumb);
+    } else {
+        const badge = document.createElement("div");
+        badge.className = "attachment-chip-badge";
+        badge.textContent = attachmentKindLabel(attachment.kind);
+        chip.appendChild(badge);
+    }
+
+    const info = document.createElement("div");
+    info.className = "attachment-chip-info";
+
+    const name = document.createElement("div");
+    name.className = "attachment-chip-name";
+    name.textContent = attachment.filename;
+    name.title = attachment.filename;
+
+    const meta = document.createElement("div");
+    meta.className = "attachment-chip-meta";
+    meta.textContent = formatAttachmentSize(attachment.size_bytes);
+
+    info.appendChild(name);
+    info.appendChild(meta);
+    chip.appendChild(info);
+
+    if (removable) {
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "attachment-chip-remove";
+        removeBtn.textContent = "×";
+        removeBtn.setAttribute("aria-label", "Удалить вложение");
+        removeBtn.addEventListener("click", () => removePendingAttachment(attachment.id));
+        chip.appendChild(removeBtn);
+    }
+
+    return chip;
+}
+
+function renderAttachmentChips() {
+    attachmentChips.innerHTML = "";
+    attachmentChips.style.display = pendingAttachments.length ? "flex" : "none";
+    pendingAttachments.forEach(item => attachmentChips.appendChild(buildAttachmentChip(item, true)));
+}
+
+async function removePendingAttachment(id) {
+    const item = pendingAttachments.find(a => a.id === id);
+    pendingAttachments = pendingAttachments.filter(a => a.id !== id);
+    if (item && item._previewUrl) URL.revokeObjectURL(item._previewUrl);
+    renderAttachmentChips();
+
+    try {
+        await fetch("/api/attachments/" + encodeURIComponent(id), { method: "DELETE" });
+    } catch (_) {
+        // best-effort - an orphaned pending upload is reaped server-side
+        // regardless (see app.web_api's startup housekeeping)
+    }
+}
+
+attachBtn.addEventListener("click", () => {
+    if (!attachBtn.disabled) fileInput.click();
+});
+
+fileInput.addEventListener("change", async () => {
+    const files = Array.from(fileInput.files || []);
+    fileInput.value = "";
+    if (!files.length) return;
+
+    if (pendingAttachments.length + files.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+        showAttachmentError(
+            `Можно прикрепить не больше ${MAX_ATTACHMENTS_PER_MESSAGE} файлов к одному сообщению.`
+        );
+        return;
+    }
+
+    const oversize = files.find(f => f.size > MAX_ATTACHMENT_MB * 1024 * 1024);
+    if (oversize) {
+        showAttachmentError(`Файл «${oversize.name}» больше ${MAX_ATTACHMENT_MB} МБ.`);
+        return;
+    }
+
+    const unsupported = files.find(f => {
+        const ext = (f.name.split(".").pop() || "").toLowerCase();
+        return !ALLOWED_ATTACHMENT_EXTENSIONS.includes(ext);
+    });
+    if (unsupported) {
+        showAttachmentError(
+            `Формат файла «${unsupported.name}» не поддерживается. ` +
+            "Разрешены: JPG, PNG, WEBP, PDF, TXT, MD."
+        );
+        return;
+    }
+
+    attachBtn.disabled = true;
+
+    try {
+        const conversationId = await ensureConversationId();
+
+        const formData = new FormData();
+        formData.append("conversation_id", String(conversationId));
+        files.forEach(file => formData.append("files", file));
+
+        const response = await fetch("/api/attachments", { method: "POST", body: formData });
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            showAttachmentError(data.error || "Не удалось загрузить файл.");
+            return;
+        }
+
+        (data.attachments || []).forEach((attachment, index) => {
+            const sourceFile = files[index];
+            if (attachment.kind === "image" && sourceFile) {
+                attachment._previewUrl = URL.createObjectURL(sourceFile);
+            }
+            pendingAttachments.push(attachment);
+        });
+        renderAttachmentChips();
+
+    } catch (_) {
+        showAttachmentError("Не удалось загрузить файл. Проверьте соединение.");
+    } finally {
+        attachBtn.disabled = false;
+    }
+});
 
 function addAssistant(html, plainText) {
     welcome.style.display = "none";
@@ -1885,14 +2191,24 @@ async function ensureConversationId() {
     return currentConversationId;
 }
 
+// Mirrors app.web_api._attachment_only_placeholder() exactly, so a
+// file-only send shows the same text live as it will after a reload from
+// history (see GET /api/conversations/{id}/messages).
+function attachmentOnlyPlaceholder(count) {
+    return count === 1 ? "📎 Вложение" : `📎 Вложения (${count})`;
+}
+
 async function submitMessage() {
     const text = message.value.trim();
-    if (!text || send.disabled) return;
+    const attachments = pendingAttachments.slice();
+    if ((!text && !attachments.length) || send.disabled) return;
 
-    addUser(text);
+    addUser(text || attachmentOnlyPlaceholder(attachments.length), attachments);
 
     message.value = "";
     message.style.height = "auto";
+    pendingAttachments = [];
+    renderAttachmentChips();
     message.focus();
 
     send.disabled = true;
@@ -1910,7 +2226,8 @@ async function submitMessage() {
             },
             body: JSON.stringify({
                 message: text,
-                conversation_id: conversationId
+                conversation_id: conversationId,
+                attachment_ids: attachments.map(a => a.id)
             })
         });
 
@@ -3926,6 +4243,14 @@ function clearChatArea() {
 
     welcome.style.display = "block";
     message.value = "";
+
+    // Staged uploads belong to the conversation they were uploaded under
+    // (see /api/attachments) - switching/starting a conversation must not
+    // carry them over. The server would reject them anyway (wrong
+    // conversation_id), but clearing here avoids a confusing error and
+    // lets the abandoned pending rows just get reaped later.
+    pendingAttachments = [];
+    renderAttachmentChips();
 }
 
 async function startNewConversation() {
@@ -4062,7 +4387,7 @@ async function openConversation(item) {
             welcome.style.display = "none";
             items.forEach(entry => {
                 if (entry.role === "user") {
-                    addUser(entry.content);
+                    addUser(entry.content, entry.attachments);
                 } else if (entry.role === "assistant") {
                     addAssistant(entry.content_html || "", entry.content);
                 }

@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import logging
+import secrets
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import markdown
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from app.chat_provider import ChatConfig, OpenAIChatProvider
+from app.chat_provider import AttachmentInput, ChatConfig, OpenAIChatProvider
 from app.config import load_settings
 from app.domain.business_profiles import (
     BusinessProfileValidationError,
@@ -19,6 +22,7 @@ from app.domain.business_profiles import (
 )
 from app.domain.competitor_discovery import canonical_domain
 from app.domain.usage import UsageStatus
+from app.domain.web_attachment import WebAttachment
 from app.domain.web_auth import WebPrincipal
 from app.domain.web_conversation import ROLE_ASSISTANT, ROLE_USER
 from app.repositories.artifact_repository import ArtifactRepository
@@ -34,6 +38,7 @@ from app.repositories.partner_repository import (
     business_context_to_dict,
 )
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
+from app.repositories.web_attachment_repository import WebAttachmentRepository
 from app.repositories.web_auth_repository import (
     EmailAlreadyRegisteredError,
     WebAuthRepository,
@@ -44,6 +49,17 @@ from app.repositories.web_conversation_repository import (
 )
 from app.repositories.workspace_memory_repository import WorkspaceMemoryRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
+from app.services.attachment_storage import AttachmentStorage
+from app.services.attachment_validation import (
+    MAX_FILES_PER_UPLOAD,
+    MAX_FILE_SIZE_BYTES,
+    MAX_TEXT_FILE_CHARS,
+    MAX_TOTAL_UPLOAD_BYTES,
+    AttachmentSniff,
+    AttachmentValidationError,
+    sanitize_display_filename,
+    validate_attachment,
+)
 from app.services.business_profile_context import (
     BusinessProfileAccessError,
     BusinessProfileService,
@@ -66,6 +82,8 @@ from app.services.web_auth_passwords import (
 )
 from app.services.web_auth_tokens import generate_token, hash_token, tokens_match
 
+log = logging.getLogger(__name__)
+
 
 app = FastAPI(title="Travel AI Orchestrator Web API")
 
@@ -86,7 +104,15 @@ partner_repository = PartnerRepository(settings.journal_db_path)
 workspace_memory_repository = WorkspaceMemoryRepository(settings.journal_db_path)
 artifact_repository = ArtifactRepository(settings.journal_db_path)
 web_conversation_repository = WebConversationRepository(settings.journal_db_path)
+web_attachment_repository = WebAttachmentRepository(settings.journal_db_path)
+# Sibling of journal.sqlite3 under the same data/ root - never a
+# statically-served directory (this app has no StaticFiles mount at all).
+attachment_storage = AttachmentStorage(settings.journal_db_path.parent / "web_uploads")
 web_auth_repository = WebAuthRepository(settings.journal_db_path)
+
+# Orphan pending attachments (uploaded, never sent) older than this are
+# reaped on startup - see _reap_orphan_attachments().
+ATTACHMENT_ORPHAN_TTL = timedelta(hours=24)
 workspace_signal_repository = WorkspaceSignalRepository(
     settings.journal_db_path, settings.lead_radar_db_path
 )
@@ -406,8 +432,12 @@ async def get_me(principal: WebPrincipal = Depends(get_current_principal)):
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = ""
     conversation_id: int
+    # public_id values of already-uploaded pending attachments (see
+    # POST /api/attachments) to bind to this turn's user message. A
+    # message can be attachments-only (message == "") but not both empty.
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 @app.on_event("startup")
@@ -419,12 +449,33 @@ async def startup() -> None:
     await workspace_memory_repository.init()
     await artifact_repository.init()
     await web_conversation_repository.init()
+    await web_attachment_repository.init()
     await web_auth_repository.init()
     # legacy_owner_workspace_id=None: the one-time legacy-Radar backfill is
     # already owned by the bot process (app/main.py) against the same shared
     # journal DB - this just ensures the schema exists, it never re-runs
     # that backfill from the web process.
     await workspace_signal_repository.init(None)
+
+    try:
+        await _reap_orphan_attachments()
+    except Exception:
+        # Best-effort housekeeping - must never block the app from starting.
+        log.warning("web_api: orphan attachment reap failed at startup", exc_info=True)
+
+
+async def _reap_orphan_attachments() -> None:
+    """Deletes pending attachments (uploaded, never attached to a sent
+    message) older than ATTACHMENT_ORPHAN_TTL, plus their physical files -
+    see WebAttachmentRepository.delete_orphans_older_than()'s docstring.
+    Runs once per process start; good enough for a single-server deployment
+    with no separate cron/worker process."""
+    cutoff = (datetime.now(timezone.utc) - ATTACHMENT_ORPHAN_TTL).isoformat()
+    orphans = await web_attachment_repository.delete_orphans_older_than(cutoff)
+    for orphan in orphans:
+        attachment_storage.delete(
+            orphan.workspace_id, orphan.conversation_id, orphan.stored_filename,
+        )
 
 
 def _fact_value(fact) -> str:
@@ -1314,12 +1365,23 @@ def _conversation_payload(conversation) -> dict:
     }
 
 
-def _message_payload(message) -> dict:
+def _attachment_payload(attachment: WebAttachment) -> dict:
+    return {
+        "id": attachment.public_id,
+        "filename": attachment.original_filename,
+        "content_type": attachment.content_type,
+        "kind": attachment.kind,
+        "size_bytes": attachment.size_bytes,
+    }
+
+
+def _message_payload(message, attachments: list[WebAttachment] = ()) -> dict:
     payload = {
         "id": message.id,
         "role": message.role,
         "content": message.content,
         "created_at": message.created_at,
+        "attachments": [_attachment_payload(a) for a in attachments],
     }
     # HTML is never stored (see app.domain.web_conversation) - it's rendered
     # here on read, through the exact same markdown.markdown() call /api/chat
@@ -1328,6 +1390,178 @@ def _message_payload(message) -> dict:
     if message.role == ROLE_ASSISTANT:
         payload["content_html"] = _render_markdown(message.content)
     return payload
+
+
+def _attachment_only_placeholder(count: int) -> str:
+    """Stored as the message's text content when the user sends a message
+    with no typed text (file-only). Keeps web_conversation_messages'
+    ``CHECK (length(trim(content)) > 0)`` intact (no schema migration
+    needed) and gives history something meaningful to show even before
+    attachment chips render. The composer's submitMessage() in chat.html
+    renders this exact same string client-side for the just-sent message,
+    so live send and a later reload look identical - keep both in sync."""
+    return "📎 Вложение" if count == 1 else f"📎 Вложения ({count})"
+
+
+async def _read_upload_capped(upload: UploadFile, max_bytes: int) -> bytes | None:
+    """Streams the upload in chunks, aborting as soon as max_bytes is
+    exceeded - never trusts a declared Content-Length. Returns None on
+    overflow (caller turns that into a human-readable error)."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(256 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@app.post("/api/attachments")
+async def upload_attachments(
+    conversation_id: int = Form(...),
+    files: list[UploadFile] = File(...),
+    principal: WebPrincipal = Depends(require_csrf),
+):
+    """Uploads one or more files for a conversation's NEXT message - see
+    /api/chat's attachment_ids for how these get bound to an actual
+    message. Files are validated then written to
+    data/web_uploads/<workspace_id>/<conversation_id>/<random>.<ext> -
+    never under the client's original filename (see AttachmentStorage /
+    WebAttachmentRepository). workspace_id/telegram_user_id come only from
+    ``principal`` - never from the form body - so a file can never land in
+    another workspace's conversation.
+
+    Validates every file BEFORE writing any of them to disk: a batch that
+    fails validation on file 3 of 5 leaves nothing behind from files 1-2
+    either, so a rejected upload never leaves partial orphans.
+    """
+    try:
+        conversation = await web_conversation_repository.get_conversation(
+            principal.workspace_id, principal.telegram_user_id, conversation_id,
+        )
+        if conversation is None:
+            return {"error": "Диалог не найден или недоступен.", "attachments": []}
+
+        if not files:
+            return {"error": "Файл не выбран.", "attachments": []}
+        if len(files) > MAX_FILES_PER_UPLOAD:
+            return {
+                "error": f"Слишком много файлов за раз (максимум {MAX_FILES_PER_UPLOAD}).",
+                "attachments": [],
+            }
+
+        validated: list[tuple[str, bytes, AttachmentSniff]] = []
+        total_bytes = 0
+
+        for upload in files:
+            display_name = sanitize_display_filename(upload.filename or "file")
+            data = await _read_upload_capped(upload, MAX_FILE_SIZE_BYTES)
+            if data is None:
+                return {
+                    "error": (
+                        f"Файл «{display_name}» больше "
+                        f"{MAX_FILE_SIZE_BYTES // (1024 * 1024)} МБ."
+                    ),
+                    "attachments": [],
+                }
+
+            total_bytes += len(data)
+            if total_bytes > MAX_TOTAL_UPLOAD_BYTES:
+                return {
+                    "error": "Суммарный размер вложений слишком большой.",
+                    "attachments": [],
+                }
+
+            try:
+                sniff = validate_attachment(display_filename=display_name, data=data)
+            except AttachmentValidationError as exc:
+                return {"error": str(exc), "attachments": []}
+
+            validated.append((display_name, data, sniff))
+
+        saved: list[WebAttachment] = []
+        for display_name, data, sniff in validated:
+            stored_filename = f"{secrets.token_hex(16)}.{sniff.extension}"
+            await attachment_storage.write(
+                principal.workspace_id, conversation_id, stored_filename, data,
+            )
+            try:
+                record = await web_attachment_repository.create_pending(
+                    workspace_id=principal.workspace_id,
+                    telegram_user_id=principal.telegram_user_id,
+                    conversation_id=conversation_id,
+                    original_filename=display_name,
+                    stored_filename=stored_filename,
+                    content_type=sniff.content_type,
+                    kind=sniff.kind,
+                    size_bytes=len(data),
+                )
+            except Exception:
+                attachment_storage.delete(
+                    principal.workspace_id, conversation_id, stored_filename,
+                )
+                raise
+            saved.append(record)
+
+        return {"attachments": [_attachment_payload(a) for a in saved]}
+
+    except Exception:
+        return {"error": "Не удалось загрузить файл. Попробуйте ещё раз.", "attachments": []}
+
+
+@app.delete("/api/attachments/{public_id}")
+async def delete_pending_attachment(
+    public_id: str, principal: WebPrincipal = Depends(require_csrf),
+):
+    """Removing a chip in the composer before sending - only ever deletes
+    a still-pending attachment (see WebAttachmentRepository.delete_pending);
+    an attachment that's already part of sent message history is not
+    touched, whether or not this endpoint is even called."""
+    try:
+        attachment = await web_attachment_repository.delete_pending(
+            principal.workspace_id, principal.telegram_user_id, public_id,
+        )
+        if attachment is not None:
+            attachment_storage.delete(
+                attachment.workspace_id, attachment.conversation_id, attachment.stored_filename,
+            )
+        return {"deleted": attachment is not None}
+
+    except Exception:
+        return {"deleted": False}
+
+
+@app.get("/api/attachments/{public_id}/content")
+async def get_attachment_content(
+    public_id: str, principal: WebPrincipal = Depends(get_current_principal),
+):
+    """Serves raw bytes for the composer/history image thumbnail preview
+    only (v1 scope - see the task notes: no general-purpose file download
+    endpoint, no "Files" section). ``public_id`` is a high-entropy random
+    token (never the sequential row id), and every request is still
+    ownership-checked against the session - not a public/guessable URL.
+    A generic 404 covers "doesn't exist", "belongs to another workspace",
+    and "not an image" alike, so no case leaks more than another."""
+    try:
+        attachment = await web_attachment_repository.get_for_workspace(
+            principal.workspace_id, principal.telegram_user_id, public_id,
+        )
+        if attachment is None or attachment.kind != "image":
+            raise HTTPException(status_code=404, detail="Файл не найден.")
+
+        data = await attachment_storage.read(
+            attachment.workspace_id, attachment.conversation_id, attachment.stored_filename,
+        )
+        return Response(content=data, media_type=attachment.content_type)
+
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=404, detail="Файл не найден.")
 
 
 @app.post("/api/conversations")
@@ -1377,22 +1611,61 @@ async def get_conversation_messages(
         messages = await web_conversation_repository.list_messages(
             principal.workspace_id, principal.telegram_user_id, conversation_id,
         )
+        attachments_by_message = await web_attachment_repository.list_for_conversation_messages(
+            principal.workspace_id, principal.telegram_user_id, conversation_id,
+        )
 
         return {
             "conversation": _conversation_payload(conversation),
-            "messages": [_message_payload(item) for item in messages],
+            "messages": [
+                _message_payload(item, attachments_by_message.get(item.id, []))
+                for item in messages
+            ],
         }
 
     except Exception:
         return {"error": "Не удалось загрузить сообщения диалога.", "conversation": None, "messages": []}
 
 
+async def _load_provider_attachments(
+    attachments: list[WebAttachment],
+) -> list[AttachmentInput]:
+    """Reads each attachment's bytes off disk and shapes them for
+    OpenAIChatProvider.generate() - base64 for images/PDF, decoded (and
+    length-capped) text for txt/md. Only ever called with THIS turn's
+    attachments (see chat())."""
+    items: list[AttachmentInput] = []
+    for attachment in attachments:
+        data = await attachment_storage.read(
+            attachment.workspace_id, attachment.conversation_id, attachment.stored_filename,
+        )
+        if attachment.kind == "text":
+            text = data.decode("utf-8", errors="replace")
+            if len(text) > MAX_TEXT_FILE_CHARS:
+                text = text[:MAX_TEXT_FILE_CHARS] + "\n… [файл обрезан]"
+            items.append(AttachmentInput(
+                kind="text", content_type=attachment.content_type,
+                filename=attachment.original_filename, text=text,
+            ))
+        else:
+            items.append(AttachmentInput(
+                kind=attachment.kind, content_type=attachment.content_type,
+                filename=attachment.original_filename,
+                data_base64=base64.b64encode(data).decode("ascii"),
+            ))
+    return items
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_csrf)):
     message = request.message.strip()
+    attachment_ids = request.attachment_ids
 
-    if not message:
-        return {"error": "Введите вопрос."}
+    if len(attachment_ids) > MAX_FILES_PER_UPLOAD:
+        return {"error": f"Слишком много вложений в одном сообщении (максимум {MAX_FILES_PER_UPLOAD})."}
+
+    if not message and not attachment_ids:
+        return {"error": "Введите вопрос или прикрепите файл."}
 
     try:
         conversation = await web_conversation_repository.get_conversation(
@@ -1400,6 +1673,22 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         )
         if conversation is None:
             return {"error": "Диалог не найден или недоступен."}
+
+        # Каждый public_id должен быть pending-вложением ЭТОГО же
+        # workspace/user/conversation - иначе отказываем всему сообщению
+        # целиком (fail closed), а не молча пропускаем часть файлов.
+        resolved_attachments: list[WebAttachment] = []
+        for public_id in attachment_ids:
+            attachment = await web_attachment_repository.get_pending_for_conversation(
+                principal.workspace_id, principal.telegram_user_id,
+                request.conversation_id, public_id,
+            )
+            if attachment is None:
+                return {
+                    "error": "Не удалось прикрепить файл — возможно, он уже "
+                    "отправлен или недоступен."
+                }
+            resolved_attachments.append(attachment)
 
         # История этого диалога, взятая с сервера (а не от клиента) - до
         # добавления текущего сообщения. Источник истины для generate() и
@@ -1412,17 +1701,28 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
             {"role": item.role, "content": item.content} for item in prior_messages
         ]
 
+        stored_content = message or _attachment_only_placeholder(len(resolved_attachments))
+
         saved_user_message = await web_conversation_repository.add_message(
             principal.workspace_id, principal.telegram_user_id, request.conversation_id,
-            ROLE_USER, message,
+            ROLE_USER, stored_content,
         )
         if saved_user_message is None:
             return {"error": "Диалог не найден или недоступен."}
 
+        if resolved_attachments:
+            await web_attachment_repository.attach_to_message(
+                principal.workspace_id, principal.telegram_user_id, request.conversation_id,
+                [a.public_id for a in resolved_attachments], saved_user_message.id,
+            )
+
         if is_first_message:
+            title_source = message or (
+                resolved_attachments[0].original_filename if resolved_attachments else ""
+            )
             await web_conversation_repository.set_conversation_title(
                 principal.workspace_id, principal.telegram_user_id, request.conversation_id,
-                derive_conversation_title(message),
+                derive_conversation_title(title_source),
             )
 
         recent_user_context = [
@@ -1514,6 +1814,11 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                 workspace_memory_text[:MAX_WORKSPACE_MEMORY_CHARS] + "…"
             )
 
+        # THIS turn's attachments only - see AttachmentInput/generate()'s
+        # docstring in app/chat_provider.py for why prior turns' files are
+        # never resent.
+        provider_attachments = await _load_provider_attachments(resolved_attachments)
+
         try:
             chat_result = await asyncio.to_thread(
                 chat_provider.generate,
@@ -1522,6 +1827,7 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                 knowledge_context=knowledge_context,
                 personal_style=personal_style,
                 workspace_memory=workspace_memory_text,
+                attachments=provider_attachments,
             )
         except Exception:
             await record_llm_call(
