@@ -2,6 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Where a CompetitorIntelligence/CompetitorSourceEvidence's underlying text
+# actually came from - see app/services/competitor_intelligence.py. Kept as
+# domain vocabulary (not service-private) because both the Telegram card
+# (app/handlers/competitors.py) and the Web chat context
+# (app/web_api.py._competitor_context) need to render a different, honest
+# framing depending on which one it is - neither may ever present
+# DATA_ORIGIN_RADAR_SIGNAL data as if it came from the competitor's own site.
+DATA_ORIGIN_DIRECT_FETCH = "direct_fetch"
+DATA_ORIGIN_RADAR_SIGNAL = "radar_signal"
+
 
 @dataclass(frozen=True)
 class CompetitorSourceEvidence:
@@ -12,6 +22,10 @@ class CompetitorSourceEvidence:
     freshness: str | None
     summary: str
     key_facts: tuple[str, ...]
+    # Default preserves positional/keyword construction in existing code and
+    # tests (see tests/test_ta_affiliation_isolation.py's _fake_intelligence) -
+    # every pre-existing call site meant a direct site fetch.
+    origin: str = DATA_ORIGIN_DIRECT_FETCH
 
 
 @dataclass(frozen=True)
@@ -44,3 +58,8 @@ class CompetitorIntelligence:
     fresh_signals: tuple[str, ...]
     sources: tuple[CompetitorSourceEvidence, ...]
     opportunities: tuple[ContentOpportunity, ...]
+    # Same default-for-backward-compat rule as CompetitorSourceEvidence.origin
+    # above - summarizes the whole snapshot's provenance in one place so
+    # callers don't have to inspect every source individually to decide how
+    # to frame the result to the user.
+    data_origin: str = DATA_ORIGIN_DIRECT_FETCH

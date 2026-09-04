@@ -414,3 +414,33 @@ def test_only_current_web_workspace_competitors_are_returned(api) -> None:
 
     labels = [item["label"] for item in response.json()["competitors"]]
     assert labels == ["Mine"]
+
+
+# ── _competitor_context(): the LLM prompt preamble must be honest about
+# where the evidence actually came from (see the Radar-signal fallback in
+# app.services.competitor_intelligence.analyze) ─────────────────────────────
+
+def test_competitor_context_preamble_is_unchanged_for_direct_fetch(api) -> None:
+    _client, web_api, _ = api
+    intelligence = _full_intelligence(1, "2026-01-01T00:00:00+00:00")
+
+    context = web_api._competitor_context(intelligence)
+
+    assert "Данные получены из публичных источников конкурента." in context
+    assert "Radar" not in context
+
+
+def test_competitor_context_preamble_flags_radar_signal_fallback(api) -> None:
+    from app.domain.competitor_intelligence import DATA_ORIGIN_RADAR_SIGNAL
+    from dataclasses import replace
+
+    _client, web_api, _ = api
+    intelligence = replace(
+        _full_intelligence(1, "2026-01-01T00:00:00+00:00"),
+        data_origin=DATA_ORIGIN_RADAR_SIGNAL,
+    )
+
+    context = web_api._competitor_context(intelligence)
+
+    assert "не данные с его" in context or "НЕ данные с его" in context
+    assert "Данные получены из публичных источников конкурента." not in context

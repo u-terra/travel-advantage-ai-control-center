@@ -18,6 +18,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from app.domain.competitor_discovery import CandidateClassification, CandidateStatus
+from app.domain.competitor_intelligence import DATA_ORIGIN_RADAR_SIGNAL
 from app.domain.competitors import Competitor
 from app.domain.partners import WorkspaceContext
 from app.keyboards import (
@@ -375,6 +376,7 @@ async def _refresh_competitor(
     workspace_context: WorkspaceContext | None, provider: LLMProvider,
     knowledge_service: KnowledgeService, partner_repository: PartnerRepository,
     usage_ledger_repository: UsageLedgerRepository | None = None,
+    workspace_signal_repository: WorkspaceSignalRepository | None = None,
 ) -> None:
     competitor = await _competitor_for_callback(callback, prefix, repository, workspace_context)
     if competitor is None or callback.message is None or workspace_context is None:
@@ -389,6 +391,7 @@ async def _refresh_competitor(
     try:
         intelligence = await CompetitorIntelligenceService(
             provider, knowledge_service, usage_ledger_repository=usage_ledger_repository,
+            workspace_signal_repository=workspace_signal_repository,
         ).analyze(competitor, ta_affiliated=ta_affiliated)
     except CompetitorIntelligenceUnavailable as exc:
         await callback.message.answer(f"Не удалось обновить анализ: {exc}")
@@ -404,22 +407,24 @@ async def _refresh_competitor(
 async def analyze_competitor(callback: CallbackQuery, competitor_repository: CompetitorRepository,
     workspace_context: WorkspaceContext | None, llm_provider: LLMProvider,
     knowledge_service: KnowledgeService, partner_repository: PartnerRepository,
-    usage_ledger_repository: UsageLedgerRepository | None = None) -> None:
+    usage_ledger_repository: UsageLedgerRepository | None = None,
+    workspace_signal_repository: WorkspaceSignalRepository | None = None) -> None:
     await callback.answer()
     await _refresh_competitor(callback, COMPETITOR_ANALYZE_PREFIX, competitor_repository,
         workspace_context, llm_provider, knowledge_service, partner_repository,
-        usage_ledger_repository)
+        usage_ledger_repository, workspace_signal_repository)
 
 
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_REFRESH_PREFIX))
 async def refresh_competitor(callback: CallbackQuery, competitor_repository: CompetitorRepository,
     workspace_context: WorkspaceContext | None, llm_provider: LLMProvider,
     knowledge_service: KnowledgeService, partner_repository: PartnerRepository,
-    usage_ledger_repository: UsageLedgerRepository | None = None) -> None:
+    usage_ledger_repository: UsageLedgerRepository | None = None,
+    workspace_signal_repository: WorkspaceSignalRepository | None = None) -> None:
     await callback.answer()
     await _refresh_competitor(callback, COMPETITOR_REFRESH_PREFIX, competitor_repository,
         workspace_context, llm_provider, knowledge_service, partner_repository,
-        usage_ledger_repository)
+        usage_ledger_repository, workspace_signal_repository)
 
 
 async def _snapshot(callback: CallbackQuery, prefix: str, repository: CompetitorRepository,
@@ -514,6 +519,15 @@ def _render_analysis(data) -> str:
     def section(title, values):
         return "" if not values else "\n\n" + title + "\n" + "\n".join(f"• {x}" for x in values)
     text = f"🔎 Анализ: {data.competitor_label}"
+    if getattr(data, "data_origin", None) == DATA_ORIGIN_RADAR_SIGNAL:
+        # Step 4: never let this read like data from the competitor's own
+        # site - the per-source line below repeats the marker, this is the
+        # headline version nobody can miss.
+        text += (
+            "\n\n⚠️ Сайт конкурента сейчас прочитать не удалось. Анализ ниже "
+            "построен на релевантных свежих публичных упоминаниях (Radar), "
+            "а не на данных с его собственного сайта."
+        )
     text += section("Позиционирование", data.positioning)
     text += section("Продукты и направления", (*data.products, *data.destinations_and_categories))
     text += section("Акции и механики", (*data.promotions, *data.loyalty_mechanics))
@@ -521,7 +535,11 @@ def _render_analysis(data) -> str:
     text += section("Сильные стороны", data.strengths)
     text += section("Travel Advantage — только verified KB", data.travel_advantage_comparison)
     text += "\n\nИсточники / provenance\n" + "\n".join(
-        f"• {s.title} — {s.final_url} (обнаружено {s.discovered_at[:10]})" for s in data.sources
+        f"• {'📡 Radar-сигнал: ' if s.origin == DATA_ORIGIN_RADAR_SIGNAL else ''}"
+        f"{s.title} — {s.final_url} "
+        f"({'сигнал от' if s.origin == DATA_ORIGIN_RADAR_SIGNAL else 'обнаружено'} "
+        f"{(s.freshness or s.discovered_at)[:10]})"
+        for s in data.sources
     )
     return text[:3900]
 

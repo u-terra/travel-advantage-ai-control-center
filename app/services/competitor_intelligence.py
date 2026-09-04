@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from app.domain.competitor_discovery import canonical_domain
 from app.domain.competitor_intelligence import (
+    DATA_ORIGIN_DIRECT_FETCH,
+    DATA_ORIGIN_RADAR_SIGNAL,
     CompetitorIntelligence,
     CompetitorSourceEvidence,
     ContentOpportunity,
@@ -15,6 +18,10 @@ from app.domain.competitors import Competitor
 from app.domain.usage import UsageStatus
 from app.planner.fetch import FetchedPublicSource, PublicSourceFetchError, fetch_public_source_sync
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
+from app.repositories.workspace_signal_repository import (
+    WorkspaceSignalRecord,
+    WorkspaceSignalRepository,
+)
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
 from app.services.llm.models import SourceAnalysisPayload
@@ -22,6 +29,19 @@ from app.services.usage_recorder import record_llm_call
 
 _MAX_SOURCES = 5
 _MAX_OPPORTUNITIES = 5
+# Radar-signal fallback (used only when the competitor's own site can't be
+# fetched at all - see CompetitorIntelligenceService.analyze()): deliberately
+# smaller than _MAX_SOURCES and a stricter freshness window than the general
+# Lead Radar UI (app/services/lead_radar.py's _FRESH_DAYS=30 is the same
+# number, kept in sync intentionally - "fresh" means the same thing
+# everywhere in this product) - a handful of genuinely matching, genuinely
+# recent mentions, not a bulk dump of tangential travel news.
+_MAX_SIGNAL_FALLBACK_SOURCES = 3
+_SIGNAL_FRESH_DAYS = 30
+# A label shorter than this is too generic to safely substring/word-match
+# against arbitrary signal text (see _relevant_recent_signals) - domain
+# matching still applies regardless of label length.
+_MIN_LABEL_MATCH_LENGTH = 3
 _OPPORTUNITY_CATEGORIES = (
     ("AI и технологии в travel", (" ai ", "chatgpt", "artificial intelligence", "technology", "digital", "biometric", "esim", "app", "интеллект", "нейросет")),
     ("travel trends", ("trend", "traveler", "traveller", "tourism", "booking data", "тренд")),
@@ -106,11 +126,17 @@ class CompetitorIntelligenceService:
         *,
         fetcher: Callable[[str], FetchedPublicSource] = fetch_public_source_sync,
         usage_ledger_repository: UsageLedgerRepository | None = None,
+        workspace_signal_repository: WorkspaceSignalRepository | None = None,
     ) -> None:
         self._provider = provider
         self._knowledge = knowledge_service
         self._fetcher = fetcher
         self._usage_ledger = usage_ledger_repository
+        # Optional/default-None, same convention as usage_ledger_repository
+        # above - existing callers/tests that don't pass this are entirely
+        # unaffected (no signal fallback is attempted, same as before this
+        # feature existed). See _relevant_recent_signals().
+        self._workspace_signal_repository = workspace_signal_repository
 
     async def analyze(
         self, competitor: Competitor, *, ta_affiliated: bool,
@@ -130,8 +156,49 @@ class CompetitorIntelligenceService:
                 fetched.append(source)
             if len(fetched) == _MAX_SOURCES:
                 break
+
+        data_origin = DATA_ORIGIN_DIRECT_FETCH
+        # signal_dates carries each fallback source's REAL Radar date
+        # (record.raw_created_at), keyed by the same final_url the source
+        # loop below groups on - so evidence/fresh_signals can report the
+        # actual signal date instead of _freshness()'s in-text date guess,
+        # which rarely finds anything in a short Radar title/summary.
+        signal_dates: dict[str, str] = {}
         if not fetched:
-            raise CompetitorIntelligenceUnavailable("Не удалось прочитать публичные источники.")
+            # Step 2/3 of the fallback order: the competitor's own site
+            # could not be read at all - before giving up, look for
+            # genuinely matching, genuinely recent Radar signals already
+            # visible to THIS workspace (see _relevant_recent_signals -
+            # workspace isolation is inherited from
+            # WorkspaceSignalRepository.list_for_workspace, not
+            # reimplemented here). Never attempted when the direct fetch
+            # already produced usable sources - existing behaviour for a
+            # readable site is completely unchanged.
+            matched_signals = await self._relevant_recent_signals(competitor)
+            if matched_signals:
+                # Keyed by the same final_url computation
+                # _sources_from_signals() uses, NOT by zipping positionally
+                # with `fetched` - _sources_from_signals() can drop/dedupe
+                # records, which would silently misalign a positional zip.
+                signal_dates = {
+                    (signal.item_url or f"radar-signal:{signal.interpretation_id}"):
+                        signal.raw_created_at
+                    for signal in matched_signals
+                }
+                fetched = _sources_from_signals(matched_signals)
+                data_origin = DATA_ORIGIN_RADAR_SIGNAL
+            if not fetched:
+                # Step 5: neither a readable direct source nor a relevant
+                # recent signal exists - honest, precise refusal instead of
+                # a vague "couldn't read sources" message. Callers (Telegram:
+                # app/handlers/competitors.py, Web: app/web_api.py) surface
+                # this text as-is; the Web chat path folds it into the LLM's
+                # context together with an explicit instruction not to pass
+                # off general model knowledge as fresh data (step 6).
+                raise CompetitorIntelligenceUnavailable(
+                    "Свежие источники по этому конкуренту найти не удалось, "
+                    "поэтому анализ основан на доступных устойчивых данных."
+                )
 
         evidence: list[CompetitorSourceEvidence] = []
         analyses = []
@@ -157,9 +224,15 @@ class CompetitorIntelligenceService:
                 url=source.url,
                 final_url=source.final_url,
                 discovered_at=discovered_at,
-                freshness=_freshness(source.text),
+                freshness=_source_freshness(source, signal_dates),
                 summary=analysis.summary,
                 key_facts=analysis.key_facts,
+                # Step 4: every evidence entry is explicitly tagged with
+                # where its text actually came from - never silently
+                # presented as data from the competitor's own site when it
+                # is not (see app.domain.competitor_intelligence's
+                # DATA_ORIGIN_* docstring for who reads this).
+                origin=data_origin,
             ))
         if not analyses:
             raise CompetitorIntelligenceUnavailable("Источники прочитаны, но анализ недоступен.")
@@ -196,11 +269,44 @@ class CompetitorIntelligenceService:
             travel_advantage_comparison=ta_facts,
             fresh_signals=tuple(
                 f"{source.title}: {analysis.summary}"
-                for source, analysis in analyses if _freshness(source.text)
+                for source, analysis in analyses
+                if _source_freshness(source, signal_dates)
             )[:5],
             sources=tuple(evidence),
             opportunities=opportunities,
+            data_origin=data_origin,
         )
+
+    async def _relevant_recent_signals(
+        self, competitor: Competitor,
+    ) -> list[WorkspaceSignalRecord]:
+        """Genuinely matching, genuinely recent Radar signals already
+        visible to this workspace - never a bulk dump of unrelated travel
+        news (see _signal_matches_competitor). Never raises: a Radar/DB
+        hiccup here must not break the whole competitor-analysis flow, it
+        just means no fallback evidence is available (falls through to the
+        precise refusal in analyze())."""
+        if self._workspace_signal_repository is None:
+            return []
+        try:
+            records = await self._workspace_signal_repository.list_for_workspace(
+                competitor.workspace_id, limit=200,
+            )
+        except Exception:
+            return []
+
+        domain = canonical_domain(competitor.url)
+        label = competitor.label.strip()
+        label_pattern = (
+            _label_regex(label) if len(label) >= _MIN_LABEL_MATCH_LENGTH else None
+        )
+        matched = [
+            record for record in records
+            if _signal_matches_competitor(record, domain=domain, label_pattern=label_pattern)
+            and _signal_is_recent(record.raw_created_at)
+        ]
+        matched.sort(key=lambda record: record.raw_created_at, reverse=True)
+        return matched[:_MAX_SIGNAL_FALLBACK_SOURCES]
 
 
 def _candidate_urls(url: str) -> tuple[str, ...]:
@@ -224,6 +330,78 @@ def _candidate_urls(url: str) -> tuple[str, ...]:
 def _freshness(text: str) -> str | None:
     match = _DATE_RE.search(text)
     return match.group(0) if match else None
+
+
+def _source_freshness(source: FetchedPublicSource, signal_dates: dict[str, str]) -> str | None:
+    """Prefers a Radar signal's real recorded date (known, exact) over
+    _freshness()'s in-text date guess, which rarely finds anything in a
+    short Radar title/summary - used identically for a source's own
+    evidence.freshness and for the fresh_signals summary list, so both stay
+    consistent about what counts as fresh."""
+    real_date = signal_dates.get(source.final_url)
+    if real_date:
+        return real_date[:10]
+    return _freshness(source.text)
+
+
+def _label_regex(label: str) -> re.Pattern[str] | None:
+    escaped = re.escape(label)
+    return re.compile(rf"\b{escaped}\b", re.IGNORECASE) if escaped else None
+
+
+def _signal_matches_competitor(
+    record: WorkspaceSignalRecord, *, domain: str, label_pattern: re.Pattern[str] | None,
+) -> bool:
+    """Genuinely matching, not "any travel news": either the signal's own
+    URL resolves to the competitor's canonical domain, or the competitor's
+    label appears as a whole word in the signal's title/summary/source
+    name. A short/generic label (see _MIN_LABEL_MATCH_LENGTH) never matches
+    by text alone - only by domain."""
+    if domain and canonical_domain(record.item_url) == domain:
+        return True
+    if label_pattern is None:
+        return False
+    haystack = f"{record.item_title} {record.item_summary} {record.source_name}"
+    return bool(label_pattern.search(haystack))
+
+
+def _signal_is_recent(raw_created_at: str, *, days: int = _SIGNAL_FRESH_DAYS) -> bool:
+    raw = (raw_created_at or "").strip()
+    if not raw:
+        return False
+    try:
+        created_date = date.fromisoformat(raw[:10])
+    except ValueError:
+        return False
+    return created_date >= date.today() - timedelta(days=days)
+
+
+def _sources_from_signals(records: list[WorkspaceSignalRecord]) -> list[FetchedPublicSource]:
+    """Reshapes matched Radar signals into the same FetchedPublicSource
+    shape a direct site fetch produces, so the rest of analyze() (LLM
+    analysis, fact-matching, opportunity extraction) needs no separate code
+    path for the fallback case - this IS the "reuse existing
+    infrastructure" the fallback is built on."""
+    sources: list[FetchedPublicSource] = []
+    seen: set[str] = set()
+    for record in records:
+        final_url = record.item_url or f"radar-signal:{record.interpretation_id}"
+        if final_url in seen:
+            continue
+        text = "\n".join(
+            part for part in (record.item_title, record.item_summary) if part
+        ).strip()
+        if not text:
+            continue
+        seen.add(final_url)
+        sources.append(FetchedPublicSource(
+            url=record.item_url or final_url,
+            final_url=final_url,
+            title=record.item_title or record.source_name or "Radar-сигнал",
+            text=text,
+            content_type="text/plain",
+        ))
+    return sources
 
 
 def _fallback_analysis(source: FetchedPublicSource) -> SourceAnalysisPayload:

@@ -21,6 +21,7 @@ from app.domain.business_profiles import (
     StaleBusinessProfileError,
 )
 from app.domain.competitor_discovery import canonical_domain
+from app.domain.competitor_intelligence import DATA_ORIGIN_RADAR_SIGNAL
 from app.domain.usage import UsageStatus
 from app.domain.web_attachment import WebAttachment
 from app.domain.web_auth import WebPrincipal
@@ -179,6 +180,7 @@ competitor_intelligence_service = CompetitorIntelligenceService(
     competitor_llm_provider,
     knowledge_service,
     usage_ledger_repository=usage_ledger_repository,
+    workspace_signal_repository=workspace_signal_repository,
 )
 
 
@@ -693,9 +695,24 @@ def _competitor_context(intelligence) -> str:
     if len(payload) > 24000:
         payload = payload[:24000] + "\n... [контекст сокращён]"
 
+    # Step 4/6: the preamble must never claim site data when the underlying
+    # evidence is actually a Radar-signal fallback (see
+    # app.services.competitor_intelligence.analyze) - the LLM is instructed
+    # accordingly so it can't present a third-party mention as if it came
+    # from the competitor's own site.
+    if getattr(intelligence, "data_origin", None) == DATA_ORIGIN_RADAR_SIGNAL:
+        preamble = (
+            "Сайт конкурента прочитать не удалось. Ниже - релевантные свежие "
+            "публичные упоминания конкурента (Radar), НЕ данные с его "
+            "собственного сайта. Явно сообщи пользователю, что это сторонние "
+            "упоминания, а не анализ сайта конкурента."
+        )
+    else:
+        preamble = "Данные получены из публичных источников конкурента."
+
     return (
         "=== COMPETITOR INTELLIGENCE ===\n"
-        "Данные получены из публичных источников конкурента.\n"
+        + preamble + "\n"
         + payload
     )
 
