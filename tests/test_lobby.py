@@ -9,6 +9,8 @@ from app.domain.partners import WorkspaceContext
 from app.handlers.lobby import (
     BROWSE_INTRO_TEXT,
     PAYMENT_COMING_SOON_TEXT,
+    PAYMENT_RENEW_TEXT,
+    WEB_BILLING_URL,
     WELCOME_EXPIRED_TEXT,
     WELCOME_NEW_TEXT,
     WHATS_INCLUDED_TEXT,
@@ -113,14 +115,34 @@ def test_browse_back_returns_to_intro() -> None:
 
 
 def test_payment_stub_buttons_do_not_take_repository_param() -> None:
+    """No repository/LLM/billing-secret dependency - only workspace_context
+    (already resolved upstream by WorkspaceContextMiddleware), used purely
+    to decide which of two static texts to show."""
     import inspect
     params = inspect.signature(on_payment_stub_pressed).parameters
-    assert set(params) == {"message"}
+    assert set(params) == {"message", "workspace_context"}
 
+
+def test_new_visitor_without_workspace_sees_the_coming_soon_stub() -> None:
+    """No workspace_context (brand-new visitor, никакого workspace ещё
+    нет) - ничего не активирует, workspace не создаёт, прежняя заглушка."""
     message = _Message()
-    _run(on_payment_stub_pressed(message))
+    _run(on_payment_stub_pressed(message, workspace_context=None))
     assert message.answers[0][0] == PAYMENT_COMING_SOON_TEXT
     assert "скоро" in message.answers[0][0].lower()
+
+
+def test_existing_workspace_with_closed_access_sees_the_web_billing_link() -> None:
+    """workspace_context present (expired/past_due/suspended existing
+    workspace) - a concrete, safe action: a link to web billing, no
+    workspace_id/token in the URL, no new auth flow."""
+    message = _Message()
+    _run(on_payment_stub_pressed(message, workspace_context=_ctx()))
+    text = message.answers[0][0]
+    assert text == PAYMENT_RENEW_TEXT
+    assert WEB_BILLING_URL in text
+    assert "workspace" not in WEB_BILLING_URL
+    assert str(_ctx().workspace_id) not in WEB_BILLING_URL
 
 
 def test_whats_included_has_no_price_and_mentions_14_days_then_month() -> None:

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Оплата не прошла — ORCHESTRAVEL</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+    --danger: #c94b4b;
+    --danger-soft: rgba(201, 75, 75, .1);
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--sidebar-grad);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+.shell { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+
+.card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border-radius: 16px;
+    padding: 32px 28px 28px;
+    box-shadow: 0 20px 60px rgba(5, 10, 20, .35);
+    text-align: center;
+}
+
+.icon { font-size: 40px; margin-bottom: 10px; }
+h1 { font-size: 19px; margin: 0 0 10px; }
+
+.state-box {
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-bottom: 18px;
+}
+
+p { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin: 0 0 20px; }
+
+.actions { display: flex; flex-direction: column; gap: 10px; }
+
+.btn {
+    display: block;
+    width: 100%;
+    border: 0;
+    border-radius: 10px;
+    padding: 11px 16px;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    text-decoration: none;
+    font-family: inherit;
+}
+.btn-primary {
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: white;
+}
+.btn-secondary {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <div class="card">
+        <div class="icon">✕</div>
+        <h1>Платёж не прошёл</h1>
+        <div class="state-box">Оплата не была завершена</div>
+        <p>
+            Подписка не изменилась. Это могло произойти из-за отмены платежа
+            или сбоя на стороне банка — попробуйте ещё раз.
+        </p>
+        <div class="actions">
+            <a class="btn btn-primary" href="/billing">Повторить оплату</a>
+            <a class="btn btn-secondary" href="/">Вернуться в кабинет</a>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>

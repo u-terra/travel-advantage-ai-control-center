@@ -11,7 +11,7 @@ from pathlib import Path
 
 import markdown
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.chat_provider import AttachmentInput, ChatConfig, OpenAIChatProvider
@@ -38,6 +38,7 @@ from app.repositories.partner_repository import (
     TooManyUserExamplesError,
     business_context_to_dict,
 )
+from app.repositories.payment_order_repository import PaymentOrderRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.web_attachment_repository import WebAttachmentRepository
@@ -62,6 +63,7 @@ from app.services.attachment_validation import (
     sanitize_display_filename,
     validate_attachment,
 )
+from app.services.billing_service import BillingNotConfigured, BillingService
 from app.services.business_profile_context import (
     BusinessProfileAccessError,
     BusinessProfileService,
@@ -76,6 +78,7 @@ from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
 from app.services.lead_radar import LeadRadarConfig, build_workspace_signals, category_label
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
+from app.services.robokassa import RoboKassaConfig
 from app.services.usage_recorder import record_llm_call
 from app.services.web_auth_passwords import (
     WeakPasswordError,
@@ -120,6 +123,26 @@ web_auth_repository = WebAuthRepository(settings.journal_db_path)
 # subscription_repository.resolve_access_state() with no channel-specific
 # logic in between.
 subscription_repository = SubscriptionRepository(settings.journal_db_path)
+
+# RoboKassa billing - see app.services.robokassa / app.services.billing_service.
+# robokassa_config.is_configured is False (billing endpoints answer "not
+# configured", nothing crashes) whenever ROBOKASSA_* env vars are missing -
+# expected in dev/CI, where no real RoboKassa secret should ever exist.
+payment_order_repository = PaymentOrderRepository(settings.journal_db_path)
+robokassa_config = RoboKassaConfig(
+    merchant_login=settings.robokassa_merchant_login,
+    password1=settings.robokassa_password1,
+    password2=settings.robokassa_password2,
+    is_test=settings.robokassa_is_test,
+    standard_price_rub=settings.robokassa_standard_price_rub,
+    subscription_days=settings.orchestravel_subscription_days,
+    public_base_url=settings.orchestravel_public_base_url,
+)
+billing_service = BillingService(
+    config=robokassa_config,
+    payment_order_repository=payment_order_repository,
+    subscription_repository=subscription_repository,
+)
 
 # Orphan pending attachments (uploaded, never sent) older than this are
 # reaped on startup - see _reap_orphan_attachments().
@@ -499,6 +522,120 @@ async def get_me(principal: WebPrincipal = Depends(get_current_principal)):
     }
 
 
+# ── billing (RoboKassa) ──────────────────────────────────────────────────
+#
+# Deliberately NOT gated by get_active_principal/require_csrf_and_subscription
+# anywhere in this section - an expired/past_due/suspended workspace is
+# EXACTLY who needs to reach these endpoints to pay. Only
+# get_current_principal/require_csrf (auth + membership, no subscription
+# check) are used. workspace_id always comes from principal, never from the
+# request body - a client can never create a payment for, or ask about, any
+# workspace but its own.
+
+
+@app.get("/api/billing/status")
+async def billing_status(principal: WebPrincipal = Depends(get_current_principal)):
+    subscription = await subscription_repository.get_for_workspace(principal.workspace_id)
+    access_state = await subscription_repository.resolve_access_state(principal.workspace_id)
+    return {
+        "access_state": access_state,
+        "access_granted": is_access_granted(access_state),
+        "status": subscription.status.value if subscription is not None else None,
+        "plan": subscription.plan.value if subscription is not None else None,
+        "paid_until": subscription.paid_until if subscription is not None else None,
+        "trial_until": subscription.trial_until if subscription is not None else None,
+        "billing_configured": robokassa_config.is_configured,
+        "is_test": robokassa_config.is_test,
+        "standard_price_rub": (
+            str(robokassa_config.standard_price_rub)
+            if robokassa_config.standard_price_rub is not None else None
+        ),
+        "subscription_days": robokassa_config.subscription_days,
+    }
+
+
+@app.post("/api/billing/create-payment")
+async def create_payment_endpoint(principal: WebPrincipal = Depends(require_csrf)):
+    """amount/plan/description come only from server-side RoboKassaConfig
+    (see BillingService.create_payment) - the request body is intentionally
+    not even parsed, there is nothing for a client to influence beyond
+    "pay for MY workspace, on the one plan that exists"."""
+    if not robokassa_config.is_configured:
+        return {"error": "Оплата временно недоступна. Обратитесь к администратору."}
+    try:
+        result = await billing_service.create_payment(principal.workspace_id)
+    except BillingNotConfigured:
+        return {"error": "Оплата временно недоступна. Обратитесь к администратору."}
+    except Exception:
+        log.exception("billing: create_payment failed for workspace_id=%s", principal.workspace_id)
+        return {"error": "Не удалось создать платёж. Попробуйте ещё раз."}
+    return {
+        "order_id": result.order.id,
+        "payment_url": result.payment_url,
+        "is_test": result.is_test,
+        "amount": result.order.amount,
+        "currency": result.order.currency,
+    }
+
+
+@app.get("/api/billing/orders/{order_id}")
+async def get_payment_order(
+    order_id: int, principal: WebPrincipal = Depends(get_current_principal),
+):
+    """Backs /billing/success's polling - SuccessURL is not the source of
+    truth, this endpoint is. order_id (RoboKassa's InvId) comes from the
+    browser's own query string, but the response only ever reveals
+    anything when the order's workspace_id matches the session's own
+    workspace_id - a forged/guessed order_id belonging to another
+    workspace returns the same generic "not found" as one that doesn't
+    exist at all."""
+    order = await payment_order_repository.get_order(order_id)
+    if order is None or order.workspace_id != principal.workspace_id:
+        return {"error": "Заказ не найден.", "order": None}
+    return {
+        "order": {
+            "id": order.id,
+            "status": order.status.value,
+            "plan": order.plan,
+            "amount": order.amount,
+            "currency": order.currency,
+            "paid_at": order.paid_at,
+        }
+    }
+
+
+@app.post("/api/billing/robokassa/result")
+async def robokassa_result(request: Request):
+    """RoboKassa's server-to-server ResultURL - no web session, no CSRF
+    (RoboKassa's server can't present either): the ONLY trust boundary is
+    verify_result_signature() inside BillingService.process_result_callback,
+    checked against ROBOKASSA_PASSWORD2. Configure this exact path as the
+    ResultURL in the RoboKassa merchant cabinet - see the deployment report
+    for the full URL. Must return exactly "OK{InvId}" on success (RoboKassa
+    retries otherwise) and never leak why a request was rejected."""
+    form = await request.form()
+    out_sum = str(form.get("OutSum", "")).strip()
+    inv_id_raw = str(form.get("InvId", "")).strip()
+    signature = str(form.get("SignatureValue", "")).strip()
+
+    try:
+        inv_id = int(inv_id_raw)
+    except ValueError:
+        log.warning("robokassa result: non-numeric InvId in callback")
+        return PlainTextResponse("bad request", status_code=400)
+
+    outcome = await billing_service.process_result_callback(
+        out_sum=out_sum, inv_id=inv_id, signature=signature,
+    )
+    if not outcome.ok:
+        # outcome.reason is a neutral code (see ResultOutcome), never the
+        # raw signature/passwords - safe to log, never returned in the
+        # response body.
+        log.warning("robokassa result: rejected InvId=%s reason=%s", inv_id, outcome.reason)
+        return PlainTextResponse("bad request", status_code=400)
+    return PlainTextResponse(f"OK{inv_id}")
+
+
 class ChatRequest(BaseModel):
     message: str = ""
     conversation_id: int
@@ -520,6 +657,7 @@ async def startup() -> None:
     await web_attachment_repository.init()
     await web_auth_repository.init()
     await subscription_repository.init()
+    await payment_order_repository.init()
     # legacy_owner_workspace_id=None: the one-time legacy-Radar backfill is
     # already owned by the bot process (app/main.py) against the same shared
     # journal DB - this just ensures the schema exists, it never re-runs
@@ -2096,4 +2234,47 @@ async def subscription_inactive_page(request: Request):
         return RedirectResponse(url="/", status_code=303)
     return Path(
         "app/templates/subscription_inactive.html"
+    ).read_text(encoding="utf-8")
+
+
+@app.get("/billing", response_class=HTMLResponse)
+async def billing_page(request: Request):
+    """The "Подписка" page - reachable with ANY subscription state,
+    including expired/past_due/suspended (unlike "/" and "/onboarding")
+    - this is exactly where a user in that state needs to land to pay.
+    Only a valid session is required, never a subscription check."""
+    ctx = await _valid_session_context(request)
+    if ctx is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return Path(
+        "app/templates/billing.html"
+    ).read_text(encoding="utf-8")
+
+
+@app.get("/billing/success", response_class=HTMLResponse)
+async def billing_success_page(request: Request):
+    """RoboKassa's SuccessURL redirect target - NOT the source of truth
+    (see POST /api/billing/robokassa/result's docstring). This page never
+    activates anything; its script calls GET /api/billing/orders/{id} to
+    read the CURRENT, already-server-confirmed state, scoped to the
+    logged-in session's own workspace."""
+    ctx = await _valid_session_context(request)
+    if ctx is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return Path(
+        "app/templates/billing_success.html"
+    ).read_text(encoding="utf-8")
+
+
+@app.get("/billing/fail", response_class=HTMLResponse)
+async def billing_fail_page(request: Request):
+    """RoboKassa's FailURL redirect target - purely informational, never
+    mutates any order/subscription state. The base RoboKassa scheme's Fail
+    redirect isn't reliably signed, so nothing from this request is ever
+    trusted for a write - see the report's security notes."""
+    ctx = await _valid_session_context(request)
+    if ctx is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return Path(
+        "app/templates/billing_fail.html"
     ).read_text(encoding="utf-8")

@@ -18,6 +18,7 @@ from aiogram import F, Router
 from aiogram.filters import MagicData
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 
+from app.domain.partners import WorkspaceContext
 from app.keyboards import (
     BROWSE_BACK,
     BROWSE_SECTION_PREFIX,
@@ -64,10 +65,29 @@ WORKSPACE_AMBIGUOUS_TEXT = (
 )
 
 # Явная, изолированная заглушка: НИКАКОЙ реальной оплаты, НИКАКОГО workspace.
+# Только для нового посетителя (workspace_context отсутствует) - для него
+# ещё нет workspace, к которому можно привязать оплату.
 PAYMENT_COMING_SOON_TEXT = (
     "Подключение скоро будет доступно.\n\n"
     "Сейчас вы можете познакомиться с возможностями Оркестратора — кнопка "
     "«🧭 Осмотреться»."
+)
+
+# RoboKassa billing (см. app/web_api.py) - оплата и продление подписки живут
+# ТОЛЬКО в web-кабинете. Ссылка сознательно НЕ содержит workspace_id/токен:
+# workspace определяется server-side из web-сессии (email+пароль,
+# app.web_api.get_current_principal), тот же принцип, что и у любого
+# billing-эндпоинта. Отдельный signed-token flow для прямого перехода из
+# Telegram без повторного логина - см. отчёт, следующий этап, не
+# реализован сейчас.
+WEB_BILLING_URL = "https://app.orchestravel.ru/billing"
+
+PAYMENT_RENEW_TEXT = (
+    "Оплатить или продлить подписку можно в веб-кабинете ORCHESTRAVEL:\n"
+    f"{WEB_BILLING_URL}\n\n"
+    "Войдите под своим email и паролем от веб-кабинета — рабочее "
+    "пространство определится автоматически, оплата откроет доступ сразу "
+    "и здесь, и в веб-кабинете."
 )
 
 WHATS_INCLUDED_TEXT = (
@@ -243,8 +263,18 @@ async def on_browse_back(callback: CallbackQuery) -> None:
 @router.message(F.text.in_({
     BTN_LOBBY_TRY_14_DAYS, BTN_LOBBY_SUBSCRIBE_MONTH, BTN_LOBBY_EXTEND_ACCESS,
 }))
-async def on_payment_stub_pressed(message: Message) -> None:
-    # Явная, изолированная заглушка: ничего не активирует, workspace не создаёт.
+async def on_payment_stub_pressed(
+    message: Message, workspace_context: WorkspaceContext | None = None,
+) -> None:
+    """workspace_context присутствует -> это существующий workspace с
+    закрытым доступом (expired/past_due/suspended), для него уже есть
+    конкретное, безопасное действие: ссылка на web billing. Его
+    отсутствие -> совсем новый посетитель без workspace - для него оплата
+    пока действительно недоступна (ничего не активирует, workspace не
+    создаёт), поэтому остаётся прежняя заглушка."""
+    if workspace_context is not None:
+        await message.answer(PAYMENT_RENEW_TEXT, disable_web_page_preview=True)
+        return
     await message.answer(PAYMENT_COMING_SOON_TEXT)
 
 

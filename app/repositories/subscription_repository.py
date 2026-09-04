@@ -198,12 +198,15 @@ class SubscriptionRepository:
 
     async def mark_paid(
         self, workspace_id: int, *, external_payment_id: str, payment_provider: str,
-        paid_until: str,
+        paid_until: str, plan: SubscriptionPlan = SubscriptionPlan.STANDARD,
     ) -> Subscription | None:
         """RoboKassa integration point: call this from the verified-payment
-        callback handler once the signature/amount check has passed - see
-        the report for exactly where that handler would live. Never call
-        this from an unverified request.
+        callback handler (see app.services.billing_service.BillingService)
+        once the signature/amount check has passed. Never call this from an
+        unverified request. plan defaults to STANDARD - the only paid plan
+        this product has right now - and is written on every call
+        (including a repeat/renewal), not just the first one, so a renewal
+        can't leave a stale plan behind.
 
         Upsert, not a plain UPDATE: a workspace created after the last
         startup backfill (see init()) may not have a subscription row yet
@@ -217,13 +220,15 @@ class SubscriptionRepository:
                 "INSERT INTO workspace_subscriptions "
                 "(workspace_id, status, plan, started_at, paid_until, "
                 "external_payment_id, payment_provider, updated_at) "
-                "VALUES (?, 'active', 'beta', ?, ?, ?, ?, ?) "
+                "VALUES (?, 'active', ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(workspace_id) DO UPDATE SET "
-                "status='active', paid_until=excluded.paid_until, "
+                "status='active', plan=excluded.plan, "
+                "paid_until=excluded.paid_until, "
                 "external_payment_id=excluded.external_payment_id, "
                 "payment_provider=excluded.payment_provider, "
                 "updated_at=excluded.updated_at",
-                (workspace_id, now, paid_until, external_payment_id, payment_provider, now),
+                (workspace_id, plan.value, now, paid_until, external_payment_id,
+                 payment_provider, now),
             )
             await db.commit()
         return await self.get_for_workspace(workspace_id)

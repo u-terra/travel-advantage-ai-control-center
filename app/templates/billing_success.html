@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Оплата — ORCHESTRAVEL</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+    --ok: #1f9d55;
+    --ok-soft: rgba(31, 157, 85, .1);
+    --warn: #b4762b;
+    --warn-soft: rgba(180, 118, 43, .1);
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--sidebar-grad);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+.shell { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+
+.card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border-radius: 16px;
+    padding: 32px 28px 28px;
+    box-shadow: 0 20px 60px rgba(5, 10, 20, .35);
+    text-align: center;
+}
+
+.icon { font-size: 40px; margin-bottom: 10px; }
+h1 { font-size: 19px; margin: 0 0 10px; }
+
+.state-box {
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-bottom: 18px;
+}
+.state-processing { background: var(--warn-soft); color: var(--warn); }
+.state-confirmed { background: var(--ok-soft); color: var(--ok); }
+
+p { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin: 0 0 20px; }
+
+.btn {
+    display: block;
+    width: 100%;
+    border: 0;
+    border-radius: 10px;
+    padding: 11px 16px;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    text-decoration: none;
+    font-family: inherit;
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: white;
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <div class="card">
+        <div class="icon" id="icon">⏳</div>
+        <h1>Оплата ORCHESTRAVEL</h1>
+        <div class="state-box state-processing" id="stateBox">Проверяем статус платежа…</div>
+        <p id="stateText">
+            Это может занять несколько секунд — RoboKassa подтверждает платёж
+            на нашем сервере отдельно от этой страницы.
+        </p>
+        <a class="btn" href="/" id="continueBtn" style="display:none;">Перейти в кабинет</a>
+    </div>
+</div>
+
+<script>
+function orderIdFromQuery() {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("InvId");
+    const value = parseInt(raw, 10);
+    return Number.isInteger(value) ? value : null;
+}
+
+const orderId = orderIdFromQuery();
+const icon = document.getElementById("icon");
+const stateBox = document.getElementById("stateBox");
+const stateText = document.getElementById("stateText");
+const continueBtn = document.getElementById("continueBtn");
+
+let attempts = 0;
+
+async function checkOnce() {
+    if (orderId === null) {
+        stateBox.textContent = "Не удалось определить платёж.";
+        stateText.textContent = "Откройте раздел «Подписка» в кабинете, чтобы проверить статус.";
+        continueBtn.style.display = "block";
+        continueBtn.href = "/billing";
+        continueBtn.textContent = "Открыть «Подписка»";
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/billing/orders/${orderId}`);
+        if (response.status === 401) {
+            window.location.href = "/login";
+            return;
+        }
+        const data = await response.json();
+
+        if (data.order && data.order.status === "paid") {
+            icon.textContent = "✅";
+            stateBox.className = "state-box state-confirmed";
+            stateBox.textContent = "Оплата подтверждена";
+            stateText.textContent = "Подписка активна — и в веб-кабинете, и в Telegram.";
+            continueBtn.style.display = "block";
+            return;
+        }
+    } catch (_) {
+        // network hiccup - keep polling below.
+    }
+
+    attempts += 1;
+    if (attempts >= 10) {
+        stateBox.textContent = "Платёж обрабатывается, обновите через несколько секунд.";
+        stateText.textContent = "Если статус долго не меняется, откройте «Подписка» ещё раз чуть позже.";
+        continueBtn.style.display = "block";
+        continueBtn.href = "/billing";
+        continueBtn.textContent = "Открыть «Подписка»";
+        return;
+    }
+    setTimeout(checkOnce, 2000);
+}
+
+checkOnce();
+</script>
+
+</body>
+</html>

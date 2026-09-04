@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Подписка — ORCHESTRAVEL</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+    --navy-950: #0a0f1c;
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+    --warn: #b4762b;
+    --warn-soft: rgba(180, 118, 43, .1);
+    --ok: #1f9d55;
+    --ok-soft: rgba(31, 157, 85, .1);
+    --danger: #c94b4b;
+    --danger-soft: rgba(201, 75, 75, .1);
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--sidebar-grad);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.card {
+    width: 100%;
+    max-width: 460px;
+    background: var(--card);
+    border-radius: 16px;
+    padding: 32px 28px 28px;
+    box-shadow: 0 20px 60px rgba(5, 10, 20, .35);
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    margin-bottom: 24px;
+}
+
+.brand-mark {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--teal) 0%, #3fd1c4 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 16px rgba(23, 179, 163, .35);
+}
+
+.brand-mark svg { width: 18px; height: 18px; }
+
+.brand-text .name { font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.25; }
+.brand-text .sub { font-size: 12px; color: var(--text-muted); }
+
+h1 { font-size: 19px; margin: 0 0 16px; }
+
+.test-banner {
+    display: none;
+    background: var(--warn-soft);
+    color: var(--warn);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+    margin-bottom: 16px;
+}
+.test-banner.show { display: block; }
+
+.status-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13.5px;
+}
+.status-row:last-of-type { border-bottom: none; }
+.status-row .label { color: var(--text-muted); }
+.status-row .value { font-weight: 600; text-align: right; }
+
+.badge {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 700;
+}
+.badge-ok { background: var(--ok-soft); color: var(--ok); }
+.badge-warn { background: var(--warn-soft); color: var(--warn); }
+.badge-danger { background: var(--danger-soft); color: var(--danger); }
+
+.error-box {
+    display: none;
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin: 14px 0 0;
+}
+.error-box.show { display: block; }
+
+.actions { margin-top: 22px; display: flex; flex-direction: column; gap: 10px; }
+
+.btn {
+    display: block;
+    width: 100%;
+    border: 0;
+    border-radius: 10px;
+    padding: 11px 16px;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    text-decoration: none;
+    font-family: inherit;
+}
+.btn:disabled { opacity: .6; cursor: wait; }
+
+.btn-primary {
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: white;
+    box-shadow: 0 4px 14px rgba(15, 148, 136, .28);
+}
+
+.btn-secondary {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <div class="card">
+        <div class="brand">
+            <div class="brand-mark">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2l2.6 6.6L21 11l-6.4 2.4L12 20l-2.6-6.6L3 11l6.4-2.4z"/>
+                </svg>
+            </div>
+            <div class="brand-text">
+                <div class="name">ORCHESTRAVEL</div>
+                <div class="sub">Подписка рабочего пространства</div>
+            </div>
+        </div>
+
+        <h1>Подписка</h1>
+        <div class="test-banner" id="testBanner">⚠️ Тестовый режим оплаты — реальные списания не происходят.</div>
+
+        <div id="statusRows">
+            <div class="status-row"><span class="label">Статус</span><span class="value" id="statusValue">…</span></div>
+            <div class="status-row"><span class="label">Тариф</span><span class="value" id="planValue">…</span></div>
+            <div class="status-row"><span class="label">Оплачено до</span><span class="value" id="paidUntilValue">—</span></div>
+            <div class="status-row"><span class="label">Пробный период до</span><span class="value" id="trialUntilValue">—</span></div>
+            <div class="status-row"><span class="label">Стоимость</span><span class="value" id="priceValue">…</span></div>
+        </div>
+
+        <div class="error-box" id="errorBox"></div>
+
+        <div class="actions">
+            <button type="button" class="btn btn-primary" id="payBtn">Оплатить / продлить</button>
+            <a class="btn btn-secondary" href="/">Вернуться в кабинет</a>
+        </div>
+    </div>
+</div>
+
+<script>
+const STATUS_LABELS = {
+    trial: "Пробный доступ", beta: "Бета-доступ", active: "Активна",
+    past_due: "Платёж не прошёл", expired: "Истекла", suspended: "Приостановлена",
+};
+
+function csrfToken() {
+    return document.cookie.split("; ").find((row) => row.startsWith("ta_csrf="))?.split("=")[1] || "";
+}
+
+function fmtDate(raw) {
+    if (!raw) return "—";
+    return raw.slice(0, 10);
+}
+
+function showError(text) {
+    const box = document.getElementById("errorBox");
+    box.textContent = text;
+    box.classList.add("show");
+}
+
+async function loadStatus() {
+    try {
+        const response = await fetch("/api/billing/status");
+        if (response.status === 401) {
+            window.location.href = "/login";
+            return;
+        }
+        const data = await response.json();
+
+        const badgeClass = data.access_granted ? "badge-ok"
+            : (data.status === "past_due" || data.status === "suspended" ? "badge-danger" : "badge-warn");
+        document.getElementById("statusValue").innerHTML =
+            `<span class="badge ${badgeClass}">${STATUS_LABELS[data.status] || data.status || "—"}</span>`;
+        document.getElementById("planValue").textContent = data.plan || "—";
+        document.getElementById("paidUntilValue").textContent = fmtDate(data.paid_until);
+        document.getElementById("trialUntilValue").textContent = fmtDate(data.trial_until);
+        document.getElementById("priceValue").textContent = data.standard_price_rub
+            ? `${data.standard_price_rub} ₽ / ${data.subscription_days} дн.`
+            : "не настроено";
+
+        if (data.is_test) {
+            document.getElementById("testBanner").classList.add("show");
+        }
+
+        const payBtn = document.getElementById("payBtn");
+        if (!data.billing_configured) {
+            payBtn.disabled = true;
+            payBtn.textContent = "Оплата временно недоступна";
+        }
+    } catch (_) {
+        showError("Не удалось загрузить статус подписки.");
+    }
+}
+
+document.getElementById("payBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("payBtn");
+    btn.disabled = true;
+    try {
+        const response = await fetch("/api/billing/create-payment", {
+            method: "POST",
+            headers: { "X-CSRF-Token": csrfToken() },
+        });
+        const data = await response.json();
+        if (!response.ok || data.error || !data.payment_url) {
+            showError(data.error || "Не удалось создать платёж. Попробуйте ещё раз.");
+            btn.disabled = false;
+            return;
+        }
+        window.location.href = data.payment_url;
+    } catch (_) {
+        showError("Ошибка соединения. Попробуйте ещё раз.");
+        btn.disabled = false;
+    }
+});
+
+loadStatus();
+</script>
+
+</body>
+</html>

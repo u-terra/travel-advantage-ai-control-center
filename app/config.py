@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -78,6 +79,29 @@ class Settings:
     # Invalid/missing/out-of-range falls back to
     # app.planner.cost.DEFAULT_MAX_LLM_CALLS_PER_PLANNER_RUN (4).
     planner_max_llm_calls: int
+    # RoboKassa billing (see app.services.robokassa/app.services.billing_service).
+    # Password1/Password2 never leave this Settings object except into
+    # RoboKassaConfig (built once in app.web_api) - never logged, never
+    # persisted, never returned to a client. Empty strings are a valid,
+    # expected state (billing is simply "not configured" - see
+    # RoboKassaConfig.is_configured) - this app must start and run its test
+    # suite without any real RoboKassa secret ever existing.
+    robokassa_merchant_login: str
+    robokassa_password1: str
+    robokassa_password2: str
+    # Defaults to True (test mode) when unset - "не включать реальные
+    # платежи автоматически": going live requires an explicit
+    # ROBOKASSA_IS_TEST=false in the environment, never a code change.
+    robokassa_is_test: bool
+    # None (not configured) rather than any hardcoded fallback - this
+    # product's price is never invented in code, only read from
+    # ORCHESTRAVEL_STANDARD_PRICE_RUB.
+    robokassa_standard_price_rub: Decimal | None
+    orchestravel_subscription_days: int
+    # https://app.orchestravel.ru by default (the product's real domain);
+    # overridable for local/staging so SuccessURL/FailURL never have to
+    # point at production while testing.
+    orchestravel_public_base_url: str
 
 
 def _parse_bool(raw: str | None) -> bool:
@@ -92,6 +116,37 @@ def _parse_datetime(raw: str | None) -> datetime | None:
     except ValueError:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _parse_robokassa_is_test(raw: str | None) -> bool:
+    """Defaults to TEST MODE when unset/empty/garbage - going live
+    requires an explicit, deliberate ROBOKASSA_IS_TEST=false."""
+    if raw is None:
+        return True
+    normalized = raw.strip().lower()
+    if not normalized:
+        return True
+    return normalized not in {"false", "0", "no"}
+
+
+def _parse_positive_decimal(raw: str | None) -> Decimal | None:
+    if not raw or not raw.strip():
+        return None
+    try:
+        value = Decimal(raw.strip())
+    except InvalidOperation:
+        return None
+    return value if value > 0 else None
+
+
+def _parse_positive_int(raw: str | None, *, default: int) -> int:
+    if not raw or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def load_settings() -> Settings:
@@ -158,6 +213,21 @@ def load_settings() -> Settings:
     # safe default (4), never raises at startup. See app.planner.cost.
     planner_max_llm_calls = normalize_max_llm_calls(
         os.environ.get("PLANNER_MAX_LLM_CALLS")
+    )
+
+    robokassa_merchant_login = os.environ.get("ROBOKASSA_MERCHANT_LOGIN", "").strip()
+    robokassa_password1 = os.environ.get("ROBOKASSA_PASSWORD1", "").strip()
+    robokassa_password2 = os.environ.get("ROBOKASSA_PASSWORD2", "").strip()
+    robokassa_is_test = _parse_robokassa_is_test(os.environ.get("ROBOKASSA_IS_TEST"))
+    robokassa_standard_price_rub = _parse_positive_decimal(
+        os.environ.get("ORCHESTRAVEL_STANDARD_PRICE_RUB")
+    )
+    orchestravel_subscription_days = _parse_positive_int(
+        os.environ.get("ORCHESTRAVEL_SUBSCRIPTION_DAYS"), default=30,
+    )
+    orchestravel_public_base_url = (
+        os.environ.get("ORCHESTRAVEL_PUBLIC_BASE_URL", "").strip()
+        or "https://app.orchestravel.ru"
     )
 
     if not token:
@@ -230,4 +300,11 @@ def load_settings() -> Settings:
         planner_openai_timeout_seconds=planner_openai_timeout,
         planner_allowed_telegram_user_ids=planner_allowed_telegram_user_ids,
         planner_max_llm_calls=planner_max_llm_calls,
+        robokassa_merchant_login=robokassa_merchant_login,
+        robokassa_password1=robokassa_password1,
+        robokassa_password2=robokassa_password2,
+        robokassa_is_test=robokassa_is_test,
+        robokassa_standard_price_rub=robokassa_standard_price_rub,
+        orchestravel_subscription_days=orchestravel_subscription_days,
+        orchestravel_public_base_url=orchestravel_public_base_url,
     )
