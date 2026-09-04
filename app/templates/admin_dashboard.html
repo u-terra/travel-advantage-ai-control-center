@@ -23,6 +23,16 @@ html, body { margin: 0; min-height: 100%; font-family: 'Inter','Segoe UI',-apple
 .sidebar nav a { display: block; padding: 9px 10px; border-radius: 8px; color: var(--sidebar-text); text-decoration: none; font-size: 13.5px; margin-bottom: 2px; }
 .sidebar nav a:hover { background: rgba(255,255,255,.06); color: white; }
 .sidebar nav a.active { background: var(--teal-soft); color: white; font-weight: 600; }
+.sidebar .back-to-cabinet {
+    display: block;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255,255,255,.08);
+    color: var(--sidebar-text-dim);
+    text-decoration: none;
+    font-size: 12.5px;
+}
+.sidebar .back-to-cabinet:hover { color: white; }
 .main { flex: 1; padding: 24px 28px; min-width: 0; }
 .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 10px; }
 h1 { font-size: 19px; margin: 0; }
@@ -49,6 +59,7 @@ h1 { font-size: 19px; margin: 0; }
     .sidebar { flex: none; display: flex; align-items: center; gap: 4px; overflow-x: auto; padding: 10px; }
     .sidebar .brand, .sidebar .sub { display: none; }
     .sidebar nav { display: flex; gap: 4px; }
+    .sidebar .back-to-cabinet { margin: 0; padding: 9px 10px; border-top: none; white-space: nowrap; flex: 0 0 auto; }
     .main { padding: 16px; }
 }
 </style>
@@ -60,6 +71,7 @@ h1 { font-size: 19px; margin: 0; }
         <div class="brand">ORCHESTRAVEL</div>
         <div class="sub">Beta Control Center</div>
         <nav id="adminNav"></nav>
+        <a href="/" class="back-to-cabinet">&larr; Вернуться в кабинет</a>
     </aside>
     <main class="main">
         <div class="topbar">

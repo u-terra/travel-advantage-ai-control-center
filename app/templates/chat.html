@@ -237,9 +237,11 @@ button, textarea { font-family: inherit; }
     white-space: nowrap;
 }
 
-.logout-btn {
+.logout-btn, .admin-link {
+    display: block;
     margin-top: 10px;
     width: 100%;
+    box-sizing: border-box;
     border: 1px solid var(--sidebar-border);
     background: transparent;
     color: var(--sidebar-text-dim);
@@ -247,14 +249,22 @@ button, textarea { font-family: inherit; }
     padding: 7px 10px;
     font-size: 12px;
     font-family: inherit;
+    text-align: center;
+    text-decoration: none;
     cursor: pointer;
     transition: border-color .15s ease, color .15s ease;
 }
 
-.logout-btn:hover {
+.logout-btn:hover, .admin-link:hover {
     border-color: var(--teal);
     color: #ecfbf9;
 }
+
+/* Только для platform-admin (см. /api/auth/me.is_platform_admin) - скрыта
+   по умолчанию, чтобы обычный owner/admin/member workspace её вообще не
+   видел, пока JS явно не подтвердит доступ. */
+.admin-link { display: none; }
+.admin-link.show { display: block; }
 
 /* ---------- main column ---------- */
 
@@ -1677,6 +1687,7 @@ textarea {
         <div class="sidebar-footer">
             <strong>ORCHESTRAVEL</strong> · Beta<br>
             <span id="footerEmail"></span>
+            <a href="/admin" class="admin-link" id="adminLink">Админка</a>
             <button type="button" class="logout-btn" id="logoutBtn">Выйти</button>
         </div>
     </aside>
@@ -1912,6 +1923,7 @@ textarea {
 
 const footerEmail = document.getElementById("footerEmail");
 const logoutBtn = document.getElementById("logoutBtn");
+const adminLink = document.getElementById("adminLink");
 
 async function loadCurrentUser() {
     try {
@@ -1919,6 +1931,13 @@ async function loadCurrentUser() {
         if (!response.ok) return;
         const data = await response.json();
         footerEmail.textContent = data.email || "";
+        // is_platform_admin comes from the server (app.web_api's existing
+        // require_platform_admin check, see /api/auth/me) - never decided
+        // client-side, so a regular workspace owner/admin/member simply
+        // never gets this flag set to true.
+        if (data.is_platform_admin) {
+            adminLink.classList.add("show");
+        }
     } catch (_) {
         // не критично для работы кабинета - просто не покажем email
     }

@@ -645,6 +645,11 @@ async def get_me(principal: WebPrincipal = Depends(get_current_principal)):
         "role": principal.role,
         "access_state": access_state,
         "access_granted": is_access_granted(access_state),
+        # Same check require_platform_admin (app/admin_api.py's gate) uses -
+        # never reimplemented here, so the web cabinet's "Админка" link
+        # (see chat.html) shows for exactly the same people who can
+        # actually reach /admin, nothing decided client-side.
+        "is_platform_admin": await _is_platform_admin(principal.email),
     }
 
 

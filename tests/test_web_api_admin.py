@@ -11,6 +11,7 @@ when they're not installed.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -70,6 +71,23 @@ def _owner_client(web_api, owner_workspace_id) -> TestClient:
     return client
 
 
+# ── static markup: "Админка" link ships hidden, server-flag gated ──────
+
+def test_chat_html_admin_link_ships_hidden_by_default() -> None:
+    """chat.html is served byte-identical to every workspace - the shipped
+    default must hide the "Админка" link (CSS `display: none`) so a normal
+    owner/admin/member never sees it, and only client-side JS toggles the
+    `.show` class once /api/auth/me confirms is_platform_admin=true (see
+    test_platform_admin_me_reports_is_platform_admin_true /
+    test_workspace_owner_me_reports_is_platform_admin_false above)."""
+    html = Path("app/templates/chat.html").read_text(encoding="utf-8")
+
+    assert '.admin-link { display: none; }' in html
+    assert 'id="adminLink"' in html
+    assert 'href="/admin"' in html
+    assert "is_platform_admin" in html
+
+
 # ── gate: auth required, then platform-admin allowlist, fail-closed ────
 
 def test_unauthenticated_request_gets_401_not_404(api) -> None:
@@ -97,6 +115,44 @@ def test_platform_admin_can_access(api) -> None:
 
     assert client.get("/api/admin/dashboard").status_code == 200
     assert client.get("/admin").status_code == 200
+
+
+def test_platform_admin_me_reports_is_platform_admin_true(api) -> None:
+    """The web cabinet's "Админка" link (chat.html) is shown/hidden purely
+    off this server-computed flag - never decided client-side - and it
+    must reuse the exact same allowlist check require_platform_admin uses
+    (see app.web_api.get_me / _is_platform_admin), not a second one."""
+    web_api, admin_ws, owner_ws = api
+    client = _admin_client(web_api, admin_ws)
+
+    response = client.get("/api/auth/me")
+    assert response.status_code == 200
+    assert response.json()["is_platform_admin"] is True
+
+
+def test_workspace_owner_me_reports_is_platform_admin_false(api) -> None:
+    """A normal, even owner-role, workspace member must never see
+    is_platform_admin=true - that would surface the "Админка" link to
+    someone who cannot actually reach /admin (it 404s for them, see
+    test_workspace_owner_is_not_a_platform_admin)."""
+    web_api, admin_ws, owner_ws = api
+    client = _owner_client(web_api, owner_ws)
+
+    response = client.get("/api/auth/me")
+    assert response.status_code == 200
+    assert response.json()["is_platform_admin"] is False
+
+
+def test_admin_dashboard_page_contains_back_to_cabinet_link(api) -> None:
+    """The admin sidebar must offer a way back to the normal web cabinet
+    (requirement: "← Вернуться в кабинет" linking to /)."""
+    web_api, admin_ws, owner_ws = api
+    client = _admin_client(web_api, admin_ws)
+
+    response = client.get("/admin")
+    assert response.status_code == 200
+    assert "Вернуться в кабинет" in response.text
+    assert 'href="/"' in response.text
 
 
 def test_empty_admin_allowlist_locks_out_everyone(tmp_path, monkeypatch) -> None:
