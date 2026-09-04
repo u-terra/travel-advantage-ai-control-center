@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workspaces — ORCHESTRAVEL Beta Control Center</title>
+<style>
+* { box-sizing: border-box; }
+:root {
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3; --teal-soft: rgba(23,179,163,.12);
+    --amber: #b4762b; --amber-soft: rgba(180,118,43,.12);
+    --danger: #c94b4b; --danger-soft: rgba(201,75,75,.1);
+    --ok: #1f9d55; --ok-soft: rgba(31,157,85,.1);
+    --bg: #f4f6fa; --card: #ffffff; --border: #e3e7ee; --text: #16202f; --text-muted: #66728a;
+    --sidebar-text: #c4cede; --sidebar-text-dim: #8792ac;
+}
+html, body { margin: 0; min-height: 100%; font-family: 'Inter','Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,'Helvetica Neue',Arial,sans-serif; background: var(--bg); color: var(--text); }
+.shell { display: flex; min-height: 100vh; }
+.sidebar { flex: 0 0 220px; background: var(--sidebar-grad); color: var(--sidebar-text); padding: 20px 14px; }
+.sidebar .brand { font-size: 14px; font-weight: 700; color: white; }
+.sidebar .sub { font-size: 11.5px; color: var(--sidebar-text-dim); margin-bottom: 22px; }
+.sidebar nav a { display: block; padding: 9px 10px; border-radius: 8px; color: var(--sidebar-text); text-decoration: none; font-size: 13.5px; margin-bottom: 2px; }
+.sidebar nav a:hover { background: rgba(255,255,255,.06); color: white; }
+.sidebar nav a.active { background: var(--teal-soft); color: white; font-weight: 600; }
+.main { flex: 1; padding: 24px 28px; min-width: 0; }
+h1 { font-size: 19px; margin: 0 0 16px; }
+.search-row { display: flex; gap: 8px; margin-bottom: 14px; }
+.search-row input { flex: 1; max-width: 360px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13.5px; font-family: inherit; }
+.search-row button { border: 1px solid var(--border); background: var(--card); border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+.table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; white-space: nowrap; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--text-muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; }
+tr:hover td { background: #fafbfd; }
+a.row-link { color: var(--text); text-decoration: none; cursor: pointer; }
+.badge { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 11.5px; font-weight: 600; }
+.badge.ok { background: var(--ok-soft); color: var(--ok); }
+.badge.warn { background: var(--amber-soft); color: var(--amber); }
+.badge.danger { background: var(--danger-soft); color: var(--danger); }
+.pager { display: flex; gap: 8px; margin-top: 14px; align-items: center; font-size: 12.5px; color: var(--text-muted); }
+.pager button { border: 1px solid var(--border); background: var(--card); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+.pager button:disabled { opacity: .5; cursor: default; }
+.loading { color: var(--text-muted); padding: 16px; font-size: 13px; }
+@media (max-width: 820px) { .shell { flex-direction: column; } .sidebar { flex: none; display: flex; gap: 4px; overflow-x: auto; padding: 10px; } .sidebar .brand, .sidebar .sub { display: none; } .sidebar nav { display: flex; gap: 4px; } .main { padding: 16px; } }
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">ORCHESTRAVEL</div>
+        <div class="sub">Beta Control Center</div>
+        <nav id="adminNav"></nav>
+    </aside>
+    <main class="main">
+        <h1>Пользователи / Workspaces</h1>
+        <div class="search-row">
+            <input type="text" id="searchInput" placeholder="Email, telegram id, название workspace/бизнеса…">
+            <button type="button" id="searchBtn">Найти</button>
+        </div>
+        <div class="table-wrap">
+            <table id="table">
+                <thead><tr>
+                    <th>Workspace</th><th>Business</th><th>TA</th><th>Email</th>
+                    <th>Onboarding</th><th>Подписка</th><th>Plan</th>
+                    <th>Paid until</th><th>Trial until</th><th>Calls 7d</th><th>Calls 30d</th>
+                </tr></thead>
+                <tbody id="tbody"><tr><td colspan="11" class="loading">Загрузка…</td></tr></tbody>
+            </table>
+        </div>
+        <div class="pager">
+            <button type="button" id="prevBtn">← Назад</button>
+            <span id="pageInfo"></span>
+            <button type="button" id="nextBtn">Вперёд →</button>
+        </div>
+    </main>
+</div>
+
+<script>
+const ADMIN_NAV_ITEMS = [
+    ["/admin", "Обзор"], ["/admin/workspaces", "Пользователи / Workspaces"],
+    ["/admin/billing", "Подписки / Оплаты"], ["/admin/errors", "Ошибки"],
+    ["/admin/activity", "Активность"], ["/admin/feedback", "Feedback"],
+    ["/admin/health", "Health"], ["/admin/audit-log", "Audit log"],
+];
+function renderAdminNav(containerId, currentPath) {
+    const nav = document.createElement("nav");
+    ADMIN_NAV_ITEMS.forEach(([href, label]) => {
+        const a = document.createElement("a");
+        a.href = href; a.textContent = label;
+        if (href === currentPath) a.classList.add("active");
+        nav.appendChild(a);
+    });
+    const container = document.getElementById(containerId);
+    container.replaceWith(nav);
+    nav.id = containerId;
+}
+renderAdminNav("adminNav", "/admin/workspaces");
+
+const SUB_BADGE_CLASS = { active: "ok", trial: "ok", beta: "ok", past_due: "warn", expired: "warn", suspended: "danger" };
+
+const LIMIT = 25;
+let offset = 0;
+let currentQuery = "";
+
+function fmtDate(raw) { return raw ? raw.slice(0, 10) : "—"; }
+
+function subscriptionBadge(status) {
+    if (!status) return "—";
+    const cls = SUB_BADGE_CLASS[status] || "";
+    return `<span class="badge ${cls}">${status}</span>`;
+}
+
+async function loadWorkspaces() {
+    document.getElementById("tbody").innerHTML = '<tr><td colspan="11" class="loading">Загрузка…</td></tr>';
+    const params = new URLSearchParams({ limit: LIMIT, offset });
+    if (currentQuery) params.set("query", currentQuery);
+    try {
+        const response = await fetch("/api/admin/workspaces?" + params.toString());
+        if (response.status === 404) {
+            document.body.innerHTML = "<p style='padding:40px;font-family:sans-serif;'>Not found.</p>";
+            return;
+        }
+        const data = await response.json();
+        const rows = data.workspaces || [];
+        const tbody = document.getElementById("tbody");
+        tbody.innerHTML = "";
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="11" class="loading">Ничего не найдено.</td></tr>';
+        }
+        rows.forEach(w => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td><a class="row-link" href="/admin/workspaces/${w.workspace_id}">${w.name}</a></td>
+                <td>${w.business_name || "—"}</td>
+                <td>${w.ta_affiliated ? "да" : "нет"}</td>
+                <td>${w.primary_email || "—"}</td>
+                <td>${w.onboarding_completed === true ? "да" : (w.onboarding_completed === false ? "нет" : "—")}</td>
+                <td>${subscriptionBadge(w.subscription_status)}</td>
+                <td>${w.plan || "—"}</td>
+                <td>${fmtDate(w.paid_until)}</td>
+                <td>${fmtDate(w.trial_until)}</td>
+                <td>${w.usage_calls_7d}</td>
+                <td>${w.usage_calls_30d}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+        document.getElementById("pageInfo").textContent =
+            `${data.total === 0 ? 0 : offset + 1}–${Math.min(offset + LIMIT, data.total)} из ${data.total}`;
+        document.getElementById("prevBtn").disabled = offset === 0;
+        document.getElementById("nextBtn").disabled = offset + LIMIT >= data.total;
+    } catch (_) {
+        document.getElementById("tbody").innerHTML = '<tr><td colspan="11" class="loading">Ошибка загрузки.</td></tr>';
+    }
+}
+
+document.getElementById("searchBtn").addEventListener("click", () => {
+    currentQuery = document.getElementById("searchInput").value.trim();
+    offset = 0;
+    loadWorkspaces();
+});
+document.getElementById("searchInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") document.getElementById("searchBtn").click();
+});
+document.getElementById("prevBtn").addEventListener("click", () => {
+    offset = Math.max(0, offset - LIMIT);
+    loadWorkspaces();
+});
+document.getElementById("nextBtn").addEventListener("click", () => {
+    offset += LIMIT;
+    loadWorkspaces();
+});
+
+loadWorkspaces();
+</script>
+
+</body>
+</html>

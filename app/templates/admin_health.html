@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Health — ORCHESTRAVEL Beta Control Center</title>
+<style>
+* { box-sizing: border-box; }
+:root {
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3; --teal-soft: rgba(23,179,163,.12);
+    --amber: #b4762b; --amber-soft: rgba(180,118,43,.12);
+    --danger: #c94b4b; --danger-soft: rgba(201,75,75,.1);
+    --ok: #1f9d55; --ok-soft: rgba(31,157,85,.1);
+    --bg: #f4f6fa; --card: #ffffff; --border: #e3e7ee; --text: #16202f; --text-muted: #66728a;
+    --sidebar-text: #c4cede; --sidebar-text-dim: #8792ac;
+}
+html, body { margin: 0; min-height: 100%; font-family: 'Inter','Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,'Helvetica Neue',Arial,sans-serif; background: var(--bg); color: var(--text); }
+.shell { display: flex; min-height: 100vh; }
+.sidebar { flex: 0 0 220px; background: var(--sidebar-grad); color: var(--sidebar-text); padding: 20px 14px; }
+.sidebar .brand { font-size: 14px; font-weight: 700; color: white; }
+.sidebar .sub { font-size: 11.5px; color: var(--sidebar-text-dim); margin-bottom: 22px; }
+.sidebar nav a { display: block; padding: 9px 10px; border-radius: 8px; color: var(--sidebar-text); text-decoration: none; font-size: 13.5px; margin-bottom: 2px; }
+.sidebar nav a:hover { background: rgba(255,255,255,.06); color: white; }
+.sidebar nav a.active { background: var(--teal-soft); color: white; font-weight: 600; }
+.main { flex: 1; padding: 24px 28px; min-width: 0; max-width: 760px; }
+h1 { font-size: 19px; margin: 0 0 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.tile { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.tile .label { font-size: 12.5px; color: var(--text-muted); }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+.status-dot.ok { background: var(--ok); }
+.status-dot.warn { background: var(--amber); }
+.status-dot.danger { background: var(--danger); }
+.status-text { font-size: 12.5px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+.section-title { font-size: 13.5px; font-weight: 700; margin: 22px 0 10px; }
+.note { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
+.loading { color: var(--text-muted); font-size: 13px; }
+@media (max-width: 820px) { .shell { flex-direction: column; } .sidebar { flex: none; display: flex; gap: 4px; overflow-x: auto; padding: 10px; } .sidebar .brand, .sidebar .sub { display: none; } .sidebar nav { display: flex; gap: 4px; } .main { padding: 16px; } }
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">ORCHESTRAVEL</div>
+        <div class="sub">Beta Control Center</div>
+        <nav id="adminNav"></nav>
+    </aside>
+    <main class="main">
+        <h1>Health</h1>
+        <div class="grid" id="checksGrid"><div class="loading">Загрузка…</div></div>
+
+        <div class="section-title">Последние успешные операции</div>
+        <div class="grid" id="lastGrid"></div>
+        <div class="note" id="telegramNote"></div>
+    </main>
+</div>
+
+<script>
+const ADMIN_NAV_ITEMS = [
+    ["/admin", "Обзор"], ["/admin/workspaces", "Пользователи / Workspaces"],
+    ["/admin/billing", "Подписки / Оплаты"], ["/admin/errors", "Ошибки"],
+    ["/admin/activity", "Активность"], ["/admin/feedback", "Feedback"],
+    ["/admin/health", "Health"], ["/admin/audit-log", "Audit log"],
+];
+function renderAdminNav(containerId, currentPath) {
+    const nav = document.createElement("nav");
+    ADMIN_NAV_ITEMS.forEach(([href, label]) => {
+        const a = document.createElement("a");
+        a.href = href; a.textContent = label;
+        if (href === currentPath) a.classList.add("active");
+        nav.appendChild(a);
+    });
+    const container = document.getElementById(containerId);
+    container.replaceWith(nav);
+    nav.id = containerId;
+}
+renderAdminNav("adminNav", "/admin/health");
+
+function tile(label, ok, text) {
+    const cls = ok === true ? "ok" : (ok === false ? "danger" : "warn");
+    return `<div class="tile"><span class="label">${label}</span>
+        <span class="status-text"><span class="status-dot ${cls}"></span>${text}</span></div>`;
+}
+
+function fmtBytes(bytes) {
+    if (bytes === null || bytes === undefined) return "—";
+    const gb = bytes / (1024 ** 3);
+    return gb >= 1 ? gb.toFixed(1) + " GB" : (bytes / (1024 ** 2)).toFixed(0) + " MB";
+}
+
+function fmtTime(raw) {
+    return raw ? raw.slice(0, 19).replace("T", " ") + " UTC" : "нет данных";
+}
+
+async function load() {
+    try {
+        const response = await fetch("/api/admin/health");
+        if (response.status === 404) {
+            document.body.innerHTML = "<p style='padding:40px;font-family:sans-serif;'>Not found.</p>";
+            return;
+        }
+        const d = await response.json();
+        document.getElementById("checksGrid").innerHTML = [
+            tile("Web app", true, "ok"),
+            tile("DB чтение", d.db_read === "ok", d.db_read),
+            tile("DB запись", d.db_write === "ok", d.db_write),
+            tile("Subscription repository", d.subscription_repository === "ok", d.subscription_repository),
+            tile("Upload storage: писать можно", d.upload_storage_writable, d.upload_storage_writable ? "да" : "нет"),
+            tile("Upload storage: свободно", null, fmtBytes(d.upload_storage_free_bytes)),
+            tile("LLM provider настроен", d.llm_provider_configured, d.llm_provider_configured ? "да" : "нет"),
+            tile("Billing настроен", d.billing_configured, d.billing_configured ? "да" : "нет"),
+            tile("RoboKassa режим", d.billing_mode === "production", d.billing_mode),
+        ].join("");
+
+        document.getElementById("lastGrid").innerHTML = [
+            tile("Последний успешный AI-запрос", !!d.last_successful_ai_request, fmtTime(d.last_successful_ai_request)),
+            tile("Последний успешный анализ конкурента", !!d.last_successful_competitor_analysis, fmtTime(d.last_successful_competitor_analysis)),
+            tile("Последняя успешная загрузка файла", !!d.last_successful_upload, fmtTime(d.last_successful_upload)),
+            tile("Последний принятый RoboKassa callback", !!d.last_robokassa_callback, fmtTime(d.last_robokassa_callback)),
+        ].join("");
+
+        document.getElementById("telegramNote").textContent = d.telegram_note || "";
+    } catch (_) {
+        document.getElementById("checksGrid").innerHTML = '<div class="loading">Ошибка загрузки.</div>';
+    }
+}
+
+load();
+</script>
+
+</body>
+</html>

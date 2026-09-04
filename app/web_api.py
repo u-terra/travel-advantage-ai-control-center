@@ -5,6 +5,8 @@ import base64
 import json
 import logging
 import secrets
+import time
+import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +16,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Respon
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+from app.admin_api import AdminDeps, build_admin_router
 from app.chat_provider import AttachmentInput, ChatConfig, OpenAIChatProvider
 from app.config import load_settings
 from app.domain.business_profiles import (
@@ -22,17 +25,23 @@ from app.domain.business_profiles import (
 )
 from app.domain.competitor_discovery import canonical_domain
 from app.domain.competitor_intelligence import DATA_ORIGIN_RADAR_SIGNAL
+from app.domain.feedback import FEEDBACK_REASON_CODES, FeedbackRating, FeedbackStatus
+from app.domain.telemetry import EventSeverity
 from app.domain.usage import UsageStatus
 from app.domain.web_attachment import WebAttachment
 from app.domain.web_auth import WebPrincipal
 from app.domain.web_conversation import ROLE_ASSISTANT, ROLE_USER
+from app.repositories.admin_audit_log_repository import AdminAuditLogRepository
+from app.repositories.admin_directory_repository import AdminDirectoryRepository
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import (
     CompetitorAddressError,
     CompetitorLabelError,
     CompetitorRepository,
 )
+from app.repositories.feedback_repository import FeedbackRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
+from app.repositories.operational_event_repository import OperationalEventRepository
 from app.repositories.partner_repository import (
     PartnerRepository,
     TooManyUserExamplesError,
@@ -79,6 +88,7 @@ from app.services.lead_radar import LeadRadarConfig, build_workspace_signals, ca
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.robokassa import RoboKassaConfig
+from app.services.telemetry import record_event
 from app.services.usage_recorder import record_llm_call
 from app.services.web_auth_passwords import (
     WeakPasswordError,
@@ -143,6 +153,16 @@ billing_service = BillingService(
     payment_order_repository=payment_order_repository,
     subscription_repository=subscription_repository,
 )
+
+# Beta Control Center (see app/admin_api.py) - telemetry/feedback/audit-log
+# repositories and the one cross-tenant read path (AdminDirectoryRepository).
+# All gated behind require_platform_admin below; operational_event_repository
+# and feedback_repository are ALSO used from regular (non-admin) request
+# handlers further down (telemetry recording, feedback submission).
+operational_event_repository = OperationalEventRepository(settings.journal_db_path)
+feedback_repository = FeedbackRepository(settings.journal_db_path)
+admin_audit_log_repository = AdminAuditLogRepository(settings.journal_db_path)
+admin_directory_repository = AdminDirectoryRepository(settings.journal_db_path)
 
 # Orphan pending attachments (uploaded, never sent) older than this are
 # reaped on startup - see _reap_orphan_attachments().
@@ -351,6 +371,12 @@ async def get_active_principal(
     competitors, knowledge, profile, conversations, ...)."""
     state = await subscription_repository.resolve_access_state(principal.workspace_id)
     if not is_access_granted(state):
+        await record_event(
+            operational_event_repository, module="subscription_gate", event_type="denied",
+            success=False, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            severity=EventSeverity.INFO, error_code=state,
+            safe_message="read access denied: subscription not active",
+        )
         raise HTTPException(
             status_code=402,
             detail={"error": "subscription_inactive", "access_state": state},
@@ -368,11 +394,78 @@ async def require_csrf_and_subscription(
     subscription state to an unauthenticated-for-this-session request."""
     state = await subscription_repository.resolve_access_state(principal.workspace_id)
     if not is_access_granted(state):
+        await record_event(
+            operational_event_repository, module="subscription_gate", event_type="denied",
+            success=False, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            severity=EventSeverity.INFO, error_code=state,
+            safe_message="write access denied: subscription not active",
+        )
         raise HTTPException(
             status_code=402,
             detail={"error": "subscription_inactive", "access_state": state},
         )
     return principal
+
+
+async def _is_platform_admin(email: str) -> bool:
+    return email.strip().lower() in settings.orchestravel_admin_emails
+
+
+async def require_platform_admin(
+    principal: WebPrincipal = Depends(get_current_principal),
+) -> WebPrincipal:
+    """Beta Control Center gate (see app/admin_api.py) - completely
+    separate from any workspace membership role: a workspace owner/admin
+    is NEVER a platform admin just by being one. Fail-closed: an empty
+    ORCHESTRAVEL_ADMIN_EMAILS means nobody passes, ever, no matter who
+    they are. 404 (not 403) on failure - a regular authenticated user
+    hitting an admin route gets the same response as a route that simply
+    doesn't exist, so /admin's existence is never confirmed to anyone
+    probing it. No second login: this builds entirely on the same
+    get_current_principal session every other endpoint already uses."""
+    if not await _is_platform_admin(principal.email):
+        raise HTTPException(status_code=404)
+    return principal
+
+
+async def require_platform_admin_csrf(
+    principal: WebPrincipal = Depends(require_csrf),
+) -> WebPrincipal:
+    """Same gate as require_platform_admin, for admin POST/PUT/DELETE
+    mutations - CSRF is checked first (require_csrf), platform-admin
+    membership second."""
+    if not await _is_platform_admin(principal.email):
+        raise HTTPException(status_code=404)
+    return principal
+
+
+# Beta Control Center router (app/admin_api.py) - built here, not in
+# admin_api.py itself, so admin_api.py never has to import app.web_api
+# (which would be circular: web_api.py already imports admin_api.py to
+# call this). Every dependency is an instance this module already
+# constructed above; require_platform_admin/require_platform_admin_csrf
+# are the only gate the whole router sits behind.
+app.include_router(build_admin_router(
+    AdminDeps(
+        web_auth_repository=web_auth_repository,
+        subscription_repository=subscription_repository,
+        payment_order_repository=payment_order_repository,
+        usage_ledger_repository=usage_ledger_repository,
+        competitor_repository=competitor_repository,
+        artifact_repository=artifact_repository,
+        web_conversation_repository=web_conversation_repository,
+        web_attachment_repository=web_attachment_repository,
+        operational_event_repository=operational_event_repository,
+        feedback_repository=feedback_repository,
+        admin_audit_log_repository=admin_audit_log_repository,
+        admin_directory_repository=admin_directory_repository,
+        robokassa_config=robokassa_config,
+        upload_storage_root=attachment_storage.root,
+        llm_provider_configured=bool(settings.planner_openai_api_key),
+    ),
+    require_platform_admin=require_platform_admin,
+    require_platform_admin_csrf=require_platform_admin_csrf,
+))
 
 
 # Fixed-cost dummy hash for login timing - see login() below: without
@@ -404,20 +497,39 @@ async def login(request: LoginRequest, response: Response):
         password_ok = verify_password(request.password, password_hash)
 
         if user is None or user.status != "active" or not password_ok:
+            await record_event(
+                operational_event_repository, module="auth", event_type="login",
+                success=False, severity=EventSeverity.INFO,
+                safe_message="login rejected",
+            )
             return generic_error
 
         binding = await web_auth_repository.get_default_binding(user.id)
         if binding is None:
             # A web account with no workspace binding can't do anything -
             # fail closed the same way an unowned resource does elsewhere.
+            await record_event(
+                operational_event_repository, module="auth", event_type="login",
+                success=False, web_user_id=user.id, severity=EventSeverity.WARNING,
+                safe_message="login rejected: no workspace binding",
+            )
             return generic_error
 
         await _start_session(response, user.id, binding.id)
         await web_auth_repository.touch_last_login(user.id)
+        await record_event(
+            operational_event_repository, module="auth", event_type="login",
+            success=True, workspace_id=binding.workspace_id, web_user_id=user.id,
+        )
 
         return {"email": user.email, "workspace_id": binding.workspace_id}
 
     except Exception:
+        await record_event(
+            operational_event_repository, module="auth", event_type="login",
+            success=False, severity=EventSeverity.ERROR,
+            safe_message="login raised an exception",
+        )
         return {"error": "Не удалось выполнить вход. Попробуйте ещё раз."}
 
 
@@ -482,12 +594,26 @@ async def register(request: RegisterRequest, response: Response):
         )
 
         await _start_session(response, user.id, binding.id)
+        await record_event(
+            operational_event_repository, module="auth", event_type="register",
+            success=True, workspace_id=binding.workspace_id, web_user_id=user.id,
+        )
 
         return {"email": user.email, "workspace_id": binding.workspace_id}
 
     except EmailAlreadyRegisteredError as exc:
+        await record_event(
+            operational_event_repository, module="auth", event_type="register",
+            success=False, severity=EventSeverity.INFO,
+            safe_message="register rejected: email already registered",
+        )
         return {"error": str(exc)}
     except Exception:
+        await record_event(
+            operational_event_repository, module="auth", event_type="register",
+            success=False, severity=EventSeverity.ERROR,
+            safe_message="register raised an exception",
+        )
         return {"error": "Не удалось завершить регистрацию. Попробуйте ещё раз."}
 
 
@@ -568,7 +694,17 @@ async def create_payment_endpoint(principal: WebPrincipal = Depends(require_csrf
         return {"error": "Оплата временно недоступна. Обратитесь к администратору."}
     except Exception:
         log.exception("billing: create_payment failed for workspace_id=%s", principal.workspace_id)
+        await record_event(
+            operational_event_repository, module="billing", event_type="create_payment",
+            success=False, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            severity=EventSeverity.ERROR, error_code="unhandled_exception",
+        )
         return {"error": "Не удалось создать платёж. Попробуйте ещё раз."}
+    await record_event(
+        operational_event_repository, module="billing", event_type="create_payment",
+        success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+        metadata={"is_test": result.is_test, "order_id": result.order.id},
+    )
     return {
         "order_id": result.order.id,
         "payment_url": result.payment_url,
@@ -632,7 +768,22 @@ async def robokassa_result(request: Request):
         # raw signature/passwords - safe to log, never returned in the
         # response body.
         log.warning("robokassa result: rejected InvId=%s reason=%s", inv_id, outcome.reason)
+        # workspace_id is deliberately omitted here - a rejected callback
+        # (bad signature/amount/unknown order) has not been proven to
+        # belong to any real workspace, so attributing it to one would be
+        # a fabrication, not a fact.
+        await record_event(
+            operational_event_repository, module="billing", event_type="robokassa_callback",
+            success=False, severity=EventSeverity.WARNING, error_code=outcome.reason,
+            request_id=str(inv_id), safe_message="ResultURL rejected",
+        )
         return PlainTextResponse("bad request", status_code=400)
+    order = await payment_order_repository.get_order(inv_id)
+    await record_event(
+        operational_event_repository, module="billing", event_type="robokassa_callback",
+        success=True, workspace_id=order.workspace_id if order is not None else None,
+        request_id=str(inv_id),
+    )
     return PlainTextResponse(f"OK{inv_id}")
 
 
@@ -658,6 +809,9 @@ async def startup() -> None:
     await web_auth_repository.init()
     await subscription_repository.init()
     await payment_order_repository.init()
+    await operational_event_repository.init()
+    await feedback_repository.init()
+    await admin_audit_log_repository.init()
     # legacy_owner_workspace_id=None: the one-time legacy-Radar backfill is
     # already owned by the bot process (app/main.py) against the same shared
     # journal DB - this just ensures the schema exists, it never re-runs
@@ -943,6 +1097,10 @@ async def add_competitor_endpoint(
         competitor = await competitor_repository.add_competitor(
             principal.workspace_id, request.url, label=request.label,
         )
+        await record_event(
+            operational_event_repository, module="competitors", event_type="add",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+        )
         return {
             "competitor": {
                 "id": competitor.id,
@@ -954,8 +1112,18 @@ async def add_competitor_endpoint(
         }
 
     except (CompetitorAddressError, CompetitorLabelError) as exc:
+        await record_event(
+            operational_event_repository, module="competitors", event_type="add",
+            success=False, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            severity=EventSeverity.INFO, error_code="validation_rejected",
+        )
         return {"error": str(exc), "competitor": None}
     except Exception:
+        await record_event(
+            operational_event_repository, module="competitors", event_type="add",
+            success=False, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            severity=EventSeverity.ERROR, error_code="unhandled_exception",
+        )
         return {"error": "Не удалось добавить конкурента.", "competitor": None}
 
 
@@ -1017,6 +1185,11 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
             record.interpretation_id: record.source_name for record in records
         }
 
+        await record_event(
+            operational_event_repository, module="signals", event_type="read",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={"count": len(signals)},
+        )
         return {
             "signals": [
                 {
@@ -1203,6 +1376,10 @@ async def update_material(
 
         updated_artifact = await artifact_repository.get_artifact(
             principal.workspace_id, artifact_id,
+        )
+        await record_event(
+            operational_event_repository, module="materials", event_type="update",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
         )
 
         return {
@@ -1557,6 +1734,11 @@ async def complete_onboarding(
     )
 
     await web_auth_repository.mark_onboarding_completed(principal.binding_id)
+    await record_event(
+        operational_event_repository, module="onboarding", event_type="complete",
+        success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+        metadata={"business_profile_saved": business_profile_saved},
+    )
 
     profile = await partner_repository.get_business_profile(principal.workspace_id)
     preferences = await partner_repository.get_user_preferences(
@@ -1701,6 +1883,12 @@ async def upload_attachments(
             try:
                 sniff = validate_attachment(display_filename=display_name, data=data)
             except AttachmentValidationError as exc:
+                await record_event(
+                    operational_event_repository, module="attachments", event_type="upload",
+                    success=False, workspace_id=principal.workspace_id,
+                    web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                    error_code="validation_rejected", safe_message="attachment failed validation",
+                )
                 return {"error": str(exc), "attachments": []}
 
             validated.append((display_name, data, sniff))
@@ -1729,9 +1917,20 @@ async def upload_attachments(
                 raise
             saved.append(record)
 
+        await record_event(
+            operational_event_repository, module="attachments", event_type="upload",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={"count": len(saved)},
+        )
         return {"attachments": [_attachment_payload(a) for a in saved]}
 
     except Exception:
+        await record_event(
+            operational_event_repository, module="attachments", event_type="upload",
+            success=False, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            severity=EventSeverity.ERROR, error_code="unhandled_exception",
+            safe_message="attachment upload raised",
+        )
         return {"error": "Не удалось загрузить файл. Попробуйте ещё раз.", "attachments": []}
 
 
@@ -1849,6 +2048,59 @@ async def get_conversation_messages(
         return {"error": "Не удалось загрузить сообщения диалога.", "conversation": None, "messages": []}
 
 
+class FeedbackSubmitRequest(BaseModel):
+    conversation_id: int
+    message_id: int
+    rating: str
+    reason: str | None = None
+    comment: str = ""
+
+
+@app.post("/api/feedback")
+async def submit_feedback(
+    request: FeedbackSubmitRequest, principal: WebPrincipal = Depends(require_csrf),
+):
+    """👍/👎 on a single assistant message - never gated by subscription
+    (require_csrf, not require_csrf_and_subscription): giving feedback on
+    an answer you already received should not itself require an active
+    subscription. message_id is verified to actually belong to THIS
+    session's own (workspace_id, telegram_user_id) conversation before
+    anything is stored - never trusted at face value."""
+    if request.rating not in {"up", "down"}:
+        return {"error": "Недопустимая оценка.", "feedback": None}
+    if request.reason is not None and request.reason not in FEEDBACK_REASON_CODES:
+        return {"error": "Недопустимая причина.", "feedback": None}
+
+    try:
+        messages = await web_conversation_repository.list_messages(
+            principal.workspace_id, principal.telegram_user_id, request.conversation_id,
+            limit=500,
+        )
+        message = next((m for m in messages if m.id == request.message_id), None)
+        if message is None or message.role != ROLE_ASSISTANT:
+            return {"error": "Сообщение не найдено.", "feedback": None}
+
+        feedback = await feedback_repository.submit(
+            workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            conversation_id=request.conversation_id, message_id=request.message_id,
+            rating=FeedbackRating(request.rating), reason=request.reason,
+            comment=request.comment,
+        )
+        await record_event(
+            operational_event_repository, module="feedback", event_type="submit",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={"rating": request.rating, "reason": request.reason},
+        )
+        return {
+            "feedback": {
+                "id": feedback.id, "rating": feedback.rating.value,
+                "reason": feedback.reason, "comment": feedback.comment,
+            }
+        }
+    except Exception:
+        return {"error": "Не удалось сохранить отзыв.", "feedback": None}
+
+
 async def _load_provider_attachments(
     attachments: list[WebAttachment],
 ) -> list[AttachmentInput]:
@@ -1880,6 +2132,7 @@ async def _load_provider_attachments(
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_csrf_and_subscription)):
+    chat_started_at = time.monotonic()
     message = request.message.strip()
     attachment_ids = request.attachment_ids
 
@@ -2003,6 +2256,12 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                     )
                     if part
                 )
+                await record_event(
+                    operational_event_repository, module="competitors", event_type="analyze",
+                    success=True, workspace_id=principal.workspace_id,
+                    web_user_id=principal.web_user_id,
+                    metadata={"data_origin": intelligence.data_origin},
+                )
 
             except CompetitorIntelligenceUnavailable as exc:
                 knowledge_context = "\n\n".join(
@@ -2013,6 +2272,12 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                         "Не выдавай общие знания модели за свежие данные.",
                     )
                     if part
+                )
+                await record_event(
+                    operational_event_repository, module="competitors", event_type="analyze",
+                    success=False, workspace_id=principal.workspace_id,
+                    web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                    error_code="unavailable", safe_message="no fresh source or matching signal",
                 )
 
         preferences = await partner_repository.get_user_preferences(
@@ -2062,6 +2327,14 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                 usage=None,
                 status=UsageStatus.FAILURE,
             )
+            await record_event(
+                operational_event_repository, module="chat", event_type="message",
+                success=False, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+                latency_ms=int((time.monotonic() - chat_started_at) * 1000),
+                error_code="provider_error", safe_message="chat provider call failed",
+                metadata={"provider": "openai", "model": "gpt-5.6-terra"},
+            )
             raise
 
         await record_llm_call(
@@ -2073,6 +2346,13 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
             model="gpt-5.6-terra",
             usage=chat_result.usage,
             status=UsageStatus.SUCCESS,
+        )
+        await record_event(
+            operational_event_repository, module="chat", event_type="message",
+            success=True, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id,
+            latency_ms=int((time.monotonic() - chat_started_at) * 1000),
+            metadata={"provider": "openai", "model": "gpt-5.6-terra"},
         )
 
         answer = chat_result.text
@@ -2093,7 +2373,7 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         # Оригинальный текст ответа, не HTML - HTML восстанавливается тем же
         # markdown.markdown() при чтении истории (GET .../messages),
         # никогда не хранится как источник истины.
-        await web_conversation_repository.add_message(
+        saved_assistant_message = await web_conversation_repository.add_message(
             principal.workspace_id, principal.telegram_user_id, request.conversation_id,
             ROLE_ASSISTANT, clean_answer,
         )
@@ -2105,6 +2385,7 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         return {
             "answer": clean_answer,
             "answer_html": answer_html,
+            "message_id": saved_assistant_message.id if saved_assistant_message is not None else None,
             "model": "gpt-5.6-terra",
             "knowledge_used": bool(knowledge_context),
             "knowledge_sources": [
@@ -2122,6 +2403,13 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         }
 
     except Exception:
+        await record_event(
+            operational_event_repository, module="chat", event_type="message",
+            success=False, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+            latency_ms=int((time.monotonic() - chat_started_at) * 1000),
+            error_code="unhandled_exception", safe_message="chat endpoint raised",
+        )
         return {
             "error": "Не удалось получить ответ AI. Попробуйте ещё раз."
         }
@@ -2278,3 +2566,104 @@ async def billing_fail_page(request: Request):
     return Path(
         "app/templates/billing_fail.html"
     ).read_text(encoding="utf-8")
+
+
+# ── Beta Control Center pages ────────────────────────────────────────
+#
+# Same require_platform_admin gate as the JSON API, applied by hand here
+# since these are plain HTMLResponse routes, not Depends()-based: no
+# session -> /login (same as every other page route); session but not a
+# platform admin -> 404, never a distinct "forbidden" page, so a regular
+# authenticated user gets no signal that /admin exists at all.
+
+async def _require_admin_page_session(request: Request):
+    ctx = await _valid_session_context(request)
+    if ctx is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if not await _is_platform_admin(ctx.email):
+        raise HTTPException(status_code=404)
+    return None
+
+
+_ADMIN_PAGES = {
+    "/admin": "admin_dashboard.html",
+    "/admin/workspaces": "admin_workspaces.html",
+    "/admin/billing": "admin_billing.html",
+    "/admin/errors": "admin_errors.html",
+    "/admin/activity": "admin_activity.html",
+    "/admin/feedback": "admin_feedback.html",
+    "/admin/health": "admin_health.html",
+    "/admin/audit-log": "admin_audit_log.html",
+}
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_dashboard_page(request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path(f"app/templates/{_ADMIN_PAGES['/admin']}").read_text(encoding="utf-8")
+
+
+@app.get("/admin/workspaces", response_class=HTMLResponse)
+async def admin_workspaces_page(request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path(f"app/templates/{_ADMIN_PAGES['/admin/workspaces']}").read_text(encoding="utf-8")
+
+
+@app.get("/admin/workspaces/{workspace_id}", response_class=HTMLResponse)
+async def admin_workspace_detail_page(workspace_id: int, request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path("app/templates/admin_workspace_detail.html").read_text(encoding="utf-8")
+
+
+@app.get("/admin/billing", response_class=HTMLResponse)
+async def admin_billing_page(request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path(f"app/templates/{_ADMIN_PAGES['/admin/billing']}").read_text(encoding="utf-8")
+
+
+@app.get("/admin/errors", response_class=HTMLResponse)
+async def admin_errors_page(request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path(f"app/templates/{_ADMIN_PAGES['/admin/errors']}").read_text(encoding="utf-8")
+
+
+@app.get("/admin/activity", response_class=HTMLResponse)
+async def admin_activity_page(request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path(f"app/templates/{_ADMIN_PAGES['/admin/activity']}").read_text(encoding="utf-8")
+
+
+@app.get("/admin/feedback", response_class=HTMLResponse)
+async def admin_feedback_page(request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path(f"app/templates/{_ADMIN_PAGES['/admin/feedback']}").read_text(encoding="utf-8")
+
+
+@app.get("/admin/health", response_class=HTMLResponse)
+async def admin_health_page(request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path(f"app/templates/{_ADMIN_PAGES['/admin/health']}").read_text(encoding="utf-8")
+
+
+@app.get("/admin/audit-log", response_class=HTMLResponse)
+async def admin_audit_log_page(request: Request):
+    redirect = await _require_admin_page_session(request)
+    if redirect is not None:
+        return redirect
+    return Path(f"app/templates/{_ADMIN_PAGES['/admin/audit-log']}").read_text(encoding="utf-8")

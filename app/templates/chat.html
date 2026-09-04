@@ -29,6 +29,59 @@
     --sidebar-border: rgba(255, 255, 255, .07);
 }
 
+.feedback-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+.feedback-btn {
+    border: 1px solid var(--border);
+    background: var(--card);
+    border-radius: 8px;
+    padding: 3px 8px;
+    font-size: 13px;
+    cursor: pointer;
+    line-height: 1.4;
+    color: var(--text-muted);
+}
+.feedback-btn:hover { border-color: var(--teal); color: var(--text); }
+.feedback-btn.active-up { border-color: var(--teal); color: var(--teal-dark); background: var(--teal-soft); }
+.feedback-btn.active-down { border-color: var(--amber); color: #96631f; background: var(--amber-soft); }
+.feedback-btn:disabled { cursor: default; opacity: .55; }
+.feedback-note {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.feedback-reasons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+.feedback-reason-btn {
+    border: 1px solid var(--border);
+    background: var(--card);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-muted);
+}
+.feedback-reason-btn:hover { border-color: var(--teal); color: var(--text); }
+.feedback-comment {
+    display: block;
+    width: 100%;
+    max-width: 360px;
+    margin-top: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 12.5px;
+    font-family: inherit;
+    resize: vertical;
+}
+
 html, body {
     margin: 0;
     height: 100%;
@@ -2155,7 +2208,106 @@ fileInput.addEventListener("change", async () => {
     }
 });
 
-function addAssistant(html, plainText) {
+const FEEDBACK_REASONS = [
+    ["not_understood", "Не понял задачу"],
+    ["wrong_answer", "Неверный ответ"],
+    ["too_generic", "Слишком общий"],
+    ["too_long", "Слишком длинный"],
+    ["too_short", "Слишком короткий"],
+    ["other", "Другое"],
+];
+
+function buildFeedbackBar(conversationId, messageId) {
+    const bar = document.createElement("div");
+    bar.className = "feedback-bar";
+
+    const upBtn = document.createElement("button");
+    upBtn.type = "button";
+    upBtn.className = "feedback-btn";
+    upBtn.textContent = "👍";
+    upBtn.title = "Полезный ответ";
+
+    const downBtn = document.createElement("button");
+    downBtn.type = "button";
+    downBtn.className = "feedback-btn";
+    downBtn.textContent = "👎";
+    downBtn.title = "Неполезный ответ";
+
+    bar.appendChild(upBtn);
+    bar.appendChild(downBtn);
+
+    async function sendFeedback(rating, reason, comment) {
+        try {
+            const response = await fetch("/api/feedback", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    conversation_id: conversationId, message_id: messageId,
+                    rating, reason: reason || null, comment: comment || "",
+                }),
+            });
+            const data = await response.json();
+            return response.ok && data.feedback;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    upBtn.addEventListener("click", async () => {
+        upBtn.disabled = true;
+        downBtn.disabled = true;
+        const ok = await sendFeedback("up", null, "");
+        if (ok) {
+            upBtn.classList.add("active-up");
+        } else {
+            upBtn.disabled = false;
+            downBtn.disabled = false;
+        }
+    });
+
+    downBtn.addEventListener("click", () => {
+        if (bar.querySelector(".feedback-reasons")) return;
+        upBtn.disabled = true;
+        downBtn.disabled = true;
+        downBtn.classList.add("active-down");
+
+        const reasons = document.createElement("div");
+        reasons.className = "feedback-reasons";
+        FEEDBACK_REASONS.forEach(([code, label]) => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "feedback-reason-btn";
+            btn.textContent = label;
+            btn.addEventListener("click", async () => {
+                let comment = "";
+                if (code === "other") {
+                    const textarea = bar.querySelector(".feedback-comment");
+                    comment = textarea ? textarea.value.trim() : "";
+                }
+                reasons.remove();
+                const commentBox = bar.querySelector(".feedback-comment");
+                if (commentBox) commentBox.remove();
+                const note = document.createElement("span");
+                note.className = "feedback-note";
+                const ok = await sendFeedback("down", code, comment);
+                note.textContent = ok ? "Спасибо, учтём." : "Не удалось отправить отзыв.";
+                bar.appendChild(note);
+            });
+            reasons.appendChild(btn);
+        });
+        bar.appendChild(reasons);
+
+        const textarea = document.createElement("textarea");
+        textarea.className = "feedback-comment";
+        textarea.rows = 2;
+        textarea.placeholder = "Необязательно: что было не так?";
+        bar.appendChild(textarea);
+    });
+
+    return bar;
+}
+
+function addAssistant(html, plainText, meta) {
     welcome.style.display = "none";
 
     const row = document.createElement("div");
@@ -2171,6 +2323,11 @@ function addAssistant(html, plainText) {
     }
 
     row.appendChild(bubble);
+
+    if (meta && meta.conversationId && meta.messageId) {
+        row.appendChild(buildFeedbackBar(meta.conversationId, meta.messageId));
+    }
+
     chat.appendChild(row);
     scrollBottom();
 
@@ -2242,6 +2399,12 @@ async function submitMessage() {
         thinking.classList.remove("thinking");
         thinking.innerHTML =
             data.answer_html || data.answer;
+
+        if (data.message_id && thinking.parentElement) {
+            thinking.parentElement.appendChild(
+                buildFeedbackBar(conversationId, data.message_id)
+            );
+        }
 
         scrollBottom();
 
@@ -4389,7 +4552,9 @@ async function openConversation(item) {
                 if (entry.role === "user") {
                     addUser(entry.content, entry.attachments);
                 } else if (entry.role === "assistant") {
-                    addAssistant(entry.content_html || "", entry.content);
+                    addAssistant(entry.content_html || "", entry.content, {
+                        conversationId: item.id, messageId: entry.id,
+                    });
                 }
             });
         }

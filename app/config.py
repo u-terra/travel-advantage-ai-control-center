@@ -102,6 +102,12 @@ class Settings:
     # overridable for local/staging so SuccessURL/FailURL never have to
     # point at production while testing.
     orchestravel_public_base_url: str
+    # Beta Control Center (see app/admin_api.py): platform-admin allowlist,
+    # completely separate from any workspace membership role - a
+    # workspace owner/admin is NEVER a platform admin just by being one.
+    # Normalized lowercase emails. Empty (unset) = nobody is a platform
+    # admin - fail-closed by construction, never hardcoded in code.
+    orchestravel_admin_emails: frozenset[str]
 
 
 def _parse_bool(raw: str | None) -> bool:
@@ -229,6 +235,11 @@ def load_settings() -> Settings:
         os.environ.get("ORCHESTRAVEL_PUBLIC_BASE_URL", "").strip()
         or "https://app.orchestravel.ru"
     )
+    orchestravel_admin_emails = frozenset(
+        email.strip().lower()
+        for email in os.environ.get("ORCHESTRAVEL_ADMIN_EMAILS", "").split(",")
+        if email.strip()
+    )
 
     if not token:
         raise RuntimeError("BOT_TOKEN не задан. Заполните .env")
@@ -307,4 +318,5 @@ def load_settings() -> Settings:
         robokassa_standard_price_rub=robokassa_standard_price_rub,
         orchestravel_subscription_days=orchestravel_subscription_days,
         orchestravel_public_base_url=orchestravel_public_base_url,
+        orchestravel_admin_emails=orchestravel_admin_emails,
     )

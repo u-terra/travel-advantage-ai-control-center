@@ -230,6 +230,18 @@ class ArtifactRepository:
             row = await self._artifact_row(db, workspace_id, artifact_id)
         return _artifact_from_row(row) if row is not None else None
 
+    async def count_created_since(self, since_iso: str) -> int:
+        """Beta Control Center dashboard only (app/admin_api.py) - global
+        (cross-tenant) count, covering materials created from either
+        channel (Telegram or Web), unlike every other read here."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM artifacts WHERE created_at >= ?",
+                (since_iso,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
     async def list_artifacts(
         self, workspace_id: int, limit: int = 50, status: str | None = None
     ) -> list[Artifact]:

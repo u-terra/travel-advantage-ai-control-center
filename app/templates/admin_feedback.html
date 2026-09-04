@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Feedback — ORCHESTRAVEL Beta Control Center</title>
+<style>
+* { box-sizing: border-box; }
+:root {
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3; --teal-soft: rgba(23,179,163,.12);
+    --amber: #b4762b; --amber-soft: rgba(180,118,43,.12);
+    --ok: #1f9d55; --ok-soft: rgba(31,157,85,.1);
+    --bg: #f4f6fa; --card: #ffffff; --border: #e3e7ee; --text: #16202f; --text-muted: #66728a;
+    --sidebar-text: #c4cede; --sidebar-text-dim: #8792ac;
+}
+html, body { margin: 0; min-height: 100%; font-family: 'Inter','Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,'Helvetica Neue',Arial,sans-serif; background: var(--bg); color: var(--text); }
+.shell { display: flex; min-height: 100vh; }
+.sidebar { flex: 0 0 220px; background: var(--sidebar-grad); color: var(--sidebar-text); padding: 20px 14px; }
+.sidebar .brand { font-size: 14px; font-weight: 700; color: white; }
+.sidebar .sub { font-size: 11.5px; color: var(--sidebar-text-dim); margin-bottom: 22px; }
+.sidebar nav a { display: block; padding: 9px 10px; border-radius: 8px; color: var(--sidebar-text); text-decoration: none; font-size: 13.5px; margin-bottom: 2px; }
+.sidebar nav a:hover { background: rgba(255,255,255,.06); color: white; }
+.sidebar nav a.active { background: var(--teal-soft); color: white; font-weight: 600; }
+.main { flex: 1; padding: 24px 28px; min-width: 0; }
+h1 { font-size: 19px; margin: 0 0 14px; }
+.filters { display: flex; gap: 8px; margin-bottom: 14px; }
+.filters select { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; font-family: inherit; }
+.table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--text-muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; }
+.rating-up { color: var(--ok); font-weight: 700; }
+.rating-down { color: var(--amber); font-weight: 700; }
+select.status-select { border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font-size: 12px; }
+.loading { color: var(--text-muted); padding: 16px; font-size: 13px; }
+@media (max-width: 820px) { .shell { flex-direction: column; } .sidebar { flex: none; display: flex; gap: 4px; overflow-x: auto; padding: 10px; } .sidebar .brand, .sidebar .sub { display: none; } .sidebar nav { display: flex; gap: 4px; } .main { padding: 16px; } }
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">ORCHESTRAVEL</div>
+        <div class="sub">Beta Control Center</div>
+        <nav id="adminNav"></nav>
+    </aside>
+    <main class="main">
+        <h1>Feedback</h1>
+        <div class="filters">
+            <select id="statusFilter">
+                <option value="">Все статусы</option>
+                <option value="new">New</option>
+                <option value="reviewed">Reviewed</option>
+                <option value="resolved">Resolved</option>
+            </select>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th>Дата</th><th>Workspace</th><th>Оценка</th><th>Причина</th><th>Комментарий</th>
+                    <th>Conversation / Message</th><th>Статус</th>
+                </tr></thead>
+                <tbody id="tbody"><tr><td colspan="7" class="loading">Загрузка…</td></tr></tbody>
+            </table>
+        </div>
+    </main>
+</div>
+
+<script>
+const ADMIN_NAV_ITEMS = [
+    ["/admin", "Обзор"], ["/admin/workspaces", "Пользователи / Workspaces"],
+    ["/admin/billing", "Подписки / Оплаты"], ["/admin/errors", "Ошибки"],
+    ["/admin/activity", "Активность"], ["/admin/feedback", "Feedback"],
+    ["/admin/health", "Health"], ["/admin/audit-log", "Audit log"],
+];
+function renderAdminNav(containerId, currentPath) {
+    const nav = document.createElement("nav");
+    ADMIN_NAV_ITEMS.forEach(([href, label]) => {
+        const a = document.createElement("a");
+        a.href = href; a.textContent = label;
+        if (href === currentPath) a.classList.add("active");
+        nav.appendChild(a);
+    });
+    const container = document.getElementById(containerId);
+    container.replaceWith(nav);
+    nav.id = containerId;
+}
+renderAdminNav("adminNav", "/admin/feedback");
+
+function csrfToken() {
+    return document.cookie.split("; ").find((row) => row.startsWith("ta_csrf="))?.split("=")[1] || "";
+}
+
+const REASON_LABELS = {
+    not_understood: "Не понял задачу", wrong_answer: "Неверный ответ",
+    too_generic: "Слишком общий", too_long: "Слишком длинный",
+    too_short: "Слишком короткий", other: "Другое",
+};
+
+async function updateStatus(feedbackId, status) {
+    await fetch(`/api/admin/feedback/${feedbackId}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+        body: JSON.stringify({ confirm: true, status }),
+    });
+}
+
+async function load() {
+    const tbody = document.getElementById("tbody");
+    tbody.innerHTML = '<tr><td colspan="7" class="loading">Загрузка…</td></tr>';
+    const status = document.getElementById("statusFilter").value;
+    const params = status ? "?status=" + encodeURIComponent(status) : "";
+    try {
+        const response = await fetch("/api/admin/feedback" + params);
+        if (response.status === 404) {
+            document.body.innerHTML = "<p style='padding:40px;font-family:sans-serif;'>Not found.</p>";
+            return;
+        }
+        const data = await response.json();
+        const items = data.feedback || [];
+        tbody.innerHTML = "";
+        if (items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="loading">Отзывов пока нет.</td></tr>';
+        }
+        items.forEach(f => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${f.created_at.slice(0, 16).replace("T", " ")}</td>
+                <td>#${f.workspace_id}</td>
+                <td class="${f.rating === 'up' ? 'rating-up' : 'rating-down'}">${f.rating === 'up' ? '👍' : '👎'}</td>
+                <td>${f.reason ? (REASON_LABELS[f.reason] || f.reason) : "—"}</td>
+                <td>${f.comment ? f.comment.replace(/</g, "&lt;") : "—"}</td>
+                <td>#${f.conversation_id} / #${f.message_id}</td>
+                <td></td>
+            `;
+            const statusCell = tr.querySelector("td:last-child");
+            const select = document.createElement("select");
+            select.className = "status-select";
+            ["new", "reviewed", "resolved"].forEach(s => {
+                const opt = document.createElement("option");
+                opt.value = s; opt.textContent = s;
+                if (s === f.status) opt.selected = true;
+                select.appendChild(opt);
+            });
+            select.addEventListener("change", () => updateStatus(f.id, select.value));
+            statusCell.appendChild(select);
+            tbody.appendChild(tr);
+        });
+    } catch (_) {
+        tbody.innerHTML = '<tr><td colspan="7" class="loading">Ошибка загрузки.</td></tr>';
+    }
+}
+
+document.getElementById("statusFilter").addEventListener("change", load);
+load();
+</script>
+
+</body>
+</html>

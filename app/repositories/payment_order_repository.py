@@ -69,6 +69,36 @@ class PaymentOrderRepository:
             raise RuntimeError("Не удалось создать payment order")
         return row
 
+    async def count_since(self, since_iso: str, *, status: str | None = None) -> int:
+        """Beta Control Center dashboard only (app/admin_api.py) - global
+        (cross-tenant) count."""
+        clause = "created_at >= ?"
+        params: list[object] = [since_iso]
+        if status is not None:
+            clause += " AND status = ?"
+            params.append(status)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM workspace_payment_orders WHERE {clause}", params,
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def list_for_workspace(
+        self, workspace_id: int, *, limit: int = 50,
+    ) -> list[PaymentOrder]:
+        """Workspace card in the Beta Control Center (app/admin_api.py) -
+        every order for one workspace, newest first."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM workspace_payment_orders WHERE workspace_id = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (workspace_id, limit),
+            )
+            rows = await cursor.fetchall()
+        return [_from_row(row) for row in rows]
+
     async def get_order(self, order_id: int) -> PaymentOrder | None:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

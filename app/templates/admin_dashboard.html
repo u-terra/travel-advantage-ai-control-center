@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin — ORCHESTRAVEL Beta Control Center</title>
+<style>
+* { box-sizing: border-box; }
+:root {
+    --navy-950: #0a0f1c; --navy-900: #0d1424; --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3; --teal-dark: #0f9488; --teal-soft: rgba(23,179,163,.12);
+    --amber: #b4762b; --amber-soft: rgba(180,118,43,.12);
+    --danger: #c94b4b; --danger-soft: rgba(201,75,75,.1);
+    --ok: #1f9d55; --ok-soft: rgba(31,157,85,.1);
+    --bg: #f4f6fa; --card: #ffffff; --border: #e3e7ee; --text: #16202f; --text-muted: #66728a;
+    --sidebar-text: #c4cede; --sidebar-text-dim: #8792ac; --sidebar-border: rgba(255,255,255,.08);
+}
+html, body { margin: 0; min-height: 100%; font-family: 'Inter','Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,'Helvetica Neue',Arial,sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+.shell { display: flex; min-height: 100vh; }
+.sidebar { flex: 0 0 220px; background: var(--sidebar-grad); color: var(--sidebar-text); padding: 20px 14px; }
+.sidebar .brand { font-size: 14px; font-weight: 700; color: white; margin-bottom: 2px; }
+.sidebar .sub { font-size: 11.5px; color: var(--sidebar-text-dim); margin-bottom: 22px; }
+.sidebar nav a { display: block; padding: 9px 10px; border-radius: 8px; color: var(--sidebar-text); text-decoration: none; font-size: 13.5px; margin-bottom: 2px; }
+.sidebar nav a:hover { background: rgba(255,255,255,.06); color: white; }
+.sidebar nav a.active { background: var(--teal-soft); color: white; font-weight: 600; }
+.main { flex: 1; padding: 24px 28px; min-width: 0; }
+.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 10px; }
+h1 { font-size: 19px; margin: 0; }
+.test-banner { background: var(--amber-soft); color: var(--amber); border-radius: 10px; padding: 8px 14px; font-size: 12.5px; font-weight: 700; display: none; }
+.test-banner.show { display: inline-block; }
+.window-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+.window-tabs button { border: 1px solid var(--border); background: var(--card); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; color: var(--text-muted); }
+.window-tabs button.active { background: var(--teal); color: white; border-color: var(--teal); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 22px; }
+.tile { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.tile .label { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
+.tile .value { font-size: 22px; font-weight: 700; }
+.tile .sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+.section-title { font-size: 14px; font-weight: 700; margin: 24px 0 10px; }
+.status-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.badge { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 5px 12px; font-size: 12.5px; font-weight: 600; background: var(--card); border: 1px solid var(--border); }
+.badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.badge.ok .dot { background: var(--ok); }
+.badge.warn .dot { background: var(--amber); }
+.badge.danger .dot { background: var(--danger); }
+.loading { color: var(--text-muted); font-size: 13px; }
+@media (max-width: 820px) {
+    .shell { flex-direction: column; }
+    .sidebar { flex: none; display: flex; align-items: center; gap: 4px; overflow-x: auto; padding: 10px; }
+    .sidebar .brand, .sidebar .sub { display: none; }
+    .sidebar nav { display: flex; gap: 4px; }
+    .main { padding: 16px; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">ORCHESTRAVEL</div>
+        <div class="sub">Beta Control Center</div>
+        <nav id="adminNav"></nav>
+    </aside>
+    <main class="main">
+        <div class="topbar">
+            <h1>Обзор</h1>
+            <span class="test-banner" id="testBanner">⚠️ ROBOKASSA_IS_TEST — тестовый режим оплаты</span>
+        </div>
+
+        <div class="window-tabs">
+            <button type="button" class="active" data-window="today">Сегодня (24ч)</button>
+            <button type="button" data-window="last_7_days">7 дней</button>
+        </div>
+
+        <div class="grid" id="metricsGrid"><div class="loading">Загрузка…</div></div>
+
+        <div class="section-title">Подписки по статусу</div>
+        <div class="status-row" id="subscriptionStatuses"><div class="loading">Загрузка…</div></div>
+    </main>
+</div>
+
+<script>
+const ADMIN_NAV_ITEMS = [
+    ["/admin", "Обзор"],
+    ["/admin/workspaces", "Пользователи / Workspaces"],
+    ["/admin/billing", "Подписки / Оплаты"],
+    ["/admin/errors", "Ошибки"],
+    ["/admin/activity", "Активность"],
+    ["/admin/feedback", "Feedback"],
+    ["/admin/health", "Health"],
+    ["/admin/audit-log", "Audit log"],
+];
+function renderAdminNav(containerId, currentPath) {
+    const nav = document.createElement("nav");
+    ADMIN_NAV_ITEMS.forEach(([href, label]) => {
+        const a = document.createElement("a");
+        a.href = href;
+        a.textContent = label;
+        if (href === currentPath) a.classList.add("active");
+        nav.appendChild(a);
+    });
+    const container = document.getElementById(containerId);
+    container.replaceWith(nav);
+    nav.id = containerId;
+}
+renderAdminNav("adminNav", "/admin");
+
+const METRIC_LABELS = {
+    registered_web_users: "Зарегистрировано (web)",
+    active_workspaces: "Активные workspace",
+    active_users: "Активные пользователи",
+    conversations: "Разговоры",
+    messages: "Сообщения / AI-запросы",
+    uploads: "Загрузки файлов",
+    competitor_analyses: "Анализы конкурентов",
+    materials_created: "Материалы (созданы)",
+    signals_read: "Radar: просмотры сигналов",
+    errors: "Ошибки",
+    feedback_up: "Feedback 👍",
+    feedback_down: "Feedback 👎",
+    llm_calls: "LLM-вызовы",
+    llm_tokens: "LLM-токены",
+    llm_cost_usd: "LLM-стоимость (USD)",
+    payments_created: "Платежи созданы",
+    payments_paid: "Платежи оплачены",
+};
+
+let dashboardData = null;
+let currentWindow = "today";
+
+function fmt(value) {
+    if (value === null || value === undefined) return "—";
+    if (typeof value === "number" && !Number.isInteger(value)) return value.toFixed(4);
+    return value;
+}
+
+function renderMetrics() {
+    if (!dashboardData) return;
+    const metrics = dashboardData[currentWindow];
+    const grid = document.getElementById("metricsGrid");
+    grid.innerHTML = "";
+    Object.entries(METRIC_LABELS).forEach(([key, label]) => {
+        const tile = document.createElement("div");
+        tile.className = "tile";
+        tile.innerHTML = `<div class="label">${label}</div><div class="value">${fmt(metrics[key])}</div>`;
+        grid.appendChild(tile);
+    });
+}
+
+const SUB_STATUS_LABELS = {
+    trial: "Trial", beta: "Beta", active: "Active",
+    past_due: "Past due", expired: "Expired", suspended: "Suspended",
+};
+const SUB_STATUS_CLASS = {
+    active: "ok", trial: "ok", beta: "ok",
+    past_due: "warn", expired: "warn", suspended: "danger",
+};
+
+function renderSubscriptions() {
+    const container = document.getElementById("subscriptionStatuses");
+    container.innerHTML = "";
+    const byStatus = dashboardData.subscriptions_by_status || {};
+    const keys = Object.keys(SUB_STATUS_LABELS);
+    if (keys.every(k => !byStatus[k])) {
+        container.innerHTML = '<span class="loading">Нет данных.</span>';
+        return;
+    }
+    keys.forEach(key => {
+        const count = byStatus[key] || 0;
+        const badge = document.createElement("span");
+        badge.className = `badge ${SUB_STATUS_CLASS[key] || ""}`;
+        badge.innerHTML = `<span class="dot"></span>${SUB_STATUS_LABELS[key]}: ${count}`;
+        container.appendChild(badge);
+    });
+}
+
+async function load() {
+    try {
+        const response = await fetch("/api/admin/dashboard");
+        if (response.status === 404) {
+            document.body.innerHTML = "<p style='padding:40px;font-family:sans-serif;'>Not found.</p>";
+            return;
+        }
+        dashboardData = await response.json();
+        if (dashboardData.robokassa_is_test) {
+            document.getElementById("testBanner").classList.add("show");
+        }
+        renderMetrics();
+        renderSubscriptions();
+    } catch (_) {
+        document.getElementById("metricsGrid").innerHTML = '<div class="loading">Не удалось загрузить данные.</div>';
+    }
+}
+
+document.querySelectorAll(".window-tabs button").forEach(btn => {
+    btn.addEventListener("click", () => {
+        document.querySelectorAll(".window-tabs button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        currentWindow = btn.dataset.window;
+        renderMetrics();
+    });
+});
+
+load();
+</script>
+
+</body>
+</html>

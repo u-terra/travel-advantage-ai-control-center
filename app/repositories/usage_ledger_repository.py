@@ -99,6 +99,49 @@ class UsageLedgerRepository:
         events = await self.list_for_workspace(workspace_id, since=since, limit=100_000)
         return _summarize(workspace_id, events)
 
+    async def list_all(
+        self, *, since: str | None = None, limit: int = 100_000,
+    ) -> list[UsageEvent]:
+        """Beta Control Center dashboard only (app/admin_api.py) - global
+        (cross-tenant), unlike every other read here."""
+        query = "SELECT * FROM usage_events"
+        params: list[object] = []
+        if since is not None:
+            query += " WHERE occurred_at >= ?"
+            params.append(since)
+        query += " ORDER BY occurred_at DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, params)
+            rows = await cursor.fetchall()
+        return [_event_from_row(row) for row in rows]
+
+    async def call_counts_since_for_workspaces(
+        self, workspace_ids: list[int], since_iso: str,
+    ) -> dict[int, int]:
+        """Beta Control Center users/workspaces list only (app/admin_api.py):
+        one batched GROUP BY for exactly the workspace_ids on the current
+        page, instead of one summary_for_workspace() call per row."""
+        if not workspace_ids:
+            return {}
+        placeholders = ",".join("?" for _ in workspace_ids)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"SELECT workspace_id, COUNT(*) FROM usage_events "
+                f"WHERE occurred_at >= ? AND workspace_id IN ({placeholders}) "
+                "GROUP BY workspace_id",
+                (since_iso, *workspace_ids),
+            )
+            rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    async def global_summary_since(self, since_iso: str) -> WorkspaceUsageSummary:
+        """workspace_id=0 is a sentinel - this summary spans every
+        workspace, it does not describe workspace 0."""
+        events = await self.list_all(since=since_iso, limit=200_000)
+        return _summarize(0, events)
+
     async def known_workspace_ids(self, *, since: str | None = None) -> list[int]:
         """Workspaces that have at least one recorded usage event - the
         starting point for a per-workspace report across all test users."""

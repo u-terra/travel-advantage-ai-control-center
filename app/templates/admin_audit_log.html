@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Audit log — ORCHESTRAVEL Beta Control Center</title>
+<style>
+* { box-sizing: border-box; }
+:root {
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3; --teal-soft: rgba(23,179,163,.12);
+    --bg: #f4f6fa; --card: #ffffff; --border: #e3e7ee; --text: #16202f; --text-muted: #66728a;
+    --sidebar-text: #c4cede; --sidebar-text-dim: #8792ac;
+}
+html, body { margin: 0; min-height: 100%; font-family: 'Inter','Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,'Helvetica Neue',Arial,sans-serif; background: var(--bg); color: var(--text); }
+.shell { display: flex; min-height: 100vh; }
+.sidebar { flex: 0 0 220px; background: var(--sidebar-grad); color: var(--sidebar-text); padding: 20px 14px; }
+.sidebar .brand { font-size: 14px; font-weight: 700; color: white; }
+.sidebar .sub { font-size: 11.5px; color: var(--sidebar-text-dim); margin-bottom: 22px; }
+.sidebar nav a { display: block; padding: 9px 10px; border-radius: 8px; color: var(--sidebar-text); text-decoration: none; font-size: 13.5px; margin-bottom: 2px; }
+.sidebar nav a:hover { background: rgba(255,255,255,.06); color: white; }
+.sidebar nav a.active { background: var(--teal-soft); color: white; font-weight: 600; }
+.main { flex: 1; padding: 24px 28px; min-width: 0; }
+h1 { font-size: 19px; margin: 0 0 6px; }
+.note { font-size: 12.5px; color: var(--text-muted); margin-bottom: 16px; }
+.table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; white-space: pre-wrap; word-break: break-word; }
+th { color: var(--text-muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; }
+code { font-size: 11.5px; background: var(--bg); border-radius: 4px; padding: 1px 4px; }
+.loading { color: var(--text-muted); padding: 16px; font-size: 13px; }
+@media (max-width: 820px) { .shell { flex-direction: column; } .sidebar { flex: none; display: flex; gap: 4px; overflow-x: auto; padding: 10px; } .sidebar .brand, .sidebar .sub { display: none; } .sidebar nav { display: flex; gap: 4px; } .main { padding: 16px; } }
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">ORCHESTRAVEL</div>
+        <div class="sub">Beta Control Center</div>
+        <nav id="adminNav"></nav>
+    </aside>
+    <main class="main">
+        <h1>Audit log</h1>
+        <div class="note">Append-only журнал всех admin-действий. Секреты сюда никогда не пишутся.</div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th>Дата</th><th>Admin</th><th>Действие</th><th>Workspace</th><th>До</th><th>После</th>
+                </tr></thead>
+                <tbody id="tbody"><tr><td colspan="6" class="loading">Загрузка…</td></tr></tbody>
+            </table>
+        </div>
+    </main>
+</div>
+
+<script>
+const ADMIN_NAV_ITEMS = [
+    ["/admin", "Обзор"], ["/admin/workspaces", "Пользователи / Workspaces"],
+    ["/admin/billing", "Подписки / Оплаты"], ["/admin/errors", "Ошибки"],
+    ["/admin/activity", "Активность"], ["/admin/feedback", "Feedback"],
+    ["/admin/health", "Health"], ["/admin/audit-log", "Audit log"],
+];
+function renderAdminNav(containerId, currentPath) {
+    const nav = document.createElement("nav");
+    ADMIN_NAV_ITEMS.forEach(([href, label]) => {
+        const a = document.createElement("a");
+        a.href = href; a.textContent = label;
+        if (href === currentPath) a.classList.add("active");
+        nav.appendChild(a);
+    });
+    const container = document.getElementById(containerId);
+    container.replaceWith(nav);
+    nav.id = containerId;
+}
+renderAdminNav("adminNav", "/admin/audit-log");
+
+async function load() {
+    const tbody = document.getElementById("tbody");
+    try {
+        const response = await fetch("/api/admin/audit-log");
+        if (response.status === 404) {
+            document.body.innerHTML = "<p style='padding:40px;font-family:sans-serif;'>Not found.</p>";
+            return;
+        }
+        const data = await response.json();
+        const entries = data.entries || [];
+        tbody.innerHTML = "";
+        if (entries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="loading">Пока нет записей.</td></tr>';
+        }
+        entries.forEach(e => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${e.occurred_at.slice(0, 19).replace("T", " ")}</td>
+                <td>${e.admin_email}</td>
+                <td>${e.action}</td>
+                <td>${e.target_workspace_id !== null ? "#" + e.target_workspace_id : "—"}</td>
+                <td>${e.before ? "<code>" + e.before.replace(/</g, "&lt;") + "</code>" : "—"}</td>
+                <td>${e.after ? "<code>" + e.after.replace(/</g, "&lt;") + "</code>" : "—"}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (_) {
+        tbody.innerHTML = '<tr><td colspan="6" class="loading">Ошибка загрузки.</td></tr>';
+    }
+}
+
+load();
+</script>
+
+</body>
+</html>

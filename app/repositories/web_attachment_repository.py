@@ -80,6 +80,17 @@ class WebAttachmentRepository:
             await db.executescript(_SCHEMA)
             await db.commit()
 
+    async def count_uploads_since(self, since_iso: str) -> int:
+        """Beta Control Center dashboard only (app/admin_api.py) - global
+        (cross-tenant) count, unlike every other read here."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM web_attachments WHERE created_at >= ?",
+                (since_iso,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
     async def create_pending(
         self, *, workspace_id: int, telegram_user_id: int, conversation_id: int,
         original_filename: str, stored_filename: str, content_type: str,

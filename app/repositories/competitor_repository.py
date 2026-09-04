@@ -206,6 +206,20 @@ class CompetitorRepository:
             return None
         return _intelligence_from_json(row["payload_json"])
 
+    async def count_intelligence_analyses_since(self, since_iso: str) -> int:
+        """Beta Control Center dashboard only (app/admin_api.py) - global
+        (cross-tenant) count of analyses (a re-analysis updates the same
+        row in place - see save_intelligence - so this counts "analyzed_at
+        touched since X", not a full history of every past run)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM competitor_intelligence_snapshots "
+                "WHERE analyzed_at >= ?",
+                (since_iso,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
     async def list_intelligence_dates_for_workspace(
         self, workspace_id: int,
     ) -> dict[int, str]:

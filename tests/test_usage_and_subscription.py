@@ -227,6 +227,45 @@ def test_mark_past_due_and_expired_transitions(tmp_path: Path):
     assert expired.status is SubscriptionStatus.EXPIRED
 
 
+def test_mark_suspended_then_mark_active_restores_without_touching_paid_until(tmp_path: Path):
+    """mark_active() (Beta Control Center's "restore" admin action) must
+    only flip status back to active - it is not a new grant, so
+    paid_until/plan from before the suspension must survive untouched."""
+    db_path = tmp_path / "db.sqlite3"
+    partners = PartnerRepository(db_path)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())
+    run(subscriptions.mark_paid(
+        workspace.id, external_payment_id="rk-1", payment_provider="robokassa",
+        paid_until="2027-01-01T00:00:00+00:00",
+    ))
+    suspended = run(subscriptions.mark_suspended(workspace.id))
+    assert suspended.status is SubscriptionStatus.SUSPENDED
+
+    restored = run(subscriptions.mark_active(workspace.id))
+    assert restored.status is SubscriptionStatus.ACTIVE
+    assert restored.paid_until == "2027-01-01T00:00:00+00:00"
+    assert restored.plan is SubscriptionPlan.STANDARD
+
+
+def test_mark_active_upserts_a_workspace_with_no_prior_row(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    partners = PartnerRepository(db_path)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())  # runs before the workspace below exists in a real flow;
+    # here it's fine either way since ensure_owner_workspace already ran -
+    # the point is that mark_active must still work via upsert even absent
+    # a pre-existing row, mirroring _set_status()'s general contract.
+    restored = run(subscriptions.mark_active(workspace.id))
+    assert restored.status is SubscriptionStatus.ACTIVE
+
+
 def test_ensure_beta_is_idempotent_for_a_freshly_provisioned_workspace(tmp_path: Path):
     db_path = tmp_path / "db.sqlite3"
     partners = PartnerRepository(db_path)

@@ -104,6 +104,34 @@ class WebConversationRepository:
             await db.executescript(_SCHEMA)
             await db.commit()
 
+    async def count_conversations_created_since(self, since_iso: str) -> int:
+        """Beta Control Center dashboard only (app/admin_api.py) - global
+        (cross-tenant) count, unlike every other read here."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM web_conversations WHERE created_at >= ?",
+                (since_iso,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def count_messages_created_since(
+        self, since_iso: str, *, role: str | None = None,
+    ) -> int:
+        """Beta Control Center dashboard only - global count."""
+        clause = "created_at >= ?"
+        params: list[object] = [since_iso]
+        if role is not None:
+            clause += " AND role = ?"
+            params.append(role)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM web_conversation_messages WHERE {clause}",
+                params,
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
     async def create_conversation(
         self, workspace_id: int, telegram_user_id: int, *, title: str = _DEFAULT_TITLE,
     ) -> WebConversation:

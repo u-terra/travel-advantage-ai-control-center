@@ -263,8 +263,17 @@ class SubscriptionRepository:
     async def mark_suspended(self, workspace_id: int) -> Subscription | None:
         """Administrative override (moderation/abuse), independent of
         billing - replaces the suspended state partner_workspaces.access_status
-        used to represent. Not wired to any admin command yet."""
+        used to represent. Wired to the Beta Control Center's "suspend"
+        admin action (app/admin_api.py)."""
         return await self._set_status(workspace_id, SubscriptionStatus.SUSPENDED)
+
+    async def mark_active(self, workspace_id: int) -> Subscription | None:
+        """Administrative "restore" - the counterpart to mark_suspended().
+        Only flips status back to 'active'; deliberately does not touch
+        plan/paid_until (a restore is not a new grant of paid time - see
+        mark_paid() for that), so restoring a suspended workspace brings
+        back exactly the access it had before suspension, no more."""
+        return await self._set_status(workspace_id, SubscriptionStatus.ACTIVE)
 
     async def _set_status(
         self, workspace_id: int, status: SubscriptionStatus,

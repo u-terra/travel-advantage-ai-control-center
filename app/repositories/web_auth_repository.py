@@ -185,6 +185,17 @@ class WebAuthRepository:
             row = await self._user_row_by_id(db, user_id)
         return _user_from_row(row) if row is not None else None
 
+    async def count_users_created_since(self, since_iso: str) -> int:
+        """Beta Control Center dashboard only (app/admin_api.py) - global
+        (cross-tenant) count, unlike every other read here."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM web_auth_users WHERE created_at >= ?",
+                (since_iso,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
     async def touch_last_login(self, user_id: int) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
