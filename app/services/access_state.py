@@ -48,12 +48,21 @@ def compute_access_state(
     административная причина (не платёжная), past_due — платёж не прошёл,
     ни то ни другое не значит "подписка активна". trial проверяется на
     истечение trial_until; beta/active — оба гранты рабочего доступа,
-    ограниченные только paid_until. expires_at=None означает бессрочно
-    (fail-open на отсутствии даты — тот же принцип, что был у
-    access_expires_at раньше). Повреждённая/непарсящаяся дата тоже не
-    блокирует уже предоставленный доступ — fail-safe в сторону не
-    потерять платящего клиента из-за проблем с данными, а не молчаливо
-    его заблокировать.
+    ограниченные только paid_until.
+
+    Дата ОТСУТСТВУЕТ (None) — легитимная, явно предусмотренная семантика
+    "бессрочно" для того статуса, где это уместно (grandfathered/beta и
+    active без paid_until - тот же принцип, что был у
+    access_expires_at=None раньше; ни один существующий workspace от
+    этого доступ не теряет).
+
+    Дата ЕСТЬ, но не парсится — это НЕ "бессрочно", это порча
+    billing/access-критичных данных: единственное поле, которое решает,
+    когда закрывать доступ, нечитаемо. Fail-closed: access_state = expired,
+    а не молчаливое продолжение доступа. Отличие от отсутствующей даты
+    принципиально — "нет даты" описывает состояние подписки, "есть
+    нечитаемая дата" описывает баг/повреждение данных, и baseline для
+    billing/access должен быть "закрыто", а не "открыто".
     """
     if status == SubscriptionStatus.SUSPENDED:
         return SUSPENDED
@@ -69,10 +78,14 @@ def compute_access_state(
 
 def _is_expired(expires_at: str | None, now: datetime | None) -> bool:
     if not expires_at:
+        # Явно отсутствующая дата - легитимное "бессрочно" для тех
+        # статусов, где это допустимо (см. compute_access_state).
         return False
     expires = _parse_datetime(expires_at)
     if expires is None:
-        return False
+        # Дата ЕСТЬ, но не парсится - billing/access-критичная порча
+        # данных, не "бессрочно". Fail-closed.
+        return True
     return _now(now) >= expires
 
 

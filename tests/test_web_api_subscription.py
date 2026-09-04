@@ -136,6 +136,49 @@ def test_expired_subscription_blocks_write_endpoint_even_with_valid_csrf(api) ->
     assert response.status_code == 402
 
 
+# ── billing/access fail-closed on malformed (not missing) dates ────────
+
+def test_malformed_trial_until_blocks_read_endpoint(api) -> None:
+    client, web_api, workspace_id = api
+    _run(web_api.subscription_repository.start_trial(workspace_id, "not-a-date"))
+
+    response = client.get("/api/materials")
+    assert response.status_code == 402
+    assert response.json()["detail"]["access_state"] == "expired"
+
+
+def test_malformed_paid_until_blocks_read_endpoint(api) -> None:
+    client, web_api, workspace_id = api
+    _run(web_api.subscription_repository.mark_paid(
+        workspace_id, external_payment_id="rk-1", payment_provider="robokassa",
+        paid_until="not-a-date",
+    ))
+
+    response = client.get("/api/materials")
+    assert response.status_code == 402
+    assert response.json()["detail"]["access_state"] == "expired"
+
+
+def test_malformed_paid_until_blocks_write_endpoint(api) -> None:
+    client, web_api, workspace_id = api
+    _run(web_api.subscription_repository.mark_paid(
+        workspace_id, external_payment_id="rk-1", payment_provider="robokassa",
+        paid_until="not-a-date",
+    ))
+
+    response = client.post("/api/competitors", json={"url": "https://example.com"})
+    assert response.status_code == 402
+
+
+def test_grandfathered_workspace_with_no_dates_is_unaffected(api) -> None:
+    """No mutation at all - the default post-login_as() state has both
+    trial_until and paid_until = NULL, never "malformed", so the
+    fail-closed-on-malformed-date rule must not touch it."""
+    client, _, _ = api
+    response = client.get("/api/materials")
+    assert response.status_code == 200
+
+
 # ── auth/account endpoints stay reachable regardless of subscription ───
 
 def test_me_stays_accessible_and_reports_state_when_expired(api) -> None:

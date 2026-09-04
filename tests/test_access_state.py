@@ -72,12 +72,35 @@ def test_stored_expired_stays_expired_regardless_of_dates() -> None:
     assert compute_access_state(SubscriptionStatus.EXPIRED, None, None) == EXPIRED
 
 
-def test_unparseable_date_is_ignored_not_locked_out() -> None:
-    """Повреждённая дата не должна сама по себе заблокировать уже
-    оплаченный доступ — fail-safe в сторону не потерять платящего клиента
-    из-за проблем с данными."""
-    assert compute_access_state(SubscriptionStatus.ACTIVE, None, "not-a-date") == ACTIVE
-    assert compute_access_state(SubscriptionStatus.TRIAL, "not-a-date", None) == TRIAL_ACTIVE
+def test_missing_paid_until_stays_unlimited_active() -> None:
+    """None (дата явно отсутствует) - легитимная семантика "бессрочно" для
+    active/beta, не ошибка."""
+    assert compute_access_state(SubscriptionStatus.ACTIVE, None, None) == ACTIVE
+    assert compute_access_state(SubscriptionStatus.BETA, None, None) == ACTIVE
+
+
+def test_missing_trial_until_stays_trial_active() -> None:
+    assert compute_access_state(SubscriptionStatus.TRIAL, None, None) == TRIAL_ACTIVE
+
+
+def test_malformed_paid_until_fails_closed_as_expired() -> None:
+    """billing/access: непарсибельная (но НЕ отсутствующая) дата - это
+    порча данных, а не "бессрочно". Fail-closed, не fail-open."""
+    assert compute_access_state(SubscriptionStatus.ACTIVE, None, "not-a-date") == EXPIRED
+    assert compute_access_state(SubscriptionStatus.BETA, None, "not-a-date") == EXPIRED
+
+
+def test_malformed_trial_until_fails_closed_as_expired() -> None:
+    assert compute_access_state(SubscriptionStatus.TRIAL, "not-a-date", None) == EXPIRED
+
+
+def test_malformed_but_irrelevant_date_does_not_matter() -> None:
+    """paid_until мусорный, но status=trial - решает trial_until, а не
+    paid_until, так что мусор в неиспользуемом поле не должен ничего
+    ломать."""
+    assert compute_access_state(
+        SubscriptionStatus.TRIAL, None, "not-a-date",
+    ) == TRIAL_ACTIVE
 
 
 def test_now_parameter_is_respected_for_deterministic_tests() -> None:

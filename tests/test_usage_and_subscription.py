@@ -374,6 +374,90 @@ def test_resolve_access_state_fails_closed_on_a_broken_read(
     assert not is_access_granted(state)
 
 
+# --- billing/access fail-closed on malformed (not missing) dates ---
+#
+# resolve_access_state() is the exact call AccessStateMiddleware makes on
+# every Telegram update (see app/access_state_gate.py) - these tests go
+# through the real repository + real compute_access_state, no mocking, so
+# they prove the Telegram gate itself fails closed, not just the pure
+# function in isolation.
+
+def test_telegram_gate_fails_closed_on_malformed_trial_until(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    partners = PartnerRepository(db_path)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())
+    run(subscriptions.start_trial(workspace.id, "not-a-date"))
+
+    assert run(subscriptions.resolve_access_state(workspace.id)) == EXPIRED
+
+    captured: dict = {}
+
+    async def handler(_event, data):
+        captured["access_state"] = data["access_state"]
+        return "ok"
+
+    middleware = AccessStateMiddleware(subscriptions)
+    workspace_context = WorkspaceContext(100, workspace.id, "owner", "active")
+    run(middleware(handler, object(), {"workspace_context": workspace_context}))
+
+    assert captured["access_state"] == EXPIRED
+    assert not is_access_granted(captured["access_state"])
+
+
+def test_telegram_gate_fails_closed_on_malformed_paid_until(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    partners = PartnerRepository(db_path)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())
+    run(subscriptions.mark_paid(
+        workspace.id, external_payment_id="rk-1", payment_provider="robokassa",
+        paid_until="not-a-date",
+    ))
+
+    assert run(subscriptions.resolve_access_state(workspace.id)) == EXPIRED
+
+    captured: dict = {}
+
+    async def handler(_event, data):
+        captured["access_state"] = data["access_state"]
+        return "ok"
+
+    middleware = AccessStateMiddleware(subscriptions)
+    workspace_context = WorkspaceContext(100, workspace.id, "owner", "active")
+    run(middleware(handler, object(), {"workspace_context": workspace_context}))
+
+    assert captured["access_state"] == EXPIRED
+    assert not is_access_granted(captured["access_state"])
+
+
+def test_grandfathered_beta_workspace_is_unaffected_by_malformed_date_rule(
+    tmp_path: Path,
+):
+    """A grandfathered/backfilled workspace never has a paid_until/trial_until
+    at all (both NULL) - the malformed-date fail-closed rule only fires on
+    a date that's actually present and unreadable, so it must not touch
+    this workspace's access at all."""
+    db_path = tmp_path / "db.sqlite3"
+    partners = PartnerRepository(db_path)
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())
+
+    row = run(subscriptions.get_for_workspace(workspace.id))
+    assert row.paid_until is None
+    assert row.trial_until is None
+    assert is_access_granted(run(subscriptions.resolve_access_state(workspace.id)))
+
+
 # --- migration: legacy access_status backfill mapping ---
 
 def _set_legacy_access_status(db_path: Path, workspace_id: int, status: str, expires_at):
