@@ -6,11 +6,13 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 from app.access_state_gate import AccessStateMiddleware
-from app.domain.partners import PartnerWorkspace, WorkspaceContext
+from app.domain.partners import WorkspaceContext
+from app.domain.subscription import SubscriptionStatus
 from app.services.access_state import (
     ACTIVE,
     EXPIRED,
     NO_WORKSPACE,
+    PAST_DUE,
     SUSPENDED,
     TRIAL_ACTIVE,
     compute_access_state,
@@ -25,56 +27,67 @@ def _run(coro: Any) -> Any:
 # --- compute_access_state: чистая логика ------------------------------------
 
 def test_active_without_expiry_stays_active() -> None:
-    assert compute_access_state("active", None) == ACTIVE
+    assert compute_access_state(SubscriptionStatus.ACTIVE, None, None) == ACTIVE
 
 
-def test_trial_active_without_expiry_stays_trial_active() -> None:
-    assert compute_access_state("trial_active", None) == TRIAL_ACTIVE
+def test_beta_without_expiry_is_granted_as_active() -> None:
+    """beta - тот же грант рабочего доступа, что и active, просто другой
+    план/происхождение подписки (см. app/domain/subscription.py)."""
+    assert compute_access_state(SubscriptionStatus.BETA, None, None) == ACTIVE
 
 
-def test_suspended_always_wins_even_with_future_expiry() -> None:
+def test_trial_without_expiry_stays_trial_active() -> None:
+    assert compute_access_state(SubscriptionStatus.TRIAL, None, None) == TRIAL_ACTIVE
+
+
+def test_suspended_always_wins_even_with_future_dates() -> None:
     future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
-    assert compute_access_state("suspended", future) == SUSPENDED
+    assert compute_access_state(SubscriptionStatus.SUSPENDED, future, future) == SUSPENDED
 
 
-def test_active_with_future_expiry_stays_active() -> None:
+def test_past_due_blocks_regardless_of_dates() -> None:
+    future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+    assert compute_access_state(SubscriptionStatus.PAST_DUE, None, future) == PAST_DUE
+    assert compute_access_state(SubscriptionStatus.PAST_DUE, None, None) == PAST_DUE
+
+
+def test_active_with_future_paid_until_stays_active() -> None:
     future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-    assert compute_access_state("active", future) == ACTIVE
+    assert compute_access_state(SubscriptionStatus.ACTIVE, None, future) == ACTIVE
 
 
-def test_trial_active_with_past_expiry_becomes_expired() -> None:
+def test_trial_with_past_trial_until_becomes_expired() -> None:
     past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-    assert compute_access_state("trial_active", past) == EXPIRED
+    assert compute_access_state(SubscriptionStatus.TRIAL, past, None) == EXPIRED
 
 
-def test_active_with_past_expiry_becomes_expired() -> None:
+def test_active_with_past_paid_until_becomes_expired() -> None:
     past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-    assert compute_access_state("active", past) == EXPIRED
+    assert compute_access_state(SubscriptionStatus.ACTIVE, None, past) == EXPIRED
 
 
-def test_stored_expired_stays_expired_regardless_of_date() -> None:
+def test_stored_expired_stays_expired_regardless_of_dates() -> None:
     future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
-    assert compute_access_state("expired", future) == EXPIRED
-    assert compute_access_state("expired", None) == EXPIRED
+    assert compute_access_state(SubscriptionStatus.EXPIRED, future, future) == EXPIRED
+    assert compute_access_state(SubscriptionStatus.EXPIRED, None, None) == EXPIRED
 
 
-def test_unparseable_expiry_is_ignored_not_locked_out() -> None:
+def test_unparseable_date_is_ignored_not_locked_out() -> None:
     """Повреждённая дата не должна сама по себе заблокировать уже
     оплаченный доступ — fail-safe в сторону не потерять платящего клиента
     из-за проблем с данными."""
-    assert compute_access_state("active", "not-a-date") == ACTIVE
-
-
-def test_unknown_access_status_fails_safe_as_expired() -> None:
-    assert compute_access_state("something_else", None) == EXPIRED
+    assert compute_access_state(SubscriptionStatus.ACTIVE, None, "not-a-date") == ACTIVE
+    assert compute_access_state(SubscriptionStatus.TRIAL, "not-a-date", None) == TRIAL_ACTIVE
 
 
 def test_now_parameter_is_respected_for_deterministic_tests() -> None:
     fixed_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     expires = "2026-01-01T00:00:00+00:00"
-    assert compute_access_state("active", expires, now=fixed_now) == EXPIRED
     assert compute_access_state(
-        "active", expires, now=fixed_now - timedelta(seconds=1)
+        SubscriptionStatus.ACTIVE, None, expires, now=fixed_now,
+    ) == EXPIRED
+    assert compute_access_state(
+        SubscriptionStatus.ACTIVE, None, expires, now=fixed_now - timedelta(seconds=1),
     ) == ACTIVE
 
 
@@ -83,18 +96,19 @@ def test_is_access_granted() -> None:
     assert is_access_granted(TRIAL_ACTIVE) is True
     assert is_access_granted(EXPIRED) is False
     assert is_access_granted(SUSPENDED) is False
+    assert is_access_granted(PAST_DUE) is False
     assert is_access_granted(NO_WORKSPACE) is False
 
 
-# --- AccessStateMiddleware ----------------------------------------------------
+# --- AccessStateMiddleware: источник - SubscriptionRepository ---------------
 
 def _ctx(workspace_id: int = 1) -> WorkspaceContext:
     return WorkspaceContext(100, workspace_id, "owner", "active")
 
 
 def test_middleware_sets_no_workspace_when_context_is_missing() -> None:
-    repository = AsyncMock()
-    mw = AccessStateMiddleware(repository)
+    subscription_repository = AsyncMock()
+    mw = AccessStateMiddleware(subscription_repository)
     handler = AsyncMock(return_value="ok")
 
     result = _run(mw(handler, object(), {"workspace_context": None}))
@@ -102,30 +116,30 @@ def test_middleware_sets_no_workspace_when_context_is_missing() -> None:
     assert result == "ok"
     handler.assert_awaited_once()
     assert handler.await_args.args[1]["access_state"] == NO_WORKSPACE
-    repository.get_workspace.assert_not_called()
+    subscription_repository.resolve_access_state.assert_not_called()
 
 
-def test_middleware_computes_state_from_workspace_row() -> None:
-    repository = AsyncMock(get_workspace=AsyncMock(return_value=PartnerWorkspace(
-        1, "W", "w", "active", "now", "now",
-        access_status="trial_active", access_expires_at=None,
-    )))
-    mw = AccessStateMiddleware(repository)
+def test_middleware_uses_subscription_repository_resolve_access_state() -> None:
+    subscription_repository = AsyncMock(
+        resolve_access_state=AsyncMock(return_value=TRIAL_ACTIVE),
+    )
+    mw = AccessStateMiddleware(subscription_repository)
     handler = AsyncMock(return_value="ok")
 
     _run(mw(handler, object(), {"workspace_context": _ctx(1)}))
 
-    repository.get_workspace.assert_awaited_once_with(1)
+    subscription_repository.resolve_access_state.assert_awaited_once_with(1)
     assert handler.await_args.args[1]["access_state"] == TRIAL_ACTIVE
 
 
-def test_middleware_falls_back_to_no_workspace_when_row_vanished() -> None:
-    """workspace_context есть, но get_workspace вернул None (рассинхрон
-    данных) — fail-safe, не рабочий доступ."""
-    repository = AsyncMock(get_workspace=AsyncMock(return_value=None))
-    mw = AccessStateMiddleware(repository)
-    handler = AsyncMock(return_value="ok")
+def test_middleware_passes_through_expired_and_suspended_states() -> None:
+    for state in (EXPIRED, SUSPENDED, PAST_DUE):
+        subscription_repository = AsyncMock(
+            resolve_access_state=AsyncMock(return_value=state),
+        )
+        mw = AccessStateMiddleware(subscription_repository)
+        handler = AsyncMock(return_value="ok")
 
-    _run(mw(handler, object(), {"workspace_context": _ctx(1)}))
+        _run(mw(handler, object(), {"workspace_context": _ctx(1)}))
 
-    assert handler.await_args.args[1]["access_state"] == NO_WORKSPACE
+        assert handler.await_args.args[1]["access_state"] == state

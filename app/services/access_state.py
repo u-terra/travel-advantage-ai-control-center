@@ -1,29 +1,33 @@
-"""Вычисление рабочего access state workspace (Stage 3A).
+"""Единая, чистая (без БД/IO) логика вычисления фактического access_state
+workspace - используется ОБОИМИ каналами продукта через один и тот же
+вызов: SubscriptionRepository.resolve_access_state() (см.
+app/repositories/subscription_repository.py), которая читает
+workspace_subscriptions (единственный источник subscription state - см.
+app/domain/subscription.py) и вызывает compute_access_state() ниже.
+Telegram (app/access_state_gate.py) и Web (app/web_api.py) оба идут через
+resolve_access_state() - ни один из них не вычисляет access_state
+самостоятельно, поэтому оба канала всегда видят одно и то же значение.
 
-Чистая логика без БД/IO — принимает уже прочитанные access_status/
-access_expires_at и текущий момент времени, возвращает один из states.
-Используется app/access_state_gate.py (middleware) и тестами напрямую.
-
-Это НЕ то же самое, что PartnerWorkspace.status (жизненный цикл самого
-workspace) и НЕ то же самое, что workspace_source_subscriptions (какие
-источники мониторить) — отдельная, узкая ответственность: подписка/пробный
-доступ.
+partner_workspaces.access_status/access_expires_at (app/domain/partners.py)
+здесь больше не читаются - тот механизм deprecated, читается один раз
+только для миграционного бэкфилла в SubscriptionRepository.init().
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from app.domain.subscription import SubscriptionStatus
+
 NO_WORKSPACE = "no_workspace"
 TRIAL_ACTIVE = "trial_active"
 ACTIVE = "active"
+PAST_DUE = "past_due"
 EXPIRED = "expired"
 SUSPENDED = "suspended"
 
-# Значения, которые реально хранятся в partner_workspaces.access_status.
-STORED_ACCESS_STATUSES = frozenset({TRIAL_ACTIVE, ACTIVE, EXPIRED, SUSPENDED})
-
-# Значения access_state, при которых пользователь получает рабочий Оркестратор.
+# Значения access_state, при которых пользователь получает рабочий
+# Оркестратор - одинаково для Web и Telegram.
 GRANTED_ACCESS_STATES = frozenset({TRIAL_ACTIVE, ACTIVE})
 
 
@@ -32,31 +36,44 @@ def is_access_granted(access_state: str) -> bool:
 
 
 def compute_access_state(
-    access_status: str,
-    access_expires_at: str | None,
+    status: SubscriptionStatus,
+    trial_until: str | None,
+    paid_until: str | None,
     *,
     now: datetime | None = None,
 ) -> str:
-    """access_status/access_expires_at workspace → фактический access_state.
+    """workspace_subscriptions row -> фактический access_state.
 
-    suspended всегда побеждает независимо от даты. active/trial_active с
-    истёкшим access_expires_at превращаются в expired на лету — отдельного
-    крон-джоба, который бы физически переписывал access_status, не требуется.
-    access_expires_at=None означает бессрочный доступ (так после additive
-    миграции остаются все существующие production workspace).
-    Неизвестный/повреждённый access_status — fail-safe как expired, а не
-    как active: лучше по ошибке показать лобби, чem по ошибке открыть
-    рабочий доступ.
+    suspended и past_due всегда блокируют, независимо от дат: suspended —
+    административная причина (не платёжная), past_due — платёж не прошёл,
+    ни то ни другое не значит "подписка активна". trial проверяется на
+    истечение trial_until; beta/active — оба гранты рабочего доступа,
+    ограниченные только paid_until. expires_at=None означает бессрочно
+    (fail-open на отсутствии даты — тот же принцип, что был у
+    access_expires_at раньше). Повреждённая/непарсящаяся дата тоже не
+    блокирует уже предоставленный доступ — fail-safe в сторону не
+    потерять платящего клиента из-за проблем с данными, а не молчаливо
+    его заблокировать.
     """
-    if access_status not in STORED_ACCESS_STATUSES:
-        return EXPIRED
-    if access_status == SUSPENDED:
+    if status == SubscriptionStatus.SUSPENDED:
         return SUSPENDED
-    if access_expires_at:
-        expires = _parse_datetime(access_expires_at)
-        if expires is not None and _now(now) >= expires:
-            return EXPIRED
-    return access_status
+    if status == SubscriptionStatus.PAST_DUE:
+        return PAST_DUE
+    if status == SubscriptionStatus.EXPIRED:
+        return EXPIRED
+    if status == SubscriptionStatus.TRIAL:
+        return EXPIRED if _is_expired(trial_until, now) else TRIAL_ACTIVE
+    # BETA и ACTIVE - оба гранты рабочего доступа, отличаются только planом.
+    return EXPIRED if _is_expired(paid_until, now) else ACTIVE
+
+
+def _is_expired(expires_at: str | None, now: datetime | None) -> bool:
+    if not expires_at:
+        return False
+    expires = _parse_datetime(expires_at)
+    if expires is None:
+        return False
+    return _now(now) >= expires
 
 
 def _now(now: datetime | None) -> datetime:
@@ -67,8 +84,6 @@ def _parse_datetime(raw: str) -> datetime | None:
     try:
         value = datetime.fromisoformat(raw)
     except ValueError:
-        # Повреждённая/непарсящаяся дата — не должна сама по себе заблокировать
-        # уже оплаченный доступ; относимся как к отсутствию даты истечения.
         return None
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)

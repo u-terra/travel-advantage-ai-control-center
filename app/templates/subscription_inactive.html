@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Подписка неактивна — ORCHESTRAVEL</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+    --navy-950: #0a0f1c;
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+    --warn: #b4762b;
+    --warn-soft: rgba(180, 118, 43, .1);
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--sidebar-grad);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border-radius: 16px;
+    padding: 32px 28px 28px;
+    box-shadow: 0 20px 60px rgba(5, 10, 20, .35);
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    margin-bottom: 24px;
+}
+
+.brand-mark {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--teal) 0%, #3fd1c4 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 16px rgba(23, 179, 163, .35);
+}
+
+.brand-mark svg { width: 18px; height: 18px; }
+
+.brand-text .name { font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.25; }
+.brand-text .sub { font-size: 12px; color: var(--text-muted); }
+
+h1 { font-size: 19px; margin: 0 0 10px; }
+
+.state-box {
+    background: var(--warn-soft);
+    color: var(--warn);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 14px;
+}
+
+p { font-size: 13.5px; color: var(--text-muted); line-height: 1.5; margin: 0 0 20px; }
+
+.actions { display: flex; flex-direction: column; gap: 10px; }
+
+.btn {
+    display: block;
+    width: 100%;
+    border: 0;
+    border-radius: 10px;
+    padding: 11px 16px;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    text-decoration: none;
+    font-family: inherit;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: white;
+    box-shadow: 0 4px 14px rgba(15, 148, 136, .28);
+}
+
+.btn-secondary {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <div class="card">
+        <div class="brand">
+            <div class="brand-mark">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2l2.6 6.6L21 11l-6.4 2.4L12 20l-2.6-6.6L3 11l6.4-2.4z"/>
+                </svg>
+            </div>
+            <div class="brand-text">
+                <div class="name">ORCHESTRAVEL</div>
+                <div class="sub">Рабочий кабинет партнёра</div>
+            </div>
+        </div>
+
+        <h1>Рабочий доступ недоступен</h1>
+        <div class="state-box" id="stateBox">Проверяем статус подписки…</div>
+        <p id="stateText">
+            Одна подписка рабочего пространства даёт доступ и в Telegram, и в этот
+            веб-кабинет. Сейчас доступ закрыт для обоих каналов — оформление
+            подключения/продления пока обрабатывается вручную, обратитесь к
+            администратору сервиса.
+        </p>
+
+        <div class="actions">
+            <button type="button" class="btn btn-secondary" id="refreshBtn">Проверить снова</button>
+            <button type="button" class="btn btn-secondary" id="logoutBtn">Выйти</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const STATE_LABELS = {
+    trial_active: "Пробный доступ активен",
+    active: "Подписка активна",
+    expired: "Срок доступа истёк",
+    past_due: "Платёж не прошёл",
+    suspended: "Доступ приостановлен администратором",
+    no_workspace: "Рабочее пространство не найдено",
+};
+
+const stateBox = document.getElementById("stateBox");
+const logoutBtn = document.getElementById("logoutBtn");
+const refreshBtn = document.getElementById("refreshBtn");
+
+async function loadState() {
+    try {
+        const response = await fetch("/api/auth/me");
+        if (response.status === 401) {
+            window.location.href = "/login";
+            return;
+        }
+        const data = await response.json();
+        if (data.access_granted) {
+            window.location.href = "/";
+            return;
+        }
+        stateBox.textContent = STATE_LABELS[data.access_state] || "Доступ сейчас закрыт";
+    } catch (_) {
+        stateBox.textContent = "Не удалось проверить статус подписки.";
+    }
+}
+
+refreshBtn.addEventListener("click", loadState);
+
+logoutBtn.addEventListener("click", async () => {
+    const csrf = document.cookie
+        .split("; ")
+        .find((row) => row.startsWith("ta_csrf="))
+        ?.split("=")[1];
+    try {
+        await fetch("/api/auth/logout", {
+            method: "POST",
+            headers: csrf ? { "X-CSRF-Token": csrf } : {},
+        });
+    } catch (_) {
+        // best-effort - redirect to /login regardless.
+    }
+    window.location.href = "/login";
+});
+
+loadState();
+</script>
+
+</body>
+</html>

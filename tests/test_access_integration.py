@@ -172,8 +172,11 @@ def test_workspace_middleware_is_registered_after_allowlist(
         "aiogram"
     ).Router())
     repository = MagicMock()
+    subscription_repository = MagicMock()
     dp = _build_dispatcher(
-        frozenset({OWNER_ID}), None, None, None, partner_repository=repository
+        frozenset({OWNER_ID}), None, None, None,
+        partner_repository=repository,
+        subscription_repository=subscription_repository,
     )
     for observer in (dp.message, dp.callback_query):
         middlewares = observer.outer_middleware._middlewares

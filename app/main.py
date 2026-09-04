@@ -92,10 +92,13 @@ def _build_dispatcher(
         # Требует уже готовый workspace_context — регистрируется следом,
         # тем же принципом, что и WorkspaceContextMiddleware. Stage 3A:
         # решает, доступен ли рабочий Оркестратор (workspace + active/
-        # trial_active) или нужно лобби — независимо от allowlist.
-        access_state_gate = AccessStateMiddleware(partner_repository)
-        dp.message.outer_middleware(access_state_gate)
-        dp.callback_query.outer_middleware(access_state_gate)
+        # trial_active) или нужно лобби — независимо от allowlist. Источник
+        # subscription state - SubscriptionRepository (тот же, что читает
+        # Web, см. app/web_api.py) - не partner_repository.
+        if subscription_repository is not None:
+            access_state_gate = AccessStateMiddleware(subscription_repository)
+            dp.message.outer_middleware(access_state_gate)
+            dp.callback_query.outer_middleware(access_state_gate)
         onboarding_gate = OnboardingGateMiddleware(partner_repository, onboarding_rollout_at)
         dp.message.outer_middleware(onboarding_gate)
         dp.callback_query.outer_middleware(onboarding_gate)
@@ -197,8 +200,11 @@ async def _async_main() -> None:
 
     # Usage Cost & Subscription Foundation - see app/domain/usage.py and
     # app/domain/subscription.py. subscription_repository.init() backfills
-    # every already-provisioned workspace as 'beta' - no existing test user
-    # loses access; this table is not read by the live access gate yet.
+    # every already-provisioned workspace (as 'beta', or carrying over a
+    # real legacy access_status) - no existing user loses access. This IS
+    # the live access gate now (see AccessStateMiddleware below and the
+    # Web gate in app/web_api.py) - must be initialized before
+    # _build_dispatcher() wires AccessStateMiddleware to it.
     usage_ledger_repository = UsageLedgerRepository(settings.journal_db_path)
     await usage_ledger_repository.init()
 

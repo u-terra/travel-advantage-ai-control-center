@@ -11,10 +11,14 @@ class PartnerWorkspace:
     status: str
     created_at: str
     updated_at: str
-    # Stage 3A: рабочий доступ (не путать со status — тот про сам workspace,
-    # этот про подписку/пробный период). Значения по умолчанию сохраняют
+    # DEPRECATED (Unified Subscription): больше не рабочий access-gate ни в
+    # Telegram, ни в Web - см. workspace_subscriptions
+    # (app/repositories/subscription_repository.py) и
+    # app/services/access_state.py. Оставлены только как одноразовый
+    # миграционный seed для SubscriptionRepository.init(); ничего в
+    # кодовой базе больше не пишет сюда. Значения по умолчанию сохраняют
     # обратную совместимость позиционных вызовов PartnerWorkspace(...) в
-    # существующих тестах и коде — все они получают безлимитный active.
+    # существующих тестах и коде.
     access_status: str = "active"
     access_expires_at: str | None = None
 

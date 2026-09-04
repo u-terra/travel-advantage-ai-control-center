@@ -72,6 +72,11 @@ CREATE TABLE IF NOT EXISTS partner_workspaces (
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'active',
+    -- DEPRECATED (Unified Subscription): no longer the live access gate for
+    -- either channel - see app/repositories/subscription_repository.py
+    -- (workspace_subscriptions) instead. Kept only as a one-time migration
+    -- seed read by SubscriptionRepository.init()'s backfill; nothing in
+    -- this codebase writes a non-default value to these two columns.
     access_status TEXT NOT NULL DEFAULT 'active'
         CHECK (access_status IN ('trial_active', 'active', 'expired', 'suspended')),
     access_expires_at TEXT,
@@ -212,10 +217,15 @@ class PartnerRepository:
     async def _ensure_access_state_columns(db: aiosqlite.Connection) -> None:
         """Additive миграция Stage 3A для баз, созданных до access_status.
 
-        Существующие production workspace обязаны безопасно остаться с
-        полным доступом: access_status по умолчанию 'active',
-        access_expires_at по умолчанию NULL (бессрочно) — доступ не
-        теряется в момент апгрейда схемы.
+        DEPRECATED (Unified Subscription): access_status/access_expires_at
+        больше не используются как рабочий gate ни в одном канале - см.
+        app/repositories/subscription_repository.py. Эта миграция остаётся
+        только для того, чтобы колонки существовали при разовом
+        миграционном бэкфилле в SubscriptionRepository.init() на базах,
+        созданных до этой колонки. Существующие production workspace
+        обязаны безопасно остаться с полным доступом: access_status по
+        умолчанию 'active', access_expires_at по умолчанию NULL
+        (бессрочно) — доступ не теряется в момент апгрейда схемы.
         """
         columns = {
             row["name"]

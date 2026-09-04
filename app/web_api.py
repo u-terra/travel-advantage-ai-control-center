@@ -37,6 +37,7 @@ from app.repositories.partner_repository import (
     TooManyUserExamplesError,
     business_context_to_dict,
 )
+from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.web_attachment_repository import WebAttachmentRepository
 from app.repositories.web_auth_repository import (
@@ -72,6 +73,7 @@ from app.services.competitor_intelligence import (
 from app.services.content_factory import ContentFactoryConfig
 from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
 from app.services.lead_radar import LeadRadarConfig, build_workspace_signals, category_label
+from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.usage_recorder import record_llm_call
 from app.services.web_auth_passwords import (
@@ -109,6 +111,14 @@ web_attachment_repository = WebAttachmentRepository(settings.journal_db_path)
 # statically-served directory (this app has no StaticFiles mount at all).
 attachment_storage = AttachmentStorage(settings.journal_db_path.parent / "web_uploads")
 web_auth_repository = WebAuthRepository(settings.journal_db_path)
+# Unified Subscription: the SAME repository/state Telegram's
+# AccessStateMiddleware reads (app/access_state_gate.py) - see
+# get_active_principal()/require_csrf_and_subscription() below. Web has no
+# separate subscription concept; a workspace's access is granted or denied
+# identically on both channels because both call
+# subscription_repository.resolve_access_state() with no channel-specific
+# logic in between.
+subscription_repository = SubscriptionRepository(settings.journal_db_path)
 
 # Orphan pending attachments (uploaded, never sent) older than this are
 # reaped on startup - see _reap_orphan_attachments().
@@ -294,6 +304,52 @@ async def require_csrf(
     return principal
 
 
+# ── subscription gate: one workspace subscription, both channels ───────
+#
+# get_current_principal()/require_csrf() above are auth/membership/lifecycle
+# ONLY - they answer "is this a real, still-active member of this
+# workspace". Whether the WORKSPACE's subscription itself is active is a
+# separate question, answered the same way Telegram answers it
+# (AccessStateMiddleware, app/access_state_gate.py): both resolve through
+# SubscriptionRepository.resolve_access_state(), the one function that
+# reduces workspace_subscriptions to a grant/deny decision (see
+# app/services/access_state.py). Login/logout/register/me stay on
+# get_current_principal/require_csrf directly (never gated here) so an
+# account with an inactive subscription can still sign in and see its own
+# state - only the product's working API surface goes through these two.
+
+async def get_active_principal(
+    principal: WebPrincipal = Depends(get_current_principal),
+) -> WebPrincipal:
+    """Subscription-gated read access - use in place of get_current_principal
+    on every GET endpoint that touches product data (materials, signals,
+    competitors, knowledge, profile, conversations, ...)."""
+    state = await subscription_repository.resolve_access_state(principal.workspace_id)
+    if not is_access_granted(state):
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "subscription_inactive", "access_state": state},
+        )
+    return principal
+
+
+async def require_csrf_and_subscription(
+    principal: WebPrincipal = Depends(require_csrf),
+) -> WebPrincipal:
+    """Subscription-gated write access - use in place of require_csrf on
+    every mutating (POST/PUT/DELETE) product endpoint. CSRF is checked
+    first (require_csrf), subscription second - a forged/missing CSRF
+    token gets the same 403 it always did, never a 402 that would leak
+    subscription state to an unauthenticated-for-this-session request."""
+    state = await subscription_repository.resolve_access_state(principal.workspace_id)
+    if not is_access_granted(state):
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "subscription_inactive", "access_state": state},
+        )
+    return principal
+
+
 # Fixed-cost dummy hash for login timing - see login() below: without
 # this, "no such email" (skips verify_password entirely) would be
 # measurably faster than "wrong password" (runs a real Argon2id verify),
@@ -424,10 +480,20 @@ async def logout(
 
 @app.get("/api/auth/me")
 async def get_me(principal: WebPrincipal = Depends(get_current_principal)):
+    """Deliberately NOT gated by require_active_subscription - an account
+    with an expired/past_due/suspended workspace must still be able to see
+    who it is and what its access_state is (the frontend uses this to
+    decide whether to render the cabinet or redirect to
+    /subscription-inactive), it just can't reach product endpoints."""
+    access_state = await subscription_repository.resolve_access_state(
+        principal.workspace_id,
+    )
     return {
         "email": principal.email,
         "workspace_id": principal.workspace_id,
         "role": principal.role,
+        "access_state": access_state,
+        "access_granted": is_access_granted(access_state),
     }
 
 
@@ -451,6 +517,7 @@ async def startup() -> None:
     await web_conversation_repository.init()
     await web_attachment_repository.init()
     await web_auth_repository.init()
+    await subscription_repository.init()
     # legacy_owner_workspace_id=None: the one-time legacy-Radar backfill is
     # already owned by the bot process (app/main.py) against the same shared
     # journal DB - this just ensures the schema exists, it never re-runs
@@ -672,7 +739,7 @@ async def health():
 
 
 @app.get("/api/competitors")
-async def list_competitors(principal: WebPrincipal = Depends(get_current_principal)):
+async def list_competitors(principal: WebPrincipal = Depends(get_active_principal)):
     try:
         competitors = await competitor_repository.list_for_workspace(principal.workspace_id)
         last_analyzed = await competitor_repository.list_intelligence_dates_for_workspace(
@@ -704,7 +771,7 @@ class AddCompetitorRequest(BaseModel):
 @app.post("/api/competitors")
 async def add_competitor_endpoint(
     request: AddCompetitorRequest,
-    principal: WebPrincipal = Depends(require_csrf),
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     """Web-first path for the same competitor_repository.add_competitor()
     call the Telegram "➕ Добавить конкурента" flow uses (see
@@ -739,7 +806,7 @@ async def add_competitor_endpoint(
 
 @app.get("/api/competitors/{competitor_id}/intelligence")
 async def get_competitor_intelligence(
-    competitor_id: int, principal: WebPrincipal = Depends(get_current_principal),
+    competitor_id: int, principal: WebPrincipal = Depends(get_active_principal),
 ):
     try:
         competitor = await competitor_repository.get_for_workspace(
@@ -768,7 +835,7 @@ async def get_competitor_intelligence(
 
 
 @app.get("/api/signals")
-async def list_signals(principal: WebPrincipal = Depends(get_current_principal)):
+async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
     """Read-only: свежие сигналы Radar для текущего workspace.
 
     Использует ровно тот же путь чтения, что и Telegram-хэндлер
@@ -818,7 +885,7 @@ async def list_signals(principal: WebPrincipal = Depends(get_current_principal))
 
 
 @app.get("/api/knowledge")
-async def list_knowledge(principal: WebPrincipal = Depends(get_current_principal)):
+async def list_knowledge(principal: WebPrincipal = Depends(get_active_principal)):
     """Read-only browse of the shared Travel Advantage/MWR Life knowledge
     base - the same repository the Assistant already reads for chat answers
     (knowledge_service.retrieve()). Not workspace-scoped by design: this is
@@ -905,7 +972,7 @@ class MaterialUpdateRequest(BaseModel):
 
 
 @app.get("/api/materials")
-async def list_materials(principal: WebPrincipal = Depends(get_current_principal)):
+async def list_materials(principal: WebPrincipal = Depends(get_active_principal)):
     """Read-only: реально сохранённые Artifact текущего workspace - тот же
     ArtifactRepository и та же логика, что и в Telegram «📚 Мои материалы»
     (app/handlers/materials.py)."""
@@ -920,7 +987,7 @@ async def list_materials(principal: WebPrincipal = Depends(get_current_principal
 
 @app.get("/api/materials/{artifact_id}")
 async def get_material(
-    artifact_id: int, principal: WebPrincipal = Depends(get_current_principal),
+    artifact_id: int, principal: WebPrincipal = Depends(get_active_principal),
 ):
     try:
         artifact = await artifact_repository.get_artifact(principal.workspace_id, artifact_id)
@@ -944,7 +1011,7 @@ async def get_material(
 @app.put("/api/materials/{artifact_id}")
 async def update_material(
     artifact_id: int, request: MaterialUpdateRequest,
-    principal: WebPrincipal = Depends(require_csrf),
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     """Редактирование материала = новая версия поверх той же модели
     Artifact/ArtifactVersion, ровно тот же паттерн, что и в Telegram Safety
@@ -994,7 +1061,7 @@ async def update_material(
 
 @app.delete("/api/materials/{artifact_id}")
 async def delete_material(
-    artifact_id: int, principal: WebPrincipal = Depends(require_csrf),
+    artifact_id: int, principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     """Безопасное удаление: workspace isolation обеспечивается тем же
     механизмом, что и везде в ArtifactRepository (WHERE workspace_id=? AND
@@ -1106,7 +1173,7 @@ _ONBOARDING_WHO_TO_BUSINESS_TYPE: dict[str, str] = {
 
 
 @app.get("/api/profile")
-async def get_profile(principal: WebPrincipal = Depends(get_current_principal)):
+async def get_profile(principal: WebPrincipal = Depends(get_active_principal)):
     """Read-only: реальный BusinessProfile workspace + личный стиль текущего
     пользователя (WorkspaceUserPreferences) - те же данные, что уже
     показывает Telegram «⚙️ Профиль». workspace_memory сюда намеренно не
@@ -1134,7 +1201,7 @@ async def get_profile(principal: WebPrincipal = Depends(get_current_principal)):
 @app.put("/api/profile/business")
 async def update_business_profile_endpoint(
     request: BusinessProfileUpdateRequest,
-    principal: WebPrincipal = Depends(require_csrf),
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     """Правки бизнес-профиля идут через тот же BusinessProfileService и тот
     же revision-based optimistic concurrency, что и Telegram self-service
@@ -1188,7 +1255,7 @@ async def update_business_profile_endpoint(
 @app.put("/api/profile/style")
 async def update_personal_style(
     request: PersonalStyleUpdateRequest,
-    principal: WebPrincipal = Depends(require_csrf),
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     """Личный стиль - через существующие PartnerRepository-методы
     (WorkspaceUserPreferences), те же, что Telegram «✍️ Мой стиль общения» /
@@ -1212,7 +1279,7 @@ async def update_personal_style(
 @app.post("/api/profile/style/examples")
 async def add_personal_style_example(
     request: ExamplePostRequest,
-    principal: WebPrincipal = Depends(require_csrf),
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     text = request.text.strip()
 
@@ -1233,7 +1300,7 @@ async def add_personal_style_example(
 
 @app.delete("/api/profile/style/examples")
 async def clear_personal_style_examples(
-    principal: WebPrincipal = Depends(require_csrf),
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     try:
         preferences = await partner_repository.clear_user_example_posts(
@@ -1248,7 +1315,7 @@ async def clear_personal_style_examples(
 @app.post("/api/onboarding/complete")
 async def complete_onboarding(
     request: OnboardingCompleteRequest,
-    principal: WebPrincipal = Depends(require_csrf),
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     """First-run setup for a new web binding - writes into the SAME
     BusinessProfile / WorkspaceUserPreferences the "Профиль" tab already
@@ -1424,7 +1491,7 @@ async def _read_upload_capped(upload: UploadFile, max_bytes: int) -> bytes | Non
 async def upload_attachments(
     conversation_id: int = Form(...),
     files: list[UploadFile] = File(...),
-    principal: WebPrincipal = Depends(require_csrf),
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     """Uploads one or more files for a conversation's NEXT message - see
     /api/chat's attachment_ids for how these get bound to an actual
@@ -1515,7 +1582,7 @@ async def upload_attachments(
 
 @app.delete("/api/attachments/{public_id}")
 async def delete_pending_attachment(
-    public_id: str, principal: WebPrincipal = Depends(require_csrf),
+    public_id: str, principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
     """Removing a chip in the composer before sending - only ever deletes
     a still-pending attachment (see WebAttachmentRepository.delete_pending);
@@ -1537,7 +1604,7 @@ async def delete_pending_attachment(
 
 @app.get("/api/attachments/{public_id}/content")
 async def get_attachment_content(
-    public_id: str, principal: WebPrincipal = Depends(get_current_principal),
+    public_id: str, principal: WebPrincipal = Depends(get_active_principal),
 ):
     """Serves raw bytes for the composer/history image thumbnail preview
     only (v1 scope - see the task notes: no general-purpose file download
@@ -1565,7 +1632,7 @@ async def get_attachment_content(
 
 
 @app.post("/api/conversations")
-async def create_conversation(principal: WebPrincipal = Depends(require_csrf)):
+async def create_conversation(principal: WebPrincipal = Depends(require_csrf_and_subscription)):
     """Создаёт новый диалог Ассистента - пустой, с title по умолчанию.
     Реальный title подставится после первого сообщения (см. /api/chat)."""
     try:
@@ -1579,7 +1646,7 @@ async def create_conversation(principal: WebPrincipal = Depends(require_csrf)):
 
 
 @app.get("/api/conversations")
-async def list_conversations(principal: WebPrincipal = Depends(get_current_principal)):
+async def list_conversations(principal: WebPrincipal = Depends(get_active_principal)):
     """Список диалогов текущего workspace/user, свежие сверху (по последней
     активности) - для раздела «История» в sidebar."""
     try:
@@ -1594,7 +1661,7 @@ async def list_conversations(principal: WebPrincipal = Depends(get_current_princ
 
 @app.get("/api/conversations/{conversation_id}/messages")
 async def get_conversation_messages(
-    conversation_id: int, principal: WebPrincipal = Depends(get_current_principal),
+    conversation_id: int, principal: WebPrincipal = Depends(get_active_principal),
 ):
     """Сообщения одного диалога, в хронологическом порядке. Строго
     workspace + user scoped: get_conversation() возвращает None для чужого
@@ -1657,7 +1724,7 @@ async def _load_provider_attachments(
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_csrf)):
+async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_csrf_and_subscription)):
     message = request.message.strip()
     attachment_ids = request.attachment_ids
 
@@ -1932,15 +1999,26 @@ async def _onboarding_pending(binding_id: int) -> bool:
     return binding is not None and binding.onboarding_completed_at is None
 
 
+async def _subscription_inactive(ctx) -> bool:
+    state = await subscription_repository.resolve_access_state(ctx.workspace_id)
+    return not is_access_granted(state)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Unauthenticated visitors never see the cabinet - a plain redirect
     to /login, not a 401 (this is a browser page, not a JSON API call).
     A first-time (or otherwise not-yet-onboarded) binding is sent to
-    /onboarding instead of the cabinet - see _onboarding_pending()."""
+    /onboarding instead of the cabinet - see _onboarding_pending(). An
+    expired/past_due/suspended workspace is sent to
+    /subscription-inactive instead - checked before onboarding, since
+    there's no point collecting onboarding answers for a workspace that
+    can't use the product yet."""
     ctx = await _valid_session_context(request)
     if ctx is None:
         return RedirectResponse(url="/login", status_code=303)
+    if await _subscription_inactive(ctx):
+        return RedirectResponse(url="/subscription-inactive", status_code=303)
     if await _onboarding_pending(ctx.binding_id):
         return RedirectResponse(url="/onboarding", status_code=303)
     return Path(
@@ -1972,9 +2050,33 @@ async def onboarding_page(request: Request):
     by a completed one opening the URL by hand - either way we just serve
     the page; onboarding.html itself loads current values from
     /api/profile and always allows saving again (see task: reopening
-    /onboarding after completion shows current values, not a hard block)."""
-    if not await _has_valid_session(request):
+    /onboarding after completion shows current values, not a hard block).
+    An expired/past_due/suspended workspace is redirected to
+    /subscription-inactive instead, same rule as "/" - onboarding writes
+    through the same subscription-gated product endpoints
+    (/api/onboarding/complete), so there's nothing useful to do here
+    without an active subscription."""
+    ctx = await _valid_session_context(request)
+    if ctx is None:
         return RedirectResponse(url="/login", status_code=303)
+    if await _subscription_inactive(ctx):
+        return RedirectResponse(url="/subscription-inactive", status_code=303)
     return Path(
         "app/templates/onboarding.html"
+    ).read_text(encoding="utf-8")
+
+
+@app.get("/subscription-inactive", response_class=HTMLResponse)
+async def subscription_inactive_page(request: Request):
+    """The "подписка неактивна" state - reachable only with a valid
+    session; redirects straight back to "/" once the subscription is
+    granted again (nothing to show here in that case), so a stale
+    bookmark/tab never traps an otherwise-active user on this page."""
+    ctx = await _valid_session_context(request)
+    if ctx is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if not await _subscription_inactive(ctx):
+        return RedirectResponse(url="/", status_code=303)
+    return Path(
+        "app/templates/subscription_inactive.html"
     ).read_text(encoding="utf-8")
