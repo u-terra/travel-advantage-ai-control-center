@@ -25,8 +25,8 @@ def test_help_voice_style_section_names_the_feature() -> None:
 
 def test_help_voice_style_section_has_the_facts_disclaimer() -> None:
     assert (
-        "ORCHESTRAVEL использует пример только для понимания стиля. Цены, "
-        "даты и другие факты из старого текста не считаются актуальными."
+        "Пример используется для понимания манеры речи. Старые цены, даты, "
+        "акции, отели и другие факты из примера не считаются актуальными."
     ) in HELP_HTML_NORMALIZED
 
 
