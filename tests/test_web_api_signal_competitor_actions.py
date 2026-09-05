@@ -628,3 +628,115 @@ def test_competitor_action_telemetry_never_contains_raw_material_text(api, monke
     for event in events:
         assert secret_text not in (event.safe_message or "")
         assert secret_text not in (event.metadata_json or "")
+
+
+# ── Quality fix: signal/competitor -> material contract regressions ────────
+#
+# Production showed internal meta-commentary about source reliability and
+# an AI-voiced trailing CTA leaking into a delivered, publication-ready
+# post. Both endpoints must apply sanitize_draft_text to the raw draft
+# before persisting/returning it - these tests exercise that end to end
+# through the actual endpoint, not just the sanitizer unit tests
+# (tests/test_draft_sanitizer.py covers the sanitizer itself in isolation).
+
+_LEAKED_META_COMMENTARY = (
+    "Раннее бронирование Турции подешевело на треть. "
+    "Остальное в исходном тексте — шутка и личная оценка, на них лучше не опираться. "
+    "Планируйте поездку заранее, пока действует цена."
+)
+_LEAKED_AI_SELF_OFFER = (
+    "Раннее бронирование Турции подешевело на треть.\n"
+    "Планируйте поездку заранее, пока действует цена.\n"
+    "Могу сравнить варианты поездки, если нужно.\n"
+    "#Турция #ОтпускМечты"
+)
+
+
+def test_signal_action_strips_internal_meta_commentary_from_final_material(api, monkeypatch) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: _fake_draft(_LEAKED_META_COMMENTARY),
+    )
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    content = response.json()["version"]["content"]
+    assert "исходном тексте" not in content
+    assert "лучше не опираться" not in content
+    assert "Раннее бронирование Турции подешевело на треть." in content
+    assert "Планируйте поездку заранее, пока действует цена." in content
+
+
+def test_signal_action_strips_ai_self_offer_hidden_behind_hashtags(api, monkeypatch) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: _fake_draft(_LEAKED_AI_SELF_OFFER),
+    )
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    content = response.json()["version"]["content"]
+    assert "Могу сравнить" not in content
+    assert "#Турция #ОтпускМечты" in content
+    assert "Раннее бронирование Турции подешевело на треть." in content
+
+
+def test_competitor_action_strips_internal_meta_commentary_from_final_material(api, monkeypatch) -> None:
+    client, web_api, _, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    competitor = _run(web_api.competitor_repository.add_competitor(workspace_id, "https://rival.example.com"))
+    _run(web_api.competitor_repository.save_intelligence(
+        workspace_id, _intelligence(competitor.id, opportunities=(_opportunity(competitor_id=competitor.id),)),
+    ))
+
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: _fake_draft(_LEAKED_AI_SELF_OFFER),
+    )
+
+    response = client.post(
+        f"/api/competitors/{competitor.id}/opportunities/opp-1/actions",
+        json={"action": "client_message"},
+    )
+
+    content = response.json()["version"]["content"]
+    assert "Могу сравнить" not in content
+    assert "#Турция #ОтпускМечты" in content
+
+
+def test_signal_action_prompt_still_contains_factual_safety_constraints(api, monkeypatch) -> None:
+    """The fix must not weaken factual safety: the constraint that
+    disputed/unconfirmed claims must not be presented as fact stays in the
+    generation prompt (spec.constraints) - only the FINAL post text is
+    cleaned, not the model's instructions."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    captured = {}
+
+    def fake_generate_draft(**kwargs):
+        captured.update(kwargs)
+        return _fake_draft()
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", fake_generate_draft)
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        client.post("/api/signals/1/actions", json={"action": "post"})
+
+    source_text = captured["source_text"]
+    assert "не подавай их как факт" in source_text
+    assert "не появляется в самом посте как" in source_text

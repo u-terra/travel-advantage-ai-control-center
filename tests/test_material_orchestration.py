@@ -584,6 +584,27 @@ def test_constraints_warn_that_example_posts_and_voice_sample_are_not_facts():
         assert "цены, даты, названия туров" in joined
 
 
+def test_constraints_forbid_source_reliability_meta_commentary_in_the_post():
+    """Quality fix: production leaked internal reasoning about source
+    reliability straight into a finished post ("Остальное в исходном
+    тексте — шутка и личная оценка, на них лучше не опираться."). The
+    generation prompt (post/free-text/competitor-signal and radar
+    constraints) must explicitly forbid this class of meta-commentary,
+    while still instructing the model to simply not use unreliable facts -
+    the safety reasoning stays internal to the prompt, never in the output."""
+    from app.services.material_orchestration import _CONSTRAINTS, _RADAR_CONSTRAINTS
+
+    for constraints in (_CONSTRAINTS, _RADAR_CONSTRAINTS):
+        joined = " ".join(constraints)
+        assert "в исходном тексте" in joined
+        assert "лучше не опираться" in joined
+        assert "не удалось подтвердить" in joined
+        assert (
+            "не появляется в самом посте" in joined
+            or "внутренних рассуждений" in joined
+        )
+
+
 def test_generation_spec_still_works_with_a_preferences_row_predating_voice_sample():
     """WorkspaceUserPreferences constructed without voice_sample (old
     call sites, pre-existing tests/fixtures) must default to "" and not

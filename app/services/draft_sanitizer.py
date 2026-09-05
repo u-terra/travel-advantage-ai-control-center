@@ -43,6 +43,17 @@ _MAX_TRAILING_CUTS = 3
 
 # Внутренние мета-фразы о процессе — такого не должно быть в готовом посте
 # ни в начале, ни в середине, ни в конце, поэтому проверяем весь текст.
+#
+# Quality fix (signal/competitor -> material contract): production показал
+# утечку мета-комментария о надёжности источника прямо в готовый пост
+# («Остальное в исходном тексте — шутка и личная оценка, на них лучше не
+# опираться.») - формулировки не совпадали ни с одним из прежних узких
+# паттернов ("по исходному посту" и т.п. - ровно про пост, не про "текст"
+# или "источник" в общем, и ничего про "лучше не опираться"/"личная
+# оценка"/"шутка"). Список расширен под этот и соседние реальные варианты
+# фразировки той же утечки - модель рассуждает о том, каким частям
+# источника доверять, ПРЯМО В тексте поста вместо того, чтобы просто их не
+# использовать.
 _META_PROCESS_MARKERS: tuple[str, ...] = (
     "нужно проверить",
     "надо проверить",
@@ -52,10 +63,19 @@ _META_PROCESS_MARKERS: tuple[str, ...] = (
     "по исходному посту",
     "по исходному источнику",
     "в исходном посте",
+    "в исходном тексте",
+    "исходный текст содержит",
+    "остальное в исходном",
     "в источнике сказано",
     "в источнике указано",
     "требует проверки",
     "требует ручной проверки",
+    "лучше не опираться",
+    "не стоит опираться",
+    "на это лучше",
+    "на них лучше",
+    "личная оценка",
+    "не удалось подтвердить",
 )
 
 # Доля слов disputed claim, которая должна встретиться в предложении черновика,
@@ -121,6 +141,29 @@ def _is_assistant_ending(sentence: str) -> bool:
     return True
 
 
+_TOKEN_RE = re.compile(r"\S+")
+# A token that carries no real sentence content on its own: a hashtag, a bare
+# emoji/punctuation run, or an @mention. Real words (Cyrillic/Latin letters
+# not preceded by # or @) fail this.
+_DECORATION_TOKEN_RE = re.compile(r"^(?:[#@]\w+|[^\w#@]+)$", re.UNICODE)
+
+
+def _is_trailing_decoration(sentence: str) -> bool:
+    """True for a trailing line that carries no real content of its own -
+    typically hashtags and/or emoji social posts commonly end with
+    (``#Турция #ОтпускМечты 🌴``). Quality fix: the trailing-assistant-ending
+    scan below stops at the first sentence it doesn't recognize, scanning
+    from the end - a real AI-tail sentence ("Могу сравнить варианты...")
+    followed by a hashtag line was never reached and shipped in production.
+    Decoration lines must be skipped over (not counted as a cut, not kept
+    or removed themselves) so the scan can see past them."""
+    stripped = sentence.strip()
+    if not stripped:
+        return True
+    tokens = _TOKEN_RE.findall(stripped)
+    return bool(tokens) and all(_DECORATION_TOKEN_RE.match(token) for token in tokens)
+
+
 def sanitize_draft_text(text: str, *, disputed_claims: tuple[str, ...] = ()) -> str:
     """Убирает ассистентские концовки, мета-фразы о процессе и предложения,
     пересказывающие disputed_claims. Возвращает готовый к показу текст.
@@ -146,12 +189,18 @@ def sanitize_draft_text(text: str, *, disputed_claims: tuple[str, ...] = ()) -> 
 
     # Финальные ассистентские концовки — только с конца, только пока
     # совпадает паттерн, с ограничением на число срезаемых предложений.
+    # Decoration-only trailing lines (hashtags/emoji - see
+    # _is_trailing_decoration) are skipped over, not treated as a stop
+    # signal: a real AI-tail sentence followed by "#Турция #ОтпускМечты"
+    # must still be found and removed, not shipped as-is.
     cuts = 0
     for index in range(len(sentences) - 1, -1, -1):
         if not kept[index]:
             continue
         stripped = sentences[index].strip()
         if not stripped:
+            continue
+        if _is_trailing_decoration(stripped):
             continue
         if cuts >= _MAX_TRAILING_CUTS:
             break
