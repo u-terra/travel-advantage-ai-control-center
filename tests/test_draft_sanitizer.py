@@ -199,3 +199,64 @@ def test_real_content_sentence_after_hashtags_stops_the_scan() -> None:
     )
     result = sanitize_draft_text(text)
     assert result == text
+
+
+# --- Quality fix: extended AI self-offer forms (word-count cap removed) --
+#
+# Production showed "Если хотите, могу помочь сравнить варианты поездки в
+# Японию по датам и погоде." surviving sanitization: it's structurally the
+# same AI self-offer as the short form already covered above, just longer
+# because of the added specifics ("по датам и погоде") - the old
+# _MAX_ASSISTANT_ENDING_WORDS=10 word cap rejected it purely for being
+# longer than 10 words, and "могу помочь" wasn't recognized as an offer verb
+# at all (only "помогу", a different word form). Fixed with a narrow
+# structural anchor (sentence must OPEN with "Могу"/"Если хотите, могу") -
+# no long list of exact phrases, no length limit - while normal commercial
+# CTAs (which never open a sentence with "Могу"/"Если хотите") are
+# untouched regardless of length.
+
+def test_extended_if_you_want_i_can_help_compare_offer_is_removed() -> None:
+    text = (
+        "Раннее бронирование Японии подешевело на треть.\n"
+        "Планируйте поездку заранее, пока действует цена.\n"
+        "Если хотите, могу помочь сравнить варианты поездки в Японию по датам и погоде."
+    )
+    result = sanitize_draft_text(text)
+    assert "могу помочь" not in result.lower()
+    assert "Раннее бронирование Японии подешевело на треть." in result
+    assert "Планируйте поездку заранее, пока действует цена." in result
+
+
+def test_i_can_prepare_a_selection_offer_is_removed() -> None:
+    text = (
+        "Новые направления открылись этой весной.\n"
+        "Могу подготовить подборку вариантов под ваш бюджет и даты."
+    )
+    result = sanitize_draft_text(text)
+    assert "могу подготовить" not in result.lower()
+    assert "Новые направления открылись этой весной." in result
+
+
+def test_write_to_us_we_will_pick_an_option_cta_survives() -> None:
+    """Normal brand/agent CTA, addressed to the reader in "мы"/imperative
+    voice, never opens with "Могу"/"Если хотите" - must never be cut."""
+    text = "Пишите — подберём подходящий вариант."
+    assert sanitize_draft_text(text) == text
+
+
+def test_if_planning_a_trip_write_to_us_cta_survives() -> None:
+    text = "Если планируете поездку — напишите."
+    assert sanitize_draft_text(text) == text
+
+
+def test_write_if_you_want_to_pick_a_trip_cta_survives() -> None:
+    """"Если хотите" appears mid-sentence here, not at sentence start
+    ("Напишите" opens it) - the trigger is anchored to sentence-start
+    specifically so this normal CTA is never touched."""
+    text = "Напишите, если хотите подобрать поездку."
+    assert sanitize_draft_text(text) == text
+
+
+def test_if_planning_japan_lets_discuss_dates_cta_survives() -> None:
+    text = "Если планируете Японию — обсудим даты и маршрут."
+    assert sanitize_draft_text(text) == text

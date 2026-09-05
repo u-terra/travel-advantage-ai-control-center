@@ -26,16 +26,17 @@ import re
 # _looks_like_assistant_offer), иначе легитимный CTA вида "Если хотите
 # увидеть..., маршрут начинается от..." тоже попал бы под срез.
 _TRAILING_TRIGGER_RE = re.compile(r"^(могу\b|если хотите\b)", re.IGNORECASE)
+# Quality fix: production showed "Если хотите, могу помочь сравнить варианты
+# поездки в Японию по датам и погоде." surviving sanitization - "помочь"
+# (infinitive, "могу помочь") wasn't in this list (only "помогу", a
+# different, future-tense first-person form), and подобрать/организовать
+# are equally common AI-offer verbs missing before.
 _ASSISTANT_OFFER_VERB_RE = re.compile(
-    r"\b(могу|помогу|подготовлю|пришлю|покажу|расскажу|сравню|подскажу)\b",
+    r"\b(могу|помогу|подготовлю|пришлю|покажу|расскажу|сравню|подскажу|"
+    r"помочь|подготовить|сравнить|подсказать|показать|прислать|рассказать|"
+    r"подобрать|организовать)\b",
     re.IGNORECASE,
 )
-
-# Настоящие ассистентские концовки короткие ("Могу сравнить варианты
-# поездки."). Длинное предложение, которое просто начинается с триггерного
-# слова ("Я могу долго рассказывать про Карелию, но вот главное: ..."),
-# обычно несёт реальный контент — резать его целиком неконсервативно.
-_MAX_ASSISTANT_ENDING_WORDS = 10
 
 # Максимум подряд идущих финальных предложений, которые можно срезать за
 # один вызов — защита от вырезания всего текста на неожиданном входе.
@@ -132,9 +133,22 @@ def _contains_meta_marker(sentence: str) -> bool:
 
 
 def _is_assistant_ending(sentence: str) -> bool:
+    """Structural check, not a phrase list: a trailing sentence that
+    literally opens with "Могу ..." (first-person AI capability claim) or
+    "Если хотите, могу ..." is the AI's own voice regardless of how long the
+    rest of the sentence runs on (e.g. "Могу помочь сравнить варианты
+    поездки в Японию по датам и погоде." is exactly as much an AI self-offer
+    as the short "Могу сравнить варианты." - see task notes: a former
+    word-count cap here let longer/more specific real-world phrasings of the
+    same offer slip through). A normal brand/agent CTA never opens a
+    sentence with "Могу" or "Если хотите" in the first place ("Пишите —
+    подберём подходящий вариант.", "Если планируете поездку — напишите.",
+    "Напишите, если хотите подобрать поездку." all put a different word (or
+    a different clause) first), so anchoring to sentence-start is the narrow
+    structural signal that separates AI-voice offers from real commercial
+    CTAs, without a large exact-phrase list.
+    """
     if not _TRAILING_TRIGGER_RE.match(sentence):
-        return False
-    if len(_WORD_RE.findall(sentence)) > _MAX_ASSISTANT_ENDING_WORDS:
         return False
     if sentence.lower().lstrip().startswith("если хотите"):
         return bool(_ASSISTANT_OFFER_VERB_RE.search(sentence))
