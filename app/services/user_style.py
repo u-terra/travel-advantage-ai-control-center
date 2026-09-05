@@ -63,6 +63,16 @@ class UserStyleService:
             workspace_context.workspace_id, workspace_context.telegram_user_id, phrases,
         )
 
+    async def set_voice_sample(
+        self, workspace_context: WorkspaceContext | None, voice_sample: str
+    ) -> WorkspaceUserPreferences:
+        """"Мой стиль / Голос бренда". Empty string clears the sample -
+        same "Очистить стиль" path as setting it, no separate method."""
+        _require_access(workspace_context)
+        return await self.repository.set_user_voice_sample(
+            workspace_context.workspace_id, workspace_context.telegram_user_id, voice_sample,
+        )
+
 
 def _require_access(context: WorkspaceContext | None) -> None:
     if context is None or context.workspace_status != "active":

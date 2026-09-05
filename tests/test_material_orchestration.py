@@ -433,7 +433,7 @@ def test_radar_foreign_profile_fails_closed():
 
 def user_preferences(
     *, workspace_id=10, telegram_user_id=100, style_description="Пишу с юмором",
-    example_posts=("Пример поста",), avoid_phrases=("лучший тур",),
+    example_posts=("Пример поста",), avoid_phrases=("лучший тур",), voice_sample="",
 ):
     from app.domain.partners import WorkspaceUserPreferences
 
@@ -441,6 +441,7 @@ def user_preferences(
         workspace_id=workspace_id, telegram_user_id=telegram_user_id,
         style_description=style_description, example_posts=example_posts,
         avoid_phrases=avoid_phrases, created_at="now", updated_at="now",
+        voice_sample=voice_sample,
     )
 
 
@@ -522,6 +523,84 @@ def test_free_text_and_radar_specs_also_receive_personal_style():
         reason="r", user_preferences=user_preferences(),
     )
     assert radar_with_style.personal_style["style_description"] == "Пишу с юмором"
+
+
+# --- "Мой стиль / Голос бренда": voice_sample --------------------------------
+
+def test_generation_spec_receives_voice_sample():
+    spec = MaterialOrchestrationService().build_generation_spec(
+        10, source(10), analysis(10), profile(),
+        artifact_type="post", output_format="telegram",
+        user_preferences=user_preferences(voice_sample="Всем привет, погнали в отпуск!"),
+    )
+    assert spec.personal_style["voice_sample"] == "Всем привет, погнали в отпуск!"
+
+
+def test_empty_voice_sample_is_not_added_to_personal_style():
+    spec = MaterialOrchestrationService().build_generation_spec(
+        10, source(10), analysis(10), profile(),
+        artifact_type="post", output_format="telegram",
+        user_preferences=user_preferences(voice_sample=""),
+    )
+    assert "voice_sample" not in spec.personal_style
+
+
+def test_voice_sample_reaches_free_text_and_client_reply_and_radar_specs():
+    free_text_spec = MaterialOrchestrationService().build_free_text_generation_spec(
+        10, "Задача", profile(), user_preferences=user_preferences(voice_sample="Мой голос"),
+    )
+    assert free_text_spec.personal_style["voice_sample"] == "Мой голос"
+
+    client_reply = MaterialOrchestrationService().build_client_reply_generation_spec(
+        10, "Вопрос клиента", profile(), safety_required=False,
+        user_preferences=user_preferences(voice_sample="Мой голос"),
+    )
+    assert client_reply.personal_style["voice_sample"] == "Мой голос"
+
+    radar_with_voice = MaterialOrchestrationService().build_radar_generation_spec(
+        10, profile(), title="T", summary="S", source_type="telegram",
+        origin_type="publisher_post", url="https://x", category="content_signal",
+        reason="r", user_preferences=user_preferences(voice_sample="Мой голос"),
+    )
+    assert radar_with_voice.personal_style["voice_sample"] == "Мой голос"
+
+
+def test_constraints_warn_that_example_posts_and_voice_sample_are_not_facts():
+    """Task's главное правило: style sample — источник МАНЕРЫ, а не источник
+    ФАКТОВ. Проверяем, что все три constraint-наборов (post/free-text/
+    competitor-signal, client reply, radar) явно предупреждают модель не
+    переносить цены/даты/названия туров и т.п. из example_posts/voice_sample
+    как актуальные факты."""
+    from app.services.material_orchestration import (
+        _CLIENT_REPLY_CONSTRAINTS,
+        _CONSTRAINTS,
+        _RADAR_CONSTRAINTS,
+    )
+
+    for constraints in (_CONSTRAINTS, _CLIENT_REPLY_CONSTRAINTS, _RADAR_CONSTRAINTS):
+        joined = " ".join(constraints)
+        assert "voice_sample" in joined
+        assert "не считаются актуальной информацией" in joined
+        assert "цены, даты, названия туров" in joined
+
+
+def test_generation_spec_still_works_with_a_preferences_row_predating_voice_sample():
+    """WorkspaceUserPreferences constructed without voice_sample (old
+    call sites, pre-existing tests/fixtures) must default to "" and not
+    break generation - backward compatibility for the new dataclass field."""
+    from app.domain.partners import WorkspaceUserPreferences
+
+    legacy_preferences = WorkspaceUserPreferences(
+        workspace_id=10, telegram_user_id=100, style_description="Стиль",
+        example_posts=(), avoid_phrases=(), created_at="now", updated_at="now",
+    )
+    spec = MaterialOrchestrationService().build_generation_spec(
+        10, source(10), analysis(10), profile(),
+        artifact_type="post", output_format="telegram",
+        user_preferences=legacy_preferences,
+    )
+    assert spec.personal_style["style_description"] == "Стиль"
+    assert "voice_sample" not in spec.personal_style
 
 
 # --- UX polish: анти-AI-хвост в обычном посте и client reply (живой тест

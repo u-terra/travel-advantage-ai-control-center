@@ -80,3 +80,12 @@ class WorkspaceUserPreferences:
     avoid_phrases: tuple[str, ...]
     created_at: str
     updated_at: str
+    # "Мой стиль / Голос бренда": один цельный вставленный пользователем
+    # образец собственного текста (пост, сообщение клиенту, несколько
+    # абзацев), в отличие от example_posts (несколько отдельных примеров,
+    # добавляемых по одному). Источник МАНЕРЫ речи, не фактов - см.
+    # material_orchestration.py и app/chat_provider.py, где это явно
+    # проговаривается моделью в промпте. Default "" сохраняет обратную
+    # совместимость существующих конструкторов WorkspaceUserPreferences(...)
+    # без этого поля.
+    voice_sample: str = ""

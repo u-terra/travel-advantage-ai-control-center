@@ -489,3 +489,193 @@ def test_style_endpoint_never_returns_500(api, monkeypatch) -> None:
 
     assert response.status_code == 200
     assert "error" in response.json()
+
+
+# ── PUT/DELETE /api/profile/voice-sample - "Мой стиль / Голос бренда" ──────
+
+def test_update_voice_sample_saves_and_is_reflected_by_get_profile(api) -> None:
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+
+    response = client.put(
+        "/api/profile/voice-sample",
+        json={"sample": "Всем привет! Едем в Турцию всей семьёй, погнали!"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["personal_style"]["voice_sample"] == (
+        "Всем привет! Едем в Турцию всей семьёй, погнали!"
+    )
+
+    profile_response = client.get("/api/profile")
+    assert profile_response.json()["personal_style"]["voice_sample"] == (
+        "Всем привет! Едем в Турцию всей семьёй, погнали!"
+    )
+
+
+def test_update_voice_sample_does_not_touch_style_description_or_examples(api) -> None:
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _run(web_api.partner_repository.set_user_style_description(
+        workspace_id, OWNER_ID, "Пишу с юмором.",
+    ))
+    _run(web_api.partner_repository.add_user_example_post(
+        workspace_id, OWNER_ID, "Уже сохранённый пример.",
+    ))
+
+    response = client.put("/api/profile/voice-sample", json={"sample": "Новый образец текста."})
+
+    style = response.json()["personal_style"]
+    assert style["style_description"] == "Пишу с юмором."
+    assert style["example_posts"] == ["Уже сохранённый пример."]
+    assert style["voice_sample"] == "Новый образец текста."
+
+
+def test_clear_voice_sample_empties_it_without_touching_other_fields(api) -> None:
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _run(web_api.partner_repository.set_user_style_description(
+        workspace_id, OWNER_ID, "Пишу с юмором.",
+    ))
+    client.put("/api/profile/voice-sample", json={"sample": "Мой образец текста."})
+
+    response = client.delete("/api/profile/voice-sample")
+
+    assert response.status_code == 200
+    style = response.json()["personal_style"]
+    assert style["voice_sample"] == ""
+    assert style["style_description"] == "Пишу с юмором."
+
+
+def test_voice_sample_too_long_is_rejected_with_a_clear_error(api) -> None:
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    from app.repositories.partner_repository import MAX_USER_VOICE_SAMPLE_CHARS
+
+    response = client.put(
+        "/api/profile/voice-sample",
+        json={"sample": "x" * (MAX_USER_VOICE_SAMPLE_CHARS + 1)},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" in body
+    preferences = _run(web_api.partner_repository.get_user_preferences(
+        workspace_id, OWNER_ID,
+    ))
+    assert preferences is None or preferences.voice_sample == ""
+
+
+def test_voice_sample_is_isolated_by_workspace(api) -> None:
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    other = _run(web_api.partner_repository.provision_partner(
+        222334777, "Other Agency 7", "other-agency-voice-7",
+        business_name="Other", business_type="independent_agent",
+        short_description="x", context={},
+    ))
+    _run(web_api.partner_repository.set_user_voice_sample(
+        other.workspace.id, 222334777, "Чужой образец текста.",
+    ))
+
+    client.put("/api/profile/voice-sample", json={"sample": "Мой образец текста."})
+
+    other_preferences = _run(web_api.partner_repository.get_user_preferences(
+        other.workspace.id, 222334777,
+    ))
+    assert other_preferences.voice_sample == "Чужой образец текста."
+
+
+def test_empty_voice_sample_does_not_break_chat_generation(api, monkeypatch) -> None:
+    """Task requirement: "empty sample не ломает generation" - a workspace
+    that never touched "Мой стиль / Голос бренда" must still get a normal
+    /api/chat reply, with personal_style built only from whatever else is
+    set (here: nothing at all)."""
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+
+    captured = {}
+
+    def fake_generate(**kwargs):
+        captured.update(kwargs)
+        from app.chat_provider import ChatResult
+        return ChatResult(text="ok", usage=None)
+
+    monkeypatch.setattr(web_api.chat_provider, "generate", fake_generate)
+
+    conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
+    response = client.post(
+        "/api/chat", json={"message": "Привет", "conversation_id": conversation_id},
+    )
+
+    assert response.status_code == 200
+    assert "error" not in response.json()
+    assert captured["personal_style"] == ""
+
+
+def test_voice_sample_reaches_assistant_with_a_facts_disclaimer(api, monkeypatch) -> None:
+    """The pasted sample must reach /api/chat's personal_style prompt (not
+    just style_description, as before this feature), wrapped with an
+    explicit "this is manner, not facts" note - see task notes: style
+    sample is a source of MANNER, never of facts (old prices/dates/tour
+    names must never be read back as current)."""
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+
+    client.put("/api/profile/voice-sample", json={
+        "sample": "Ранее бронирование Турции всего за 45000 рублей до 1 марта!",
+    })
+    client.post("/api/profile/style/examples", json={"text": "Мой старый пример поста."})
+    client.put("/api/profile/style", json={
+        "style_description": "Пишу тепло и просто.", "avoid_phrases": ["успейте купить"],
+    })
+
+    captured = {}
+
+    def fake_generate(**kwargs):
+        captured.update(kwargs)
+        from app.chat_provider import ChatResult
+        return ChatResult(text="ok", usage=None)
+
+    monkeypatch.setattr(web_api.chat_provider, "generate", fake_generate)
+
+    conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
+    client.post(
+        "/api/chat", json={"message": "Привет", "conversation_id": conversation_id},
+    )
+
+    prompt = captured["personal_style"]
+    assert "Пишу тепло и просто." in prompt
+    assert "45000 рублей до 1 марта" in prompt
+    assert "Мой старый пример поста." in prompt
+    assert "успейте купить" in prompt
+    assert "не считаются актуальной информацией" in prompt
+    assert "НЕ источник фактов" in prompt
+
+
+def test_voice_sample_never_appears_in_operational_events(api, monkeypatch) -> None:
+    """Privacy requirement: raw style sample must never be logged to
+    telemetry/operational_events (see app/services/telemetry.py's
+    guardrail - metadata is for safe technical fields only)."""
+    client, web_api, _, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+
+    secret_sample = "СЕКРЕТНЫЙ-ОБРАЗЕЦ-ТЕКСТА-ДЛЯ-ПРОВЕРКИ-ТЕЛЕМЕТРИИ-12345"
+    client.put("/api/profile/voice-sample", json={"sample": secret_sample})
+
+    def fake_generate(**kwargs):
+        from app.chat_provider import ChatResult
+        return ChatResult(text="ok", usage=None)
+
+    monkeypatch.setattr(web_api.chat_provider, "generate", fake_generate)
+
+    conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
+    client.post(
+        "/api/chat", json={"message": "Привет", "conversation_id": conversation_id},
+    )
+    client.delete("/api/profile/voice-sample")
+
+    events = _run(web_api.operational_event_repository.list_recent_events(limit=200))
+    for event in events:
+        assert secret_sample not in (event.safe_message or "")
+        assert secret_sample not in (event.metadata_json or "")

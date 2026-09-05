@@ -4013,7 +4013,7 @@ function renderProfile(business, style) {
         }
     }
 
-    const styleForForm = style || { style_description: "", example_posts: [], avoid_phrases: [] };
+    const styleForForm = style || { style_description: "", example_posts: [], avoid_phrases: [], voice_sample: "" };
     const styleLines = [
         styleForForm.style_description
             ? ("Стиль общения: " + styleForForm.style_description)
@@ -4022,6 +4022,9 @@ function renderProfile(business, style) {
         styleForForm.avoid_phrases.length
             ? ("Не использовать: " + styleForForm.avoid_phrases.join(", "))
             : "Не использовать: список пуст.",
+        (styleForForm.voice_sample || "").trim()
+            ? "Мой стиль / Голос бренда: стиль сохранён."
+            : "Мой стиль / Голос бренда: не заполнен.",
     ];
     const styleSection = appendFactListSection(sections, "Личный стиль", styleLines);
     appendSectionEditButton(styleSection, () => renderPersonalStyleEditForm(styleForForm));
@@ -4199,7 +4202,8 @@ function renderBusinessProfileEditForm(business) {
     nameInput.focus();
 }
 
-function renderPersonalStyleEditForm(style) {
+function renderPersonalStyleEditForm(style, options) {
+    const voiceSavedMessage = (options && options.voiceSavedMessage) || "";
     profileState.innerHTML = "";
 
     const sections = document.createElement("div");
@@ -4379,6 +4383,119 @@ function renderPersonalStyleEditForm(style) {
 
     examplesSection.appendChild(exampleActions);
     sections.appendChild(examplesSection);
+
+    // "Мой стиль / Голос бренда" - один цельный вставленный образец текста
+    // (пост, сообщение клиенту, несколько абзацев), отдельно от
+    // example_posts (несколько отдельных примеров, добавляемых по одному
+    // выше). Тот же WorkspaceUserPreferences, только другое UX: одна
+    // большая textarea + "Сохранить стиль" / "Очистить стиль", как просит
+    // задача, а не список из нескольких примеров.
+    const voiceSection = document.createElement("div");
+    voiceSection.className = "report-section";
+
+    const voiceHeading = document.createElement("h3");
+    voiceHeading.textContent = "Мой стиль / Голос бренда";
+    voiceSection.appendChild(voiceHeading);
+
+    const voiceIntro = document.createElement("p");
+    voiceIntro.className = "info-card-text";
+    voiceIntro.textContent = (
+        "Хотите, чтобы ORCHESTRAVEL писал как вы? Вставьте пример своего " +
+        "текста: пост, сообщение клиенту или несколько абзацев так, как вы " +
+        "обычно разговариваете. Ассистент будет ориентироваться на вашу " +
+        "манеру речи при подготовке материалов. Цены, даты и другие факты " +
+        "из вставленного текста не считаются актуальными — только манера речи."
+    );
+    voiceSection.appendChild(voiceIntro);
+
+    const voiceInput = addProfileFormField(
+        voiceSection, "Пример текста", document.createElement("textarea"),
+    );
+    voiceInput.rows = 8;
+    voiceInput.placeholder = "Вставьте сюда 1-3 своих поста или сообщение клиенту…";
+    voiceInput.value = style.voice_sample || "";
+
+    const voiceStatus = document.createElement("p");
+    voiceStatus.className = "info-card-text";
+    voiceStatus.textContent = voiceSavedMessage;
+    voiceSection.appendChild(voiceStatus);
+
+    const voiceError = document.createElement("p");
+    voiceError.className = "info-card-text material-edit-error";
+    voiceSection.appendChild(voiceError);
+
+    const voiceActions = document.createElement("div");
+    voiceActions.className = "material-edit-actions";
+
+    const voiceSaveBtn = document.createElement("button");
+    voiceSaveBtn.type = "button";
+    voiceSaveBtn.className = "info-action-btn";
+    voiceSaveBtn.textContent = "Сохранить стиль";
+    voiceSaveBtn.addEventListener("click", async () => {
+        voiceError.textContent = "";
+        voiceSaveBtn.disabled = true;
+
+        try {
+            const response = await fetch("/api/profile/voice-sample", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sample: voiceInput.value.trim() }),
+            });
+            const data = await response.json();
+
+            if (!response.ok || data.error) {
+                voiceError.textContent = data.error || "Не удалось сохранить стиль.";
+                voiceSaveBtn.disabled = false;
+                return;
+            }
+
+            renderPersonalStyleEditForm(data.personal_style, { voiceSavedMessage: "Стиль сохранён." });
+
+        } catch (_) {
+            voiceError.textContent = "Не удалось сохранить стиль. Проверьте соединение.";
+            voiceSaveBtn.disabled = false;
+        }
+    });
+    voiceActions.appendChild(voiceSaveBtn);
+
+    if ((style.voice_sample || "").trim()) {
+        const voiceClearBtn = document.createElement("button");
+        voiceClearBtn.type = "button";
+        voiceClearBtn.className = "info-action-btn-danger";
+        voiceClearBtn.textContent = "Очистить стиль";
+        voiceClearBtn.addEventListener("click", () => {
+            requestDestructiveConfirmation(
+                voiceActions,
+                "Удалить сохранённый образец текста без возможности восстановления?",
+                async () => {
+                    try {
+                        const response = await fetch("/api/profile/voice-sample", {
+                            method: "DELETE",
+                        });
+                        const data = await response.json();
+
+                        if (!response.ok || data.error) {
+                            voiceError.textContent = data.error || "Не удалось очистить стиль.";
+                            renderPersonalStyleEditForm(style);
+                            return;
+                        }
+
+                        renderPersonalStyleEditForm(data.personal_style, { voiceSavedMessage: "Стиль очищен." });
+
+                    } catch (_) {
+                        voiceError.textContent = "Не удалось очистить стиль. Проверьте соединение.";
+                        renderPersonalStyleEditForm(style);
+                    }
+                },
+                () => renderPersonalStyleEditForm(style),
+            );
+        });
+        voiceActions.appendChild(voiceClearBtn);
+    }
+
+    voiceSection.appendChild(voiceActions);
+    sections.appendChild(voiceSection);
+
     profileState.appendChild(sections);
 
     styleInput.focus();

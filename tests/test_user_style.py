@@ -13,7 +13,12 @@ from typing import Any
 import pytest
 
 from app.domain.partners import WorkspaceContext
-from app.repositories.partner_repository import PartnerRepository, TooManyUserExamplesError
+from app.repositories.partner_repository import (
+    MAX_USER_VOICE_SAMPLE_CHARS,
+    PartnerRepository,
+    TooManyUserExamplesError,
+    VoiceSampleTooLongError,
+)
 from app.services.user_style import UserStyleAccessError, UserStyleService
 
 OWNER_ID = 586249067
@@ -172,3 +177,150 @@ def test_existing_user_without_preferences_row_returns_none(tmp_path: Path) -> N
     service = UserStyleService(repo)
     result = _run(service.get(_ctx(workspace_id, OWNER_ID)))
     assert result is None
+
+
+# --- "Мой стиль / Голос бренда": voice_sample --------------------------------
+
+def test_voice_sample_saved_and_read_back(tmp_path: Path) -> None:
+    repo, workspace_id, _ = _run(_stack(tmp_path))
+    result = _run(repo.set_user_voice_sample(
+        workspace_id, OWNER_ID, "Всем привет! Погнали в отпуск.",
+    ))
+    assert result.voice_sample == "Всем привет! Погнали в отпуск."
+    saved = _run(repo.get_user_preferences(workspace_id, OWNER_ID))
+    assert saved.voice_sample == "Всем привет! Погнали в отпуск."
+
+
+def test_voice_sample_default_is_empty_string_not_none(tmp_path: Path) -> None:
+    """Backward-compat: a preferences row created before voice_sample
+    existed (or via any other Stage 3B1 method first) must expose voice_sample
+    as "" - never None/missing - so callers can always call .strip() on it
+    (see _personal_style_values()/_personal_style_prompt())."""
+    repo, workspace_id, _ = _run(_stack(tmp_path))
+    _run(repo.set_user_style_description(workspace_id, OWNER_ID, "Стиль"))
+    saved = _run(repo.get_user_preferences(workspace_id, OWNER_ID))
+    assert saved.voice_sample == ""
+
+
+def test_another_user_in_same_workspace_does_not_see_voice_sample(tmp_path: Path) -> None:
+    repo, workspace_id, member_id = _run(_stack(tmp_path))
+    _run(repo.set_user_voice_sample(workspace_id, OWNER_ID, "Образец владельца"))
+    _run(repo.set_user_voice_sample(workspace_id, member_id, "Образец участника"))
+
+    owner_prefs = _run(repo.get_user_preferences(workspace_id, OWNER_ID))
+    member_prefs = _run(repo.get_user_preferences(workspace_id, member_id))
+    assert owner_prefs.voice_sample == "Образец владельца"
+    assert member_prefs.voice_sample == "Образец участника"
+
+
+def test_another_workspace_does_not_see_voice_sample(tmp_path: Path) -> None:
+    repo = PartnerRepository(tmp_path / "workspace.sqlite3")
+    _run(repo.init())
+    membership_a = _run(repo.bootstrap_owner_membership(OWNER_ID))
+    other_id = 999888666
+    provisioned = _run(repo.provision_partner(
+        other_id, "Другое агентство 2", "other-agency-voice",
+        business_name="Другое агентство 2", business_type="agency",
+        short_description="d", context={},
+    ))
+
+    _run(repo.set_user_voice_sample(membership_a.workspace_id, OWNER_ID, "Образец A"))
+    other_prefs = _run(repo.get_user_preferences(provisioned.workspace.id, other_id))
+    assert other_prefs is None
+
+
+def test_clearing_voice_sample_preserves_other_fields(tmp_path: Path) -> None:
+    repo, workspace_id, _ = _run(_stack(tmp_path))
+    _run(repo.set_user_style_description(workspace_id, OWNER_ID, "Стиль"))
+    _run(repo.add_user_example_post(workspace_id, OWNER_ID, "Пример"))
+    _run(repo.set_user_voice_sample(workspace_id, OWNER_ID, "Образец"))
+
+    result = _run(repo.set_user_voice_sample(workspace_id, OWNER_ID, ""))
+
+    assert result.voice_sample == ""
+    assert result.style_description == "Стиль"
+    assert result.example_posts == ("Пример",)
+
+
+def test_setting_style_description_preserves_existing_voice_sample(tmp_path: Path) -> None:
+    """Every other Stage 3B1 write must round-trip voice_sample unchanged -
+    same guarantee already covered for example_posts/avoid_phrases."""
+    repo, workspace_id, _ = _run(_stack(tmp_path))
+    _run(repo.set_user_voice_sample(workspace_id, OWNER_ID, "Образец"))
+
+    _run(repo.set_user_style_description(workspace_id, OWNER_ID, "Новый стиль"))
+    _run(repo.add_user_example_post(workspace_id, OWNER_ID, "Пример"))
+    _run(repo.set_user_avoid_phrases(workspace_id, OWNER_ID, ["штамп"]))
+    result = _run(repo.clear_user_example_posts(workspace_id, OWNER_ID))
+
+    assert result.voice_sample == "Образец"
+
+
+def test_voice_sample_over_the_limit_is_rejected(tmp_path: Path) -> None:
+    repo, workspace_id, _ = _run(_stack(tmp_path))
+    with pytest.raises(VoiceSampleTooLongError):
+        _run(repo.set_user_voice_sample(
+            workspace_id, OWNER_ID, "x" * (MAX_USER_VOICE_SAMPLE_CHARS + 1),
+        ))
+    # Rejected write must not have persisted anything.
+    saved = _run(repo.get_user_preferences(workspace_id, OWNER_ID))
+    assert saved is None
+
+
+def test_voice_sample_at_exactly_the_limit_is_accepted(tmp_path: Path) -> None:
+    repo, workspace_id, _ = _run(_stack(tmp_path))
+    sample = "x" * MAX_USER_VOICE_SAMPLE_CHARS
+    result = _run(repo.set_user_voice_sample(workspace_id, OWNER_ID, sample))
+    assert result.voice_sample == sample
+
+
+def test_service_set_voice_sample_writes_only_to_callers_own_row(tmp_path: Path) -> None:
+    repo, workspace_id, member_id = _run(_stack(tmp_path))
+    service = UserStyleService(repo)
+
+    _run(service.set_voice_sample(_ctx(workspace_id, OWNER_ID), "Владелец"))
+    _run(service.set_voice_sample(_ctx(workspace_id, member_id, role="member"), "Участник"))
+
+    owner_prefs = _run(repo.get_user_preferences(workspace_id, OWNER_ID))
+    member_prefs = _run(repo.get_user_preferences(workspace_id, member_id))
+    assert owner_prefs.voice_sample == "Владелец"
+    assert member_prefs.voice_sample == "Участник"
+
+
+def test_service_set_voice_sample_rejects_missing_workspace_context(tmp_path: Path) -> None:
+    repo, _, _ = _run(_stack(tmp_path))
+    service = UserStyleService(repo)
+    with pytest.raises(UserStyleAccessError):
+        _run(service.set_voice_sample(None, "x"))
+
+
+def test_voice_sample_saved_via_repository_is_visible_through_user_style_service(
+    tmp_path: Path,
+) -> None:
+    """Web writes voice_sample directly through PartnerRepository
+    (app.web_api's /api/profile/voice-sample); Telegram material
+    generation reads it through UserStyleService.get() (see
+    app/handlers/material_generation.py etc.). Both must see the SAME
+    WorkspaceUserPreferences row - task requirement: one style setting
+    shared by Web and Telegram, no separate Telegram-style profile."""
+    repo, workspace_id, _ = _run(_stack(tmp_path))
+    _run(repo.set_user_voice_sample(workspace_id, OWNER_ID, "Образец, сохранённый через Web"))
+
+    service = UserStyleService(repo)
+    via_service = _run(service.get(_ctx(workspace_id, OWNER_ID)))
+
+    assert via_service.voice_sample == "Образец, сохранённый через Web"
+
+
+def test_voice_sample_does_not_affect_ta_affiliation(tmp_path: Path) -> None:
+    """Personal style must not touch ta_affiliated/BusinessProfile isolation
+    at all - it lives on a completely separate table
+    (workspace_user_preferences), keyed by (workspace_id, telegram_user_id),
+    with no relation to BusinessProfile.ta_affiliated."""
+    repo, workspace_id, _ = _run(_stack(tmp_path))
+    before = _run(repo.get_business_profile(workspace_id))
+
+    _run(repo.set_user_voice_sample(workspace_id, OWNER_ID, "Мой стиль"))
+
+    after = _run(repo.get_business_profile(workspace_id))
+    assert after.ta_affiliated == before.ta_affiliated

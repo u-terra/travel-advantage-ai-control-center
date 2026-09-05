@@ -32,6 +32,11 @@ from app.domain.business_profiles import (
 WORKSPACE_ROLES = frozenset({"owner", "admin", "member"})
 MEMBERSHIP_STATUSES = frozenset({"active", "inactive"})
 MAX_USER_EXAMPLE_POSTS = 5
+# "Мой стиль / Голос бренда": один цельный образец текста, не отдельные
+# example_posts - большой, но конечный лимит, чтобы не раздувать промпт
+# генерации (тот же порядок величины, что MAX_WORKSPACE_MEMORY_CHARS в
+# app/web_api.py).
+MAX_USER_VOICE_SAMPLE_CHARS = 6000
 
 
 class AmbiguousWorkspaceError(RuntimeError):
@@ -52,6 +57,11 @@ class PartnerMembershipNotFoundError(RuntimeError):
 
 class TooManyUserExamplesError(RuntimeError):
     """Stage 3B1: у пользователя уже сохранено максимум example_posts."""
+
+
+class VoiceSampleTooLongError(RuntimeError):
+    """"Мой стиль / Голос бренда": вставленный образец превышает
+    MAX_USER_VOICE_SAMPLE_CHARS."""
 
 
 @dataclass(frozen=True)
@@ -122,6 +132,7 @@ CREATE TABLE IF NOT EXISTS workspace_user_preferences (
     style_description TEXT NOT NULL DEFAULT '',
     example_posts TEXT NOT NULL DEFAULT '[]',
     avoid_phrases TEXT NOT NULL DEFAULT '[]',
+    voice_sample TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id),
@@ -211,6 +222,7 @@ class PartnerRepository:
             await db.commit()
             db.row_factory = aiosqlite.Row
             await self._ensure_access_state_columns(db)
+            await self._ensure_user_preferences_columns(db)
             await self._init_profiles(db)
 
     @staticmethod
@@ -247,6 +259,32 @@ class PartnerRepository:
                 await db.execute(
                     "ALTER TABLE partner_workspaces ADD COLUMN access_expires_at TEXT"
                 )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+
+    @staticmethod
+    async def _ensure_user_preferences_columns(db: aiosqlite.Connection) -> None:
+        """Additive миграция для "Мой стиль / Голос бренда" на базах,
+        созданных до voice_sample. Существующие style_description/
+        example_posts/avoid_phrases сохраняются как есть; voice_sample
+        по умолчанию '' (пусто) - ничего не ломается для уже сохранённого
+        личного стиля."""
+        columns = {
+            row["name"]
+            for row in await (await db.execute(
+                "PRAGMA table_info(workspace_user_preferences)"
+            )).fetchall()
+        }
+        if "voice_sample" in columns:
+            return
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute(
+                "ALTER TABLE workspace_user_preferences "
+                "ADD COLUMN voice_sample TEXT NOT NULL DEFAULT ''"
+            )
             await db.commit()
         except BaseException:
             await db.rollback()
@@ -515,6 +553,7 @@ class PartnerRepository:
                     style_description=style_description.strip(),
                     example_posts=_current_list(current, "example_posts"),
                     avoid_phrases=_current_list(current, "avoid_phrases"),
+                    voice_sample=_current_voice_sample(current),
                 )
                 await db.commit()
             except BaseException:
@@ -545,6 +584,7 @@ class PartnerRepository:
                     style_description=_current_style(current),
                     example_posts=examples,
                     avoid_phrases=_current_list(current, "avoid_phrases"),
+                    voice_sample=_current_voice_sample(current),
                 )
                 await db.commit()
             except BaseException:
@@ -566,6 +606,7 @@ class PartnerRepository:
                     style_description=_current_style(current),
                     example_posts=[],
                     avoid_phrases=_current_list(current, "avoid_phrases"),
+                    voice_sample=_current_voice_sample(current),
                 )
                 await db.commit()
             except BaseException:
@@ -588,6 +629,39 @@ class PartnerRepository:
                     style_description=_current_style(current),
                     example_posts=_current_list(current, "example_posts"),
                     avoid_phrases=cleaned,
+                    voice_sample=_current_voice_sample(current),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return _user_preferences_from_row(row)
+
+    async def set_user_voice_sample(
+        self, workspace_id: int, telegram_user_id: int, voice_sample: str
+    ) -> WorkspaceUserPreferences:
+        """"Мой стиль / Голос бренда": сохраняет (или очищает, при
+        voice_sample="") цельный вставленный пользователем образец текста.
+        Как и остальные Stage 3B1 методы, читает текущую запись и сохраняет
+        style_description/example_posts/avoid_phrases как есть — этот вызов
+        трогает только voice_sample."""
+        cleaned = voice_sample.strip()
+        if len(cleaned) > MAX_USER_VOICE_SAMPLE_CHARS:
+            raise VoiceSampleTooLongError(
+                f"Образец текста не должен превышать {MAX_USER_VOICE_SAMPLE_CHARS} символов"
+            )
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                current = await self._user_preferences_row(db, workspace_id, telegram_user_id)
+                row = await self._save_user_preferences(
+                    db, workspace_id, telegram_user_id,
+                    style_description=_current_style(current),
+                    example_posts=_current_list(current, "example_posts"),
+                    avoid_phrases=_current_list(current, "avoid_phrases"),
+                    voice_sample=cleaned,
                 )
                 await db.commit()
             except BaseException:
@@ -610,21 +684,24 @@ class PartnerRepository:
     async def _save_user_preferences(
         db: aiosqlite.Connection, workspace_id: int, telegram_user_id: int,
         *, style_description: str, example_posts: list[str], avoid_phrases: list[str],
+        voice_sample: str = "",
     ) -> aiosqlite.Row:
         now = _now()
         await db.execute(
             "INSERT INTO workspace_user_preferences "
             "(workspace_id, telegram_user_id, style_description, example_posts, "
-            "avoid_phrases, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "avoid_phrases, voice_sample, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(workspace_id, telegram_user_id) DO UPDATE SET "
             "style_description = excluded.style_description, "
             "example_posts = excluded.example_posts, "
             "avoid_phrases = excluded.avoid_phrases, "
+            "voice_sample = excluded.voice_sample, "
             "updated_at = excluded.updated_at",
             (
                 workspace_id, telegram_user_id, style_description,
                 json.dumps(example_posts, ensure_ascii=False),
-                json.dumps(avoid_phrases, ensure_ascii=False), now, now,
+                json.dumps(avoid_phrases, ensure_ascii=False), voice_sample, now, now,
             ),
         )
         row = await PartnerRepository._user_preferences_row(db, workspace_id, telegram_user_id)
@@ -1599,6 +1676,7 @@ def _user_preferences_from_row(row: aiosqlite.Row) -> WorkspaceUserPreferences:
         example_posts=tuple(json.loads(row["example_posts"])),
         avoid_phrases=tuple(json.loads(row["avoid_phrases"])),
         created_at=row["created_at"], updated_at=row["updated_at"],
+        voice_sample=row["voice_sample"] or "",
     )
 
 
@@ -1610,6 +1688,10 @@ def _current_list(row: aiosqlite.Row | None, field: str) -> list[str]:
 
 def _current_style(row: aiosqlite.Row | None) -> str:
     return "" if row is None else str(row["style_description"] or "")
+
+
+def _current_voice_sample(row: aiosqlite.Row | None) -> str:
+    return "" if row is None else str(row["voice_sample"] or "")
 
 
 def _validate_consent_values(

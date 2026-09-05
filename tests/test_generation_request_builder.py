@@ -246,12 +246,17 @@ _REAL_DISPUTED_CLAIMS = (
 
 def test_real_antalya_production_case_stays_under_content_factory_limit():
     """Точное воспроизведение кейса, который в production давал HTTP 400 от
-    Content Factory (6114 символов > 6000): реальный original_text (694
-    символа), реальные key_facts/disputed_claims из production БД, реальный
-    workspace-профиль (пустой, incomplete) и НОВЫЕ constraints из review-фикса
-    (a3852dc). Раньше build_provider_generation_request(spec) (лимит 11000)
-    отдавал 6114 символов; теперь build_source_analysis_provider_request
-    должен уложиться в лимит Content Factory."""
+    Content Factory (изначально 6114 символов > 6000, review-фикс a3852dc):
+    реальный original_text (694 символа), реальные key_facts/disputed_claims
+    из production БД, реальный workspace-профиль (пустой, incomplete) и
+    текущий набор constraints (с тех пор выросший ещё раз - "Мой стиль /
+    Голос бренда" добавил voice_sample в [PERSONAL STYLE - DATA] и его
+    facts-guard). build_provider_generation_request(spec) (лимит 11000) не
+    режет ничего и всегда воспроизводит реальный prod-баг как есть - его
+    точная длина ниже это просто фиксирует текущее значение, а не
+    содержательное требование. Содержательное требование —
+    build_source_analysis_provider_request должен укладываться в лимит
+    Content Factory, что и проверяется ниже."""
     from app.services.material_orchestration import MaterialOrchestrationService
     from app.domain.business_profiles import BusinessProfile, BusinessContext
     from types import MappingProxyType, SimpleNamespace
@@ -313,9 +318,11 @@ def test_real_antalya_production_case_stays_under_content_factory_limit():
     )
 
     # Подтверждаем сам баг: старый способ (общий builder, лимит 11000) даёт
-    # именно тот запрос, который production реально отправлял и получал 400.
+    # именно тот запрос, который production реально отправлял и получал 400
+    # (длина растёт при любом росте constraints - см. docstring теста; сам
+    # факт "> 6000" и есть баг, а не конкретное число).
     old_request = build_provider_generation_request(spec)
-    assert len(old_request.source_text) == 6114
+    assert len(old_request.source_text) > _CONTENT_FACTORY_MAX_SOURCE_TEXT_LENGTH
 
     # Новый способ укладывается в реальный лимит Content Factory.
     fixed_request = build_source_analysis_provider_request(spec)

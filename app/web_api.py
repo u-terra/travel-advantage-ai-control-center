@@ -45,6 +45,7 @@ from app.repositories.operational_event_repository import OperationalEventReposi
 from app.repositories.partner_repository import (
     PartnerRepository,
     TooManyUserExamplesError,
+    VoiceSampleTooLongError,
     business_context_to_dict,
 )
 from app.repositories.payment_order_repository import PaymentOrderRepository
@@ -1447,7 +1448,69 @@ def _personal_style_payload(preferences) -> dict | None:
         "style_description": preferences.style_description,
         "example_posts": list(preferences.example_posts),
         "avoid_phrases": list(preferences.avoid_phrases),
+        "voice_sample": preferences.voice_sample,
     }
+
+
+def _personal_style_prompt(preferences) -> str:
+    """"Мой стиль / Голос бренда" for the freeform /api/chat path
+    (app/chat_provider.py's flat personal_style string), built from the
+    same Stage 3B1 fields (style_description, example_posts, avoid_phrases,
+    voice_sample) that MaterialOrchestrationService already sends to
+    Telegram material generation via GenerationSpec.personal_style - see
+    app/services/material_orchestration.py's _personal_style_values().
+
+    Byte-identical to plain style_description.strip() when nothing else is
+    set, so this does not change behavior for the common case where only
+    the ты/вы + tone sentence from onboarding exists (see
+    tests/test_web_api_profile.py::test_update_personal_style_is_used_by_assistant_on_next_chat_call
+    and tests/test_web_api_onboarding.py's equivalent chat-capture test).
+
+    Each additional block carries its own "this is manner, not facts"
+    warning inline, since chat_provider.generate() takes one flat string
+    (not the structured [PERSONAL STYLE - DATA] section Content
+    Factory/Telegram get) - old prices/dates/tour names/promos/hotels/
+    countries/stats/specific offers pasted as a style example must never
+    be read back as current information (see task notes: style sample is a
+    source of MANNER, never of facts).
+    """
+    if preferences is None:
+        return ""
+
+    parts: list[str] = []
+
+    style_description = preferences.style_description.strip()
+    if style_description:
+        parts.append(style_description)
+
+    voice_sample = preferences.voice_sample.strip()
+    if voice_sample:
+        parts.append(
+            "Образец текста пользователя для ориентира манеры речи (НЕ "
+            "источник фактов — если в примере есть цены, даты, названия "
+            "туров, акции, отели, страны, статистика или конкретные "
+            "предложения, они могут быть устаревшими и не считаются "
+            "актуальной информацией):\n" + voice_sample
+        )
+
+    if preferences.example_posts:
+        examples = "\n".join(
+            f"{index}. {text}"
+            for index, text in enumerate(preferences.example_posts, start=1)
+        )
+        parts.append(
+            "Примеры прошлых текстов пользователя для ориентира манеры речи "
+            "(тот же принцип, что и выше: это не источник фактов, а образец "
+            "стиля):\n" + examples
+        )
+
+    if preferences.avoid_phrases:
+        parts.append(
+            "Слова и обороты, которых нужно избегать: "
+            + ", ".join(preferences.avoid_phrases)
+        )
+
+    return "\n\n".join(parts)
 
 
 class BusinessProfileUpdateRequest(BaseModel):
@@ -1468,6 +1531,10 @@ class PersonalStyleUpdateRequest(BaseModel):
 
 class ExamplePostRequest(BaseModel):
     text: str
+
+
+class VoiceSampleUpdateRequest(BaseModel):
+    sample: str
 
 
 # ── onboarding: controlled vocabulary for the "how should the Assistant
@@ -1647,6 +1714,44 @@ async def clear_personal_style_examples(
 
     except Exception:
         return {"error": "Не удалось очистить примеры.", "personal_style": None}
+
+
+@app.put("/api/profile/voice-sample")
+async def update_voice_sample(
+    request: VoiceSampleUpdateRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """"Мой стиль / Голос бренда" - один цельный вставленный образец текста
+    (пост, сообщение клиенту, несколько абзацев), в отличие от
+    /api/profile/style/examples (несколько отдельных примеров, по одному).
+    Тот же WorkspaceUserPreferences, тот же Telegram/Web workspace - см.
+    app.services.user_style.UserStyleService.set_voice_sample(). Raw sample
+    text is never logged (no record_event call here), matching every other
+    personal-style endpoint in this file."""
+    try:
+        preferences = await partner_repository.set_user_voice_sample(
+            principal.workspace_id, principal.telegram_user_id, request.sample,
+        )
+        return {"personal_style": _personal_style_payload(preferences)}
+
+    except VoiceSampleTooLongError as exc:
+        return {"error": str(exc), "personal_style": None}
+    except Exception:
+        return {"error": "Не удалось сохранить стиль.", "personal_style": None}
+
+
+@app.delete("/api/profile/voice-sample")
+async def clear_voice_sample(
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    try:
+        preferences = await partner_repository.set_user_voice_sample(
+            principal.workspace_id, principal.telegram_user_id, "",
+        )
+        return {"personal_style": _personal_style_payload(preferences)}
+
+    except Exception:
+        return {"error": "Не удалось очистить стиль.", "personal_style": None}
 
 
 @app.post("/api/onboarding/complete")
@@ -2290,11 +2395,7 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
             principal.telegram_user_id,
         )
 
-        personal_style = (
-            preferences.style_description.strip()
-            if preferences is not None
-            else ""
-        )
+        personal_style = _personal_style_prompt(preferences)
 
         memory_record = await workspace_memory_repository.get(principal.workspace_id)
         workspace_memory_text = (
