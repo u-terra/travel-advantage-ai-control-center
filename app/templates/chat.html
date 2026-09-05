@@ -237,7 +237,7 @@ button, textarea { font-family: inherit; }
     white-space: nowrap;
 }
 
-.logout-btn, .admin-link {
+.logout-btn, .admin-link, .help-link {
     display: block;
     margin-top: 10px;
     width: 100%;
@@ -255,7 +255,7 @@ button, textarea { font-family: inherit; }
     transition: border-color .15s ease, color .15s ease;
 }
 
-.logout-btn:hover, .admin-link:hover {
+.logout-btn:hover, .admin-link:hover, .help-link:hover {
     border-color: var(--teal);
     color: #ecfbf9;
 }
@@ -1687,6 +1687,7 @@ textarea {
         <div class="sidebar-footer">
             <strong>ORCHESTRAVEL</strong> · Beta<br>
             <span id="footerEmail"></span>
+            <a href="/help" class="help-link">Помощь</a>
             <a href="/admin" class="admin-link" id="adminLink">Админка</a>
             <button type="button" class="logout-btn" id="logoutBtn">Выйти</button>
         </div>

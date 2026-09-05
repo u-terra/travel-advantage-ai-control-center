@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Помощь — ORCHESTRAVEL</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+    --navy-950: #0a0f1c;
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --teal-soft: rgba(23, 179, 163, .12);
+    --teal-soft-strong: rgba(23, 179, 163, .22);
+    --amber: #b4762b;
+    --amber-soft: rgba(180, 118, 43, .1);
+    --bg: #f4f6fa;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+    --sidebar-text: #c4cede;
+    --sidebar-text-dim: #8792ac;
+    --sidebar-border: rgba(255, 255, 255, .08);
+}
+
+html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+.shell { display: flex; min-height: 100vh; }
+
+/* ---------- sidebar / TOC ---------- */
+
+.sidebar {
+    flex: 0 0 250px;
+    background: var(--sidebar-grad);
+    color: var(--sidebar-text);
+    padding: 22px 14px 16px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+}
+
+.brand { display: flex; align-items: center; gap: 11px; padding: 4px 10px 18px; border-bottom: 1px solid var(--sidebar-border); margin-bottom: 14px; }
+.brand-mark {
+    flex: 0 0 auto; width: 32px; height: 32px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--teal) 0%, #3fd1c4 100%);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 6px 16px rgba(23, 179, 163, .35);
+}
+.brand-mark svg { width: 17px; height: 17px; }
+.brand-text .name { font-size: 14.5px; font-weight: 700; color: #f2f5fa; line-height: 1.25; }
+.brand-text .sub { font-size: 11.5px; color: var(--sidebar-text-dim); }
+
+.toc-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--sidebar-text-dim); padding: 10px 10px 6px; }
+
+.toc { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.toc a {
+    display: block; padding: 8px 10px; border-radius: 8px; font-size: 13.5px;
+    color: var(--sidebar-text-dim); text-decoration: none; transition: background .15s ease, color .15s ease;
+}
+.toc a:hover { background: rgba(255,255,255,.06); color: #e7ecf5; }
+.toc a.active { background: var(--teal-soft-strong); color: #ecfbf9; font-weight: 600; }
+
+.back-to-cabinet {
+    display: block; margin-top: 14px; padding-top: 14px;
+    border-top: 1px solid var(--sidebar-border);
+    color: var(--sidebar-text-dim); text-decoration: none; font-size: 12.5px;
+}
+.back-to-cabinet:hover { color: white; }
+
+/* ---------- main content ---------- */
+
+.main { flex: 1; min-width: 0; padding: 34px 40px 80px; max-width: 860px; }
+
+.hero { margin-bottom: 30px; }
+.hero h1 { font-size: 26px; margin: 0 0 10px; }
+.hero p { font-size: 14.5px; color: var(--text-muted); line-height: 1.6; margin: 0; max-width: 640px; }
+
+.hamburger {
+    display: none; border: 1px solid var(--border); background: var(--card);
+    border-radius: 8px; padding: 7px 9px; cursor: pointer; margin-bottom: 14px;
+}
+.hamburger svg { width: 18px; height: 18px; }
+
+section.help-section { margin-bottom: 40px; scroll-margin-top: 20px; }
+section.help-section h2 { font-size: 19px; margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+section.help-section > .lede { font-size: 13.5px; color: var(--text-muted); margin: 0 0 16px; line-height: 1.6; }
+
+.card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px; margin-bottom: 12px;
+}
+.card h3 { font-size: 14.5px; margin: 0 0 8px; }
+.card p { font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin: 0 0 8px; }
+.card p:last-child { margin-bottom: 0; }
+
+ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: 10px; }
+ol.steps li {
+    counter-increment: step;
+    display: flex; gap: 12px; align-items: flex-start;
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+}
+ol.steps li::before {
+    content: counter(step);
+    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
+    background: var(--teal-soft-strong); color: var(--teal-dark); font-weight: 700; font-size: 12.5px;
+    display: flex; align-items: center; justify-content: center;
+}
+ol.steps .step-body { font-size: 13.5px; line-height: 1.55; }
+ol.steps .step-body strong { color: var(--text); }
+ol.steps .step-result { display: block; margin-top: 4px; color: var(--text-muted); font-size: 12.5px; }
+ol.steps .step-result b { color: var(--teal-dark); font-weight: 600; }
+
+.example-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin: 12px 0 4px; }
+.example-card {
+    background: var(--teal-soft); border: 1px solid var(--border); border-radius: 10px;
+    padding: 11px 13px; font-size: 13px; color: var(--text); line-height: 1.5;
+}
+.example-card::before { content: "“"; color: var(--teal-dark); font-weight: 700; }
+.example-card::after { content: "”"; color: var(--teal-dark); font-weight: 700; }
+
+.note {
+    border-radius: 10px; padding: 10px 14px; font-size: 13px; line-height: 1.55; margin: 10px 0;
+}
+.note-info { background: var(--teal-soft); color: #0f6b62; }
+.note-warn { background: var(--amber-soft); color: var(--amber); }
+
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.tag { background: var(--card); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 12.5px; font-weight: 600; color: var(--text-muted); }
+
+.faq-item summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 4px 0; }
+.faq-item summary::marker { color: var(--teal); }
+.faq-item p { font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin: 8px 0 4px 18px; }
+.faq-item { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; margin-bottom: 8px; }
+
+.checklist { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.checklist li {
+    display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; line-height: 1.55;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 13px;
+}
+.checklist li svg { flex: 0 0 auto; width: 17px; height: 17px; stroke: var(--teal); margin-top: 1px; }
+
+.support-box {
+    background: var(--sidebar-grad); color: #f2f5fa; border-radius: 12px; padding: 16px 18px; margin-top: 8px;
+}
+.support-box p { color: var(--sidebar-text); font-size: 13.5px; line-height: 1.6; margin: 4px 0 0; }
+.support-box strong { color: white; }
+
+.btn-link {
+    display: inline-block; margin-top: 10px; background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: white; text-decoration: none; font-size: 13px; font-weight: 600; padding: 8px 16px; border-radius: 8px;
+}
+
+@media (max-width: 900px) {
+    .shell { flex-direction: column; }
+    .sidebar {
+        position: static; height: auto; width: 100%;
+        display: none;
+    }
+    .sidebar.open { display: block; }
+    .hamburger { display: inline-flex; align-items: center; gap: 6px; }
+    .main { padding: 18px 16px 60px; max-width: 100%; }
+    .example-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+    <aside class="sidebar" id="sidebar">
+        <div class="brand">
+            <div class="brand-mark">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2l2.6 6.6L21 11l-6.4 2.4L12 20l-2.6-6.6L3 11l6.4-2.4z"/>
+                </svg>
+            </div>
+            <div class="brand-text">
+                <div class="name">ORCHESTRAVEL</div>
+                <div class="sub">Помощь</div>
+            </div>
+        </div>
+
+        <div class="toc-label">Оглавление</div>
+        <ul class="toc" id="toc">
+            <li><a href="#quickstart">Быстрый старт</a></li>
+            <li><a href="#assistant">Ассистент</a></li>
+            <li><a href="#signals">Сигналы и идеи</a></li>
+            <li><a href="#competitors">Конкуренты</a></li>
+            <li><a href="#materials">Материалы</a></li>
+            <li><a href="#history">История</a></li>
+            <li><a href="#files">Файлы и документы</a></li>
+            <li><a href="#profile">Профиль</a></li>
+            <li><a href="#billing">Подписка и оплата</a></li>
+            <li><a href="#telegram">Telegram</a></li>
+            <li><a href="#faq">Частые вопросы</a></li>
+            <li><a href="#troubleshooting">Если что-то не работает</a></li>
+        </ul>
+
+        <a href="/" class="back-to-cabinet">&larr; Вернуться в кабинет</a>
+    </aside>
+
+    <main class="main">
+        <button type="button" class="hamburger" id="hamburger">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                 stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+            Оглавление
+        </button>
+
+        <div class="hero">
+            <h1>Помощь по ORCHESTRAVEL</h1>
+            <p>
+                ORCHESTRAVEL — рабочий помощник для турагента: с ним можно вести диалог обычным
+                языком, готовить тексты и сообщения клиентам, следить за конкурентами и
+                находить идеи для контента. Работает и в этом веб-кабинете, и в Telegram —
+                это один и тот же сервис. Эта страница объясняет, с чего начать и как
+                пользоваться каждым разделом, простыми словами, без технических терминов.
+            </p>
+        </div>
+
+        <section class="help-section" id="quickstart">
+            <h2>Быстрый старт</h2>
+            <p class="lede">Шесть шагов, чтобы за несколько минут понять, как работает ORCHESTRAVEL.</p>
+            <ol class="steps">
+                <li>
+                    <div class="step-body">
+                        <strong>Шаг 1. Заполните профиль.</strong><br>
+                        Откройте раздел «Профиль» и укажите, чем вы занимаетесь (турагент или
+                        самостоятельный путешественник), и в каком стиле вам удобно получать ответы.
+                        <span class="step-result">Результат: <b>Ассистент начнёт учитывать ваш бизнес в ответах.</b></span>
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Шаг 2. Напишите Ассистенту первую задачу.</strong><br>
+                        Откройте раздел «Ассистент» и напишите обычными словами, что нужно —
+                        например: «Подготовь пост о раннем бронировании Турции».
+                        <span class="step-result">Результат: <b>вы получите готовый текст в чате, который можно скопировать или доработать.</b></span>
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Шаг 3. Добавьте конкурента.</strong><br>
+                        В разделе «Конкуренты» нажмите «Добавить конкурента» и укажите сайт или название.
+                        <span class="step-result">Результат: <b>появится карточка конкурента с доступным анализом (см. раздел «Конкуренты» ниже — свежесть анализа может отличаться).</b></span>
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Шаг 4. Попробуйте загрузить PDF или изображение.</strong><br>
+                        В чате с Ассистентом нажмите на значок скрепки, выберите файл (например,
+                        подтверждение бронирования) и опишите задачу к нему.
+                        <span class="step-result">Результат: <b>файл появится рядом с вашим сообщением, а Ассистент ответит с учётом его содержимого.</b></span>
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Шаг 5. Создайте материал.</strong><br>
+                        В разделе «Материалы» опишите, какой текст нужен — пост, рассылка,
+                        подборка направлений.
+                        <span class="step-result">Результат: <b>готовый материал сохранится, и его можно будет найти снова.</b></span>
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Шаг 6. Посмотрите сигналы и идеи.</strong><br>
+                        Откройте раздел «Сигналы и идеи», чтобы увидеть подборку тем и наблюдений,
+                        которые можно использовать для контента.
+                        <span class="step-result">Результат: <b>список карточек с темами и кратким описанием, откуда взята идея.</b></span>
+                    </div>
+                </li>
+            </ol>
+        </section>
+
+        <section class="help-section" id="assistant">
+            <h2>Ассистент</h2>
+            <p class="lede">
+                Ассистент — это чат, в котором можно писать обычным человеческим языком, как
+                в переписке с коллегой. Не нужно знать никаких специальных команд или «промптов».
+            </p>
+            <div class="card">
+                <h3>Как это работает</h3>
+                <p>Напишите задачу своими словами — Ассистент постарается сразу дать полезный ответ.
+                Если что-то непонятно, он может задать один-два уточняющих вопроса, прежде чем ответить.</p>
+                <p>Ассистент учитывает то, что вы указали в «Профиле» — например, кто вы (турагент или
+                самостоятельный путешественник) и в каком стиле вам удобно получать ответы.</p>
+                <p>Кроме текста, Ассистенту можно передать файл — PDF, изображение, TXT или MD
+                (подробнее в разделе «Файлы и документы»).</p>
+            </div>
+            <div class="note note-info">
+                Чем конкретнее задача — тем точнее ответ. Если результат получился не тем, что нужно,
+                просто напишите, что поправить, — это тоже обычное сообщение в чате.
+            </div>
+            <h3 style="font-size:13.5px;margin:16px 0 8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;">Примеры хороших задач</h3>
+            <div class="example-grid">
+                <div class="example-card">Подготовь пост о раннем бронировании Турции</div>
+                <div class="example-card">Сравни эти два предложения</div>
+                <div class="example-card">Посмотри PDF бронирования и подготовь сообщение клиенту</div>
+                <div class="example-card">Какие направления предложить семье с ребёнком?</div>
+            </div>
+        </section>
+
+        <section class="help-section" id="signals">
+            <h2>Сигналы и идеи</h2>
+            <p class="lede">
+                Этот раздел собирает доступные сигналы рынка — новости, изменения и наблюдения —
+                и превращает их в идеи для постов и предложений клиентам.
+            </p>
+            <div class="note note-warn">
+                Важно понимать: это не полноценный мониторинг всего интернета в реальном времени.
+                ORCHESTRAVEL показывает то, что удалось найти из доступных источников на момент
+                проверки — не гарантированный и не исчерпывающий список.
+            </div>
+            <div class="card">
+                <h3>На что обращать внимание</h3>
+                <p><strong>Источник</strong> — у каждого сигнала указано, откуда он взят.</p>
+                <p><strong>Свежесть</strong> — у каждого сигнала есть дата или отметка о том,
+                насколько давно он появился. Более свежие сигналы обычно полезнее.</p>
+                <p>Используйте сигналы как подсказку для тем, а не как готовое к публикации решение —
+                перед использованием стоит проверить детали самостоятельно.</p>
+            </div>
+        </section>
+
+        <section class="help-section" id="competitors">
+            <h2>Конкуренты</h2>
+            <p class="lede">Раздел помогает следить за тем, что предлагают другие компании на рынке.</p>
+            <ol class="steps">
+                <li>
+                    <div class="step-body">
+                        <strong>Как добавить конкурента.</strong><br>
+                        Откройте раздел «Конкуренты», нажмите «Добавить конкурента» и укажите
+                        сайт или название компании.
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Что происходит после добавления.</strong><br>
+                        ORCHESTRAVEL пытается собрать доступную информацию об этом конкуренте и
+                        показывает её в виде карточки — коротко, по сути, без лишних технических деталей.
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Что означает «свежий анализ».</strong><br>
+                        Это значит, что информацию удалось получить недавно и напрямую с сайта
+                        конкурента. Дата анализа всегда показана рядом с карточкой.
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Почему свежие источники иногда недоступны.</strong><br>
+                        Сайт конкурента может быть временно недоступен, менять структуру или
+                        ограничивать автоматический доступ. ORCHESTRAVEL не имеет постоянного
+                        прямого доступа к чужим сайтам в реальном времени — это нормальная
+                        ситуация, а не ошибка сервиса.
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Что такое «Radar signals».</strong><br>
+                        Если свежие данные с сайта получить не удалось, ORCHESTRAVEL показывает
+                        вместо них сигналы из раздела «Сигналы и идеи», связанные с этим
+                        конкурентом или направлением, — как запасной, менее точный источник.
+                    </div>
+                </li>
+                <li>
+                    <div class="step-body">
+                        <strong>Сообщение «свежие источники не найдены».</strong><br>
+                        Это означает, что на момент проверки не удалось получить актуальную
+                        информацию ни напрямую, ни через сигналы. Попробуйте обновить анализ
+                        позже или проверить конкурента вручную.
+                    </div>
+                </li>
+            </ol>
+        </section>
+
+        <section class="help-section" id="materials">
+            <h2>Материалы</h2>
+            <p class="lede">Раздел для создания готовых текстов: постов, рассылок, подборок и других материалов.</p>
+            <div class="card">
+                <h3>Как создать материал</h3>
+                <p>Откройте раздел «Материалы», опишите, что нужно, и нажмите кнопку создания.
+                Например: «Сделай подборку из 5 направлений для пляжного отдыха в октябре».</p>
+                <p>Если задача аналитическая (например, сравнение направлений или подробный расчёт),
+                ответ может получиться длиннее и подготавливаться немного дольше обычного —
+                это нормально.</p>
+                <p>Готовый материал сохраняется автоматически. Посмотреть его снова можно в этом же
+                разделе «Материалы» или в разделе «История».</p>
+            </div>
+        </section>
+
+        <section class="help-section" id="history">
+            <h2>История</h2>
+            <p class="lede">Здесь сохраняются ваши предыдущие диалоги с Ассистентом.</p>
+            <div class="card">
+                <h3>Как этим пользоваться</h3>
+                <p>Откройте раздел «История», чтобы увидеть список прошлых диалогов. Нажмите на
+                любой из них, чтобы посмотреть переписку целиком или продолжить её.</p>
+                <p>История сохраняется автоматически — специально ничего нажимать не нужно.</p>
+            </div>
+        </section>
+
+        <section class="help-section" id="files">
+            <h2>Файлы и документы</h2>
+            <p class="lede">Ассистенту можно передать файл, чтобы он учёл его содержимое в ответе.</p>
+            <div class="tag-row">
+                <span class="tag">JPG</span><span class="tag">JPEG</span><span class="tag">PNG</span>
+                <span class="tag">WEBP</span><span class="tag">PDF</span><span class="tag">TXT</span><span class="tag">MD</span>
+            </div>
+            <ol class="steps">
+                <li><div class="step-body">Нажмите на значок скрепки рядом с полем ввода сообщения.</div></li>
+                <li><div class="step-body">Выберите файл на своём устройстве.</div></li>
+                <li><div class="step-body">Дождитесь, пока файл появится рядом с вашим сообщением, — это значит, что он загружен.</div></li>
+                <li><div class="step-body">Напишите задачу к этому файлу и отправьте сообщение.</div></li>
+            </ol>
+            <h3 style="font-size:13.5px;margin:16px 0 8px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;">Примеры задач к файлу</h3>
+            <div class="example-grid">
+                <div class="example-card">Извлеки данные бронирования</div>
+                <div class="example-card">Подготовь сообщение клиенту</div>
+                <div class="example-card">Сравни эти предложения</div>
+            </div>
+            <div class="note note-warn">
+                Каждый файл учитывается в рамках того диалога, где он загружен. ORCHESTRAVEL не
+                хранит все загруженные файлы как единую постоянную базу знаний — если нужно
+                снова использовать файл, прикрепите его ещё раз в новом диалоге.
+            </div>
+        </section>
+
+        <section class="help-section" id="profile">
+            <h2>Профиль</h2>
+            <p class="lede">Профиль помогает Ассистенту понимать ваш бизнес и отвечать так, как удобно именно вам.</p>
+            <div class="card">
+                <h3>Что можно настроить</h3>
+                <p><strong>Роль</strong> — турагент (TA) или самостоятельный путешественник (independent).
+                От этого зависит, какой контекст и знания использует Ассистент.</p>
+                <p><strong>Стиль общения</strong> — например, более формальный или более дружелюбный тон ответов.</p>
+                <p>Персональные настройки применяются во всех разделах, где Ассистент готовит ответы.</p>
+            </div>
+            <div class="note note-info">
+                Если вы указали роль «самостоятельный путешественник», Ассистент не использует
+                знания и подсказки, предназначенные специально для турагентов, — они относятся
+                только к профилю с ролью «турагент».
+            </div>
+        </section>
+
+        <section class="help-section" id="billing">
+            <h2>Подписка и оплата</h2>
+            <p class="lede">Одна подписка ORCHESTRAVEL действует сразу и в веб-кабинете, и в Telegram.</p>
+            <div class="card">
+                <h3>Как это устроено</h3>
+                <p>Текущий статус подписки, срок действия и способ оплаты можно посмотреть на
+                странице «Подписка».</p>
+                <p>Разделы «Помощь», «Профиль» и «Подписка» остаются доступны, даже если срок
+                подписки закончился или доступ временно ограничен.</p>
+                <p>Рабочие функции сервиса (например, Ассистент, Конкуренты, Материалы) могут быть
+                ограничены после окончания оплаченного периода — в этом случае страница «Подписка»
+                подскажет, как возобновить доступ.</p>
+            </div>
+            <a href="/billing" class="btn-link">Открыть страницу «Подписка»</a>
+        </section>
+
+        <section class="help-section" id="telegram">
+            <h2>Telegram</h2>
+            <p class="lede">Telegram — ещё один способ пользоваться ORCHESTRAVEL, а не отдельный сервис.</p>
+            <div class="card">
+                <h3>Как это работает</h3>
+                <p>Веб-кабинет и Telegram-бот используют одно и то же рабочее пространство и одну
+                и ту же подписку. Отдельно оплачивать доступ в Telegram не нужно.</p>
+                <p>Вы можете начать диалог в одном канале и продолжить работу в другом — это тот же
+                Ассистент, тот же профиль, та же подписка.</p>
+            </div>
+        </section>
+
+        <section class="help-section" id="faq">
+            <h2>Частые вопросы</h2>
+            <details class="faq-item">
+                <summary>Нужно ли уметь писать промпты?</summary>
+                <p>Нет. Достаточно написать задачу обычными словами, как в переписке с коллегой.</p>
+            </details>
+            <details class="faq-item">
+                <summary>Почему Ассистент иногда задаёт уточняющий вопрос?</summary>
+                <p>Чтобы дать более точный и полезный ответ, если в задаче не хватает деталей.
+                Просто ответьте на вопрос обычным сообщением.</p>
+            </details>
+            <details class="faq-item">
+                <summary>Почему анализ конкурента может быть не свежим?</summary>
+                <p>Сайт конкурента иногда временно недоступен для проверки. В этом случае
+                показываются либо более ранние данные, либо сигналы из раздела «Сигналы и идеи».</p>
+            </details>
+            <details class="faq-item">
+                <summary>Какие файлы можно загрузить?</summary>
+                <p>JPG, JPEG, PNG, WEBP, PDF, TXT и MD.</p>
+            </details>
+            <details class="faq-item">
+                <summary>Где мои прошлые ответы?</summary>
+                <p>В разделе «История» — там сохраняются все ваши диалоги с Ассистентом.</p>
+            </details>
+            <details class="faq-item">
+                <summary>Почему функция недоступна?</summary>
+                <p>Скорее всего, срок подписки закончился или доступ временно ограничен. Проверьте
+                статус на странице «Подписка».</p>
+            </details>
+            <details class="faq-item">
+                <summary>Нужно ли отдельно платить за Telegram?</summary>
+                <p>Нет. Одна подписка действует и в веб-кабинете, и в Telegram.</p>
+            </details>
+            <details class="faq-item">
+                <summary>Что делать, если Ассистент ошибся?</summary>
+                <p>Напишите в чате, что именно нужно исправить, — это обычное следующее сообщение
+                в диалоге. Ассистент учтёт уточнение и подготовит новый вариант.</p>
+            </details>
+        </section>
+
+        <section class="help-section" id="troubleshooting">
+            <h2>Если что-то не работает</h2>
+            <p class="lede">Попробуйте по порядку — обычно этого достаточно, чтобы всё снова заработало.</p>
+            <ul class="checklist">
+                <li>
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    Обновите страницу в браузере.
+                </li>
+                <li>
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    Проверьте подключение к интернету.
+                </li>
+                <li>
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    Проверьте статус подписки на странице «Подписка».
+                </li>
+                <li>
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    Попробуйте сформулировать задачу ещё раз, другими словами.
+                </li>
+                <li>
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                    Если ошибка повторяется — сообщите об этом владельцу рабочего пространства или в поддержку.
+                </li>
+            </ul>
+            <div class="support-box">
+                <strong>Не получилось решить проблему самостоятельно?</strong>
+                <p>Опишите, что вы делали и что пошло не так, и передайте это владельцу вашего
+                рабочего пространства или в поддержку ORCHESTRAVEL — так проблему получится
+                решить быстрее.</p>
+            </div>
+        </section>
+    </main>
+</div>
+
+<script>
+const hamburger = document.getElementById("hamburger");
+const sidebar = document.getElementById("sidebar");
+hamburger.addEventListener("click", () => sidebar.classList.toggle("open"));
+
+const tocLinks = Array.from(document.querySelectorAll("#toc a"));
+const sections = tocLinks
+    .map(a => document.querySelector(a.getAttribute("href")))
+    .filter(Boolean);
+
+function setActive(id) {
+    tocLinks.forEach(a => a.classList.toggle("active", a.getAttribute("href") === `#${id}`));
+}
+
+tocLinks.forEach(a => {
+    a.addEventListener("click", () => {
+        if (window.matchMedia("(max-width: 900px)").matches) {
+            sidebar.classList.remove("open");
+        }
+    });
+});
+
+if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) setActive(entry.target.id);
+        });
+    }, { rootMargin: "-20% 0px -70% 0px" });
+    sections.forEach(section => observer.observe(section));
+}
+</script>
+
+</body>
+</html>

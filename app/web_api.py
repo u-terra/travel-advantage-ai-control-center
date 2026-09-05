@@ -2530,6 +2530,25 @@ async def subscription_inactive_page(request: Request):
     ).read_text(encoding="utf-8")
 
 
+@app.get("/help", response_class=HTMLResponse)
+async def help_page(request: Request):
+    """The built-in help/instructions page - reachable in EVERY subscription
+    state (no subscription, trial, beta, active, expired, suspended), same
+    rule as /billing: only a valid session is required, never a subscription
+    check. This is deliberate - a user who can't pay or whose access lapsed
+    is exactly who most needs to find billing/support instructions, and an
+    expired/suspended workspace must never be locked out of self-serve help.
+    The page itself is static content and links out to /billing for
+    payment - it never calls any subscription-gated product endpoint, so it
+    can't be used to bypass the paywall."""
+    ctx = await _valid_session_context(request)
+    if ctx is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return Path(
+        "app/templates/help.html"
+    ).read_text(encoding="utf-8")
+
+
 @app.get("/billing", response_class=HTMLResponse)
 async def billing_page(request: Request):
     """The "Подписка" page - reachable with ANY subscription state,
