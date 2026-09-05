@@ -585,6 +585,12 @@ class MaterialOrchestrationService:
         source_url: str,
         travel_advantage_link: str | None,
         user_preferences: WorkspaceUserPreferences | None = None,
+        # "Что можно сделать" (Competitor Intelligence -> материал): тот же
+        # builder, что и раньше, просто параметризованный по artifact_type -
+        # не второй генератор. "post" (по умолчанию, обратная совместимость с
+        # существующим Telegram-вызовом) или "client_message" - оба уже
+        # понятны Content Factory через _PROVIDER_MATERIAL_TYPES ниже.
+        artifact_type: str = "post",
     ) -> GenerationSpec:
         trusted_context, tone_preferences, verified, unverified, revision = (
             _profile_generation_values(workspace_id, profile)
@@ -603,7 +609,7 @@ class MaterialOrchestrationService:
             })
         return GenerationSpec(
             action_type=GenerationAction.CREATE_ARTIFACT,
-            artifact_type="post",
+            artifact_type=artifact_type,
             objective=_COMPETITOR_SIGNAL_OBJECTIVE,
             audience=tuple(trusted_context.get("audiences", ())),
             output_format="telegram",
@@ -639,6 +645,10 @@ class MaterialOrchestrationService:
         reason: str,
         analysis: SourceAnalysisPayload | None = None,
         user_preferences: WorkspaceUserPreferences | None = None,
+        # Signal -> материал (Radar): тот же builder, параметризованный по
+        # artifact_type - "post" (по умолчанию, обратная совместимость с
+        # существующим Telegram-вызовом) или "client_message".
+        artifact_type: str = "post",
     ) -> GenerationSpec:
         trusted_context, tone_preferences, verified, unverified, revision = (
             _profile_generation_values(workspace_id, profile)
@@ -653,7 +663,7 @@ class MaterialOrchestrationService:
         analysis_warnings = analysis.warnings if analysis is not None else ()
         return GenerationSpec(
             action_type=GenerationAction.CREATE_ARTIFACT,
-            artifact_type="post",
+            artifact_type=artifact_type,
             objective=_RADAR_OBJECTIVE,
             audience=tuple(trusted_context.get("audiences", ())),
             output_format="telegram",

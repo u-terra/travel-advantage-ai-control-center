@@ -1096,6 +1096,29 @@ textarea {
     white-space: nowrap;
 }
 
+/* data_origin === "radar_signal": the analysis is a Radar-signal fallback,
+   not a fresh direct fetch of the competitor's own site - must never look
+   identical to a fresh report (see CompetitorIntelligence.data_origin). */
+.report-fallback-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--amber);
+    background: var(--amber-soft);
+    border-radius: 999px;
+    padding: 6px 12px;
+    white-space: nowrap;
+}
+
+.report-opportunity-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
 .report-sections {
     display: flex;
     flex-direction: column;
@@ -2962,14 +2985,49 @@ function appendReportSourcesSection(container, sources) {
     container.appendChild(section);
 }
 
-function appendReportOpportunitiesSection(container, opportunities) {
+async function createMaterialFromCompetitorOpportunity(competitorId, opportunityId, action, button, errorEl) {
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = "Готовим…";
+    errorEl.textContent = "";
+
+    try {
+        const response = await fetch(
+            "/api/competitors/" + encodeURIComponent(competitorId) +
+            "/opportunities/" + encodeURIComponent(opportunityId) + "/actions",
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: action }),
+            },
+        );
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            errorEl.textContent = data.error || "Не удалось подготовить материал.";
+            button.disabled = false;
+            button.textContent = originalText;
+            return;
+        }
+
+        activateView("materials");
+        openMaterial(data.material);
+
+    } catch (_) {
+        errorEl.textContent = "Не удалось подготовить материал. Проверьте соединение.";
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
+function appendReportOpportunitiesSection(container, opportunities, competitorId) {
     if (!Array.isArray(opportunities) || opportunities.length === 0) return;
 
     const section = document.createElement("div");
     section.className = "report-section";
 
     const heading = document.createElement("h3");
-    heading.textContent = "Возможности и рекомендации";
+    heading.textContent = "Что можно сделать";
     section.appendChild(heading);
 
     opportunities.forEach(opp => {
@@ -3009,6 +3067,33 @@ function appendReportOpportunitiesSection(container, opportunities) {
             item.appendChild(sourceLine);
         }
 
+        const opportunityError = document.createElement("p");
+        opportunityError.className = "info-card-text material-edit-error";
+
+        const actions = document.createElement("div");
+        actions.className = "report-opportunity-actions";
+
+        const postBtn = document.createElement("button");
+        postBtn.type = "button";
+        postBtn.className = "info-action-btn";
+        postBtn.textContent = "Подготовить пост";
+        postBtn.addEventListener("click", () => createMaterialFromCompetitorOpportunity(
+            competitorId, opp.id, "post", postBtn, opportunityError,
+        ));
+        actions.appendChild(postBtn);
+
+        const clientMsgBtn = document.createElement("button");
+        clientMsgBtn.type = "button";
+        clientMsgBtn.className = "info-action-btn";
+        clientMsgBtn.textContent = "Сообщение клиентам";
+        clientMsgBtn.addEventListener("click", () => createMaterialFromCompetitorOpportunity(
+            competitorId, opp.id, "client_message", clientMsgBtn, opportunityError,
+        ));
+        actions.appendChild(clientMsgBtn);
+
+        item.appendChild(actions);
+        item.appendChild(opportunityError);
+
         section.appendChild(item);
     });
 
@@ -3046,6 +3131,18 @@ function renderReport(competitor, intelligence) {
         header.appendChild(badge);
     }
 
+    if (intelligence.data_origin === "radar_signal") {
+        const fallbackBadge = document.createElement("div");
+        fallbackBadge.className = "report-fallback-badge";
+        fallbackBadge.textContent = "По сигналам, не прямой сайт";
+        fallbackBadge.title = (
+            "Свежие данные напрямую с сайта конкурента сейчас недоступны - " +
+            "этот отчёт собран по сигналам из раздела «Сигналы и идеи», как " +
+            "запасной, менее точный источник."
+        );
+        header.appendChild(fallbackBadge);
+    }
+
     wrap.appendChild(header);
 
     const sections = document.createElement("div");
@@ -3055,7 +3152,7 @@ function renderReport(competitor, intelligence) {
         appendReportListSection(sections, def.title, intelligence[def.key]);
     });
     appendReportSourcesSection(sections, intelligence.sources);
-    appendReportOpportunitiesSection(sections, intelligence.opportunities);
+    appendReportOpportunitiesSection(sections, intelligence.opportunities, competitor.id);
 
     if (sections.children.length === 0) {
         const card = document.createElement("div");
@@ -3209,6 +3306,40 @@ function openSignalInAssistant(item) {
     message.setSelectionRange(prompt.length, prompt.length);
 }
 
+async function createMaterialFromSignal(item, action, button, errorEl) {
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = "Готовим…";
+    errorEl.textContent = "";
+
+    try {
+        const response = await fetch(
+            "/api/signals/" + encodeURIComponent(item.id) + "/actions",
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: action }),
+            },
+        );
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            errorEl.textContent = data.error || "Не удалось подготовить материал.";
+            button.disabled = false;
+            button.textContent = originalText;
+            return;
+        }
+
+        activateView("materials");
+        openMaterial(data.material);
+
+    } catch (_) {
+        errorEl.textContent = "Не удалось подготовить материал. Проверьте соединение.";
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
 function renderSignalsList(items) {
     signalsState.innerHTML = "";
 
@@ -3259,6 +3390,29 @@ function renderSignalsList(items) {
         discussBtn.textContent = "Разобрать в Ассистенте";
         discussBtn.addEventListener("click", () => openSignalInAssistant(item));
         card.appendChild(discussBtn);
+
+        const materialError = document.createElement("p");
+        materialError.className = "info-card-text material-edit-error";
+
+        const materialActions = document.createElement("div");
+        materialActions.className = "report-opportunity-actions";
+
+        const postBtn = document.createElement("button");
+        postBtn.type = "button";
+        postBtn.className = "info-action-btn";
+        postBtn.textContent = "Подготовить пост";
+        postBtn.addEventListener("click", () => createMaterialFromSignal(item, "post", postBtn, materialError));
+        materialActions.appendChild(postBtn);
+
+        const clientMsgBtn = document.createElement("button");
+        clientMsgBtn.type = "button";
+        clientMsgBtn.className = "info-action-btn";
+        clientMsgBtn.textContent = "Сообщение клиентам";
+        clientMsgBtn.addEventListener("click", () => createMaterialFromSignal(item, "client_message", clientMsgBtn, materialError));
+        materialActions.appendChild(clientMsgBtn);
+
+        card.appendChild(materialActions);
+        card.appendChild(materialError);
 
         grid.appendChild(card);
     });

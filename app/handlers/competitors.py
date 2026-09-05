@@ -43,6 +43,7 @@ from app.keyboards import (
     competitors_list_keyboard,
     v2_back_keyboard,
 )
+from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import (
     CompetitorAddressError,
     CompetitorLabelError,
@@ -57,6 +58,7 @@ from app.services.competitor_intelligence import (
     CompetitorIntelligenceService,
     CompetitorIntelligenceUnavailable,
 )
+from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
@@ -464,7 +466,8 @@ async def competitor_ideas(callback: CallbackQuery, competitor_repository: Compe
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_CREATE_PREFIX))
 async def create_from_competitor_opportunity(callback: CallbackQuery,
     competitor_repository: CompetitorRepository, workspace_context: WorkspaceContext | None,
-    llm_provider: LLMProvider, partner_repository: PartnerRepository) -> None:
+    llm_provider: LLMProvider, partner_repository: PartnerRepository,
+    artifact_repository: ArtifactRepository) -> None:
     await callback.answer()
     competitor, data = await _snapshot(callback, COMPETITOR_CREATE_PREFIX, competitor_repository, workspace_context)
     if callback.message is None or competitor is None or workspace_context is None:
@@ -498,8 +501,27 @@ async def create_from_competitor_opportunity(callback: CallbackQuery,
         output_format=request.output_format, mode="ai")
     if draft is None:
         await callback.message.answer("Не удалось получить черновик автоматически."); return
+    # Web/Telegram parity (signal/competitor -> материал chain): the web
+    # equivalent (POST /api/competitors/{id}/opportunities/{id}/actions)
+    # persists the draft as a real Artifact so it shows up in "Материалы" -
+    # same here now, same sanitize_draft_text + create_artifact_with_initial_version
+    # call as the Radar flow (app/handlers/menu.py:on_radar_content_selected),
+    # with data_origin (direct_fetch/radar_signal) recorded in generation_note
+    # so a fallback-based opportunity is never indistinguishable from a fresh one.
+    sanitized_text = sanitize_draft_text(draft.text)
+    await artifact_repository.create_artifact_with_initial_version(
+        workspace_context.workspace_id,
+        artifact_type=spec.artifact_type,
+        title=f"Telegram: {opportunity.topic}",
+        content=sanitized_text,
+        generation_note=(
+            f"Конкурент: {competitor.label}; opportunity_id={opportunity.id}; "
+            f"data_origin={data.data_origin}"
+        ),
+    )
     await callback.message.answer(
-        "📝 Черновик по content opportunity — только для ручной проверки\n\n" + draft.text
+        "📝 Черновик по content opportunity сохранён в «Мои материалы» — "
+        "перед использованием проверьте вручную.\n\n" + sanitized_text
     )
 
 

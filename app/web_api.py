@@ -84,10 +84,13 @@ from app.services.competitor_intelligence import (
     CompetitorIntelligenceUnavailable,
 )
 from app.services.content_factory import ContentFactoryConfig
+from app.services.draft_sanitizer import sanitize_draft_text
+from app.services.generation_request_builder import build_provider_generation_request
 from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
 from app.services.lead_radar import LeadRadarConfig, build_workspace_signals, category_label
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
+from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.robokassa import RoboKassaConfig
 from app.services.telemetry import record_event
 from app.services.usage_recorder import record_llm_call
@@ -226,6 +229,23 @@ competitor_intelligence_service = CompetitorIntelligenceService(
     usage_ledger_repository=usage_ledger_repository,
     workspace_signal_repository=workspace_signal_repository,
 )
+
+# Signal/competitor -> материал (Radar/Competitor Intelligence "Создать
+# материал"): same MaterialOrchestrationService + same competitor_llm_provider
+# Telegram already uses (app/handlers/menu.py, app/handlers/competitors.py) -
+# no second generator, no second LLM provider.
+material_orchestration_service = MaterialOrchestrationService()
+
+# Actions offered per signal/competitor opportunity - deliberately just two,
+# both already understood by Content Factory via generation_request_builder's
+# _PROVIDER_MATERIAL_TYPES ("post" -> market_offer, "client_message" ->
+# client_question). Not a free-text artifact_type: only these two are
+# reachable from this UI surface.
+_SIGNAL_OR_COMPETITOR_MATERIAL_ACTIONS = frozenset({"post", "client_message"})
+
+
+class MaterialActionRequest(BaseModel):
+    action: str
 
 
 # ── web-auth: cookie session + CSRF ─────────────────────────────────────
@@ -1163,6 +1183,148 @@ async def get_competitor_intelligence(
         return {"error": "Не удалось загрузить отчёт по конкуренту."}
 
 
+@app.post("/api/competitors/{competitor_id}/opportunities/{opportunity_id}/actions")
+async def create_material_from_competitor_opportunity(
+    competitor_id: int,
+    opportunity_id: str,
+    request: MaterialActionRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """«Что можно сделать» -> готовый материал: тот же
+    MaterialOrchestrationService.build_competitor_signal_generation_spec и тот
+    же competitor_llm_provider (Content Factory), что уже использует Telegram
+    (app/handlers/competitors.py:create_from_competitor_opportunity). Ни один
+    из аргументов спека не придуман здесь - все берутся из уже посчитанного
+    ContentOpportunity (opportunity.topic/key_thesis/own_post_angle/
+    audience_value/source_title/source_url/travel_advantage_link), как и в
+    Telegram. Отличие от Telegram: там черновик только показывается в чате -
+    здесь он ещё и сохраняется как Artifact (create_artifact_with_initial_version),
+    чтобы попасть в «Материалы», с data_origin (direct_fetch/radar_signal) в
+    generation_note - fallback-анализ никогда не выдаётся за свежий direct
+    fetch. travel_advantage_link уже отфильтрован источником только для
+    TA-affiliated workspace (app/services/competitor_intelligence.py) -
+    ta_affiliated isolation соблюдена на уровне данных, здесь ничего
+    дополнительно решать не нужно."""
+    if request.action not in _SIGNAL_OR_COMPETITOR_MATERIAL_ACTIONS:
+        return {"error": "Неизвестное действие.", "material": None}
+
+    try:
+        competitor = await competitor_repository.get_for_workspace(
+            principal.workspace_id, competitor_id,
+        )
+        if competitor is None:
+            return {"error": "Конкурент не найден.", "material": None}
+
+        intelligence = await competitor_repository.get_intelligence(
+            principal.workspace_id, competitor_id,
+        )
+        if intelligence is None:
+            return {"error": "Анализ конкурента ещё не готов.", "material": None}
+
+        opportunity = next(
+            (item for item in intelligence.opportunities if item.id == opportunity_id), None,
+        )
+        if opportunity is None:
+            return {"error": "Рекомендация недоступна.", "material": None}
+
+        await record_event(
+            operational_event_repository, module="competitors", event_type="action_selected",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={
+                "competitor_id": competitor_id, "opportunity_id": opportunity_id,
+                "action": request.action, "data_origin": intelligence.data_origin,
+            },
+        )
+
+        profile = await partner_repository.get_business_profile(principal.workspace_id)
+        user_preferences = await partner_repository.get_user_preferences(
+            principal.workspace_id, principal.telegram_user_id,
+        )
+
+        spec = material_orchestration_service.build_competitor_signal_generation_spec(
+            principal.workspace_id, profile,
+            competitor_signal=opportunity.topic, key_thesis=opportunity.key_thesis,
+            own_post_angle=opportunity.own_post_angle, audience_value=opportunity.audience_value,
+            source_title=opportunity.source_title, source_url=opportunity.source_url,
+            travel_advantage_link=opportunity.travel_advantage_link,
+            user_preferences=user_preferences, artifact_type=request.action,
+        )
+        provider_request = build_provider_generation_request(spec, limit=6000)
+
+        draft = await asyncio.to_thread(
+            competitor_llm_provider.generate_draft,
+            source_text=provider_request.source_text,
+            material_type=provider_request.material_type,
+            output_format=provider_request.output_format,
+            mode="ai",
+        )
+        if draft is None:
+            await record_event(
+                operational_event_repository, module="materials",
+                event_type="material_created_from_competitor",
+                success=False, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                error_code="draft_unavailable",
+                metadata={
+                    "competitor_id": competitor_id, "opportunity_id": opportunity_id,
+                    "action": request.action,
+                },
+            )
+            return {
+                "error": "Не удалось подготовить материал. Попробуйте ещё раз.",
+                "material": None,
+            }
+
+        sanitized = sanitize_draft_text(draft.text)
+        artifact, version = await artifact_repository.create_artifact_with_initial_version(
+            principal.workspace_id,
+            artifact_type=spec.artifact_type,
+            title=opportunity.topic or "Материал по конкуренту",
+            content=sanitized,
+            generation_note=(
+                f"Конкурент: {competitor.label}; opportunity_id={opportunity_id}; "
+                f"data_origin={intelligence.data_origin}"
+            ),
+        )
+
+        await record_event(
+            operational_event_repository, module="materials",
+            event_type="material_created_from_competitor",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={
+                "competitor_id": competitor_id, "opportunity_id": opportunity_id,
+                "action": request.action, "artifact_id": artifact.id,
+                "data_origin": intelligence.data_origin,
+            },
+        )
+
+        return {
+            "material": _material_payload(artifact),
+            "version": _version_payload(version),
+            "origin": {
+                "kind": "competitor",
+                "competitor_label": competitor.label,
+                "topic": opportunity.topic,
+                "data_origin": intelligence.data_origin,
+                "analyzed_at": intelligence.analyzed_at,
+            },
+        }
+
+    except Exception:
+        await record_event(
+            operational_event_repository, module="materials",
+            event_type="material_created_from_competitor",
+            success=False, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+            error_code="unhandled_exception",
+            metadata={
+                "competitor_id": competitor_id, "opportunity_id": opportunity_id,
+                "action": request.action,
+            },
+        )
+        return {"error": "Не удалось подготовить материал.", "material": None}
+
+
 @app.get("/api/signals")
 async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
     """Read-only: свежие сигналы Radar для текущего workspace.
@@ -1216,6 +1378,143 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
 
     except Exception:
         return {"error": "Не удалось загрузить сигналы.", "signals": []}
+
+
+@app.post("/api/signals/{interpretation_id}/actions")
+async def create_material_from_signal(
+    interpretation_id: int,
+    request: MaterialActionRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Сигнал -> готовый материал: тот же
+    MaterialOrchestrationService.build_radar_generation_spec и тот же
+    competitor_llm_provider (Content Factory), что уже использует Telegram
+    (app/handlers/menu.py:on_radar_content_selected) - тот же Source Analysis
+    Quality Gate (analyze_source ДО generate_draft; артефакт не создаётся,
+    если анализ недоступен - fail closed, а не "молча пропустить проверку")
+    и та же санитизация черновика (sanitize_draft_text) перед сохранением.
+    Никакого второго генератора и никакого нового LLM provider."""
+    if request.action not in _SIGNAL_OR_COMPETITOR_MATERIAL_ACTIONS:
+        return {"error": "Неизвестное действие.", "material": None}
+
+    try:
+        record = await workspace_signal_repository.get_for_workspace(
+            principal.workspace_id, interpretation_id,
+        )
+        if record is None:
+            return {"error": "Сигнал недоступен.", "material": None}
+
+        # Та же проверка видимости, что и в /api/signals - источник должен
+        # быть активен и подключён к workspace прямо сейчас, иначе сигнал
+        # не пригоден для генерации, даже если строка формально существует.
+        authorized = build_workspace_signals(lead_radar_config, [record], limit=1)
+        if not authorized:
+            return {"error": "Сигнал недоступен.", "material": None}
+        signal = authorized[0]
+
+        await record_event(
+            operational_event_repository, module="signals", event_type="action_selected",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={"signal_id": interpretation_id, "action": request.action},
+        )
+
+        profile = await partner_repository.get_business_profile(principal.workspace_id)
+        user_preferences = await partner_repository.get_user_preferences(
+            principal.workspace_id, principal.telegram_user_id,
+        )
+
+        radar_source_text = "\n".join(
+            value for value in (record.item_title, record.item_summary) if value
+        )
+        analysis = await asyncio.to_thread(
+            competitor_llm_provider.analyze_source, source_text=radar_source_text,
+        )
+        if analysis is None:
+            await record_event(
+                operational_event_repository, module="materials",
+                event_type="material_created_from_signal",
+                success=False, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                error_code="analysis_unavailable",
+                metadata={"signal_id": interpretation_id, "action": request.action},
+            )
+            return {
+                "error": "Не удалось подготовить материал: анализ источника недоступен.",
+                "material": None,
+            }
+
+        spec = material_orchestration_service.build_radar_generation_spec(
+            principal.workspace_id, profile,
+            title=record.item_title, summary=record.item_summary,
+            source_type=record.source_type, origin_type=record.origin_type,
+            url=record.item_url, category=record.ai_category or "",
+            reason=record.ai_reason or signal.action_reason,
+            analysis=analysis, user_preferences=user_preferences,
+            artifact_type=request.action,
+        )
+        provider_request = build_provider_generation_request(spec)
+
+        draft = await asyncio.to_thread(
+            competitor_llm_provider.generate_draft,
+            source_text=provider_request.source_text,
+            material_type=provider_request.material_type,
+            output_format=provider_request.output_format,
+            mode="ai",
+        )
+        if draft is None:
+            await record_event(
+                operational_event_repository, module="materials",
+                event_type="material_created_from_signal",
+                success=False, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                error_code="draft_unavailable",
+                metadata={"signal_id": interpretation_id, "action": request.action},
+            )
+            return {
+                "error": "Не удалось подготовить материал. Попробуйте ещё раз.",
+                "material": None,
+            }
+
+        sanitized = sanitize_draft_text(draft.text, disputed_claims=analysis.disputed_claims)
+        artifact, version = await artifact_repository.create_artifact_with_initial_version(
+            principal.workspace_id,
+            artifact_type=spec.artifact_type,
+            title=signal.title or "Материал по сигналу",
+            content=sanitized,
+            generation_note=f"Сигнал Radar: interpretation_id={interpretation_id}",
+        )
+
+        await record_event(
+            operational_event_repository, module="materials",
+            event_type="material_created_from_signal",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={
+                "signal_id": interpretation_id, "action": request.action,
+                "artifact_id": artifact.id,
+            },
+        )
+
+        return {
+            "material": _material_payload(artifact),
+            "version": _version_payload(version),
+            "origin": {
+                "kind": "signal",
+                "title": signal.title or "",
+                "source_name": record.source_name or "",
+                "created_at": record.created_at,
+            },
+        }
+
+    except Exception:
+        await record_event(
+            operational_event_repository, module="materials",
+            event_type="material_created_from_signal",
+            success=False, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+            error_code="unhandled_exception",
+            metadata={"signal_id": interpretation_id, "action": request.action},
+        )
+        return {"error": "Не удалось подготовить материал.", "material": None}
 
 
 @app.get("/api/knowledge")

@@ -33,7 +33,8 @@ from app.services.knowledge_service import KnowledgeBundle
 from app.services.llm.models import ContentDraft, SourceAnalysisPayload
 from tests.llm_fakes import FakeLLMProvider
 from tests.test_journal_handlers import (
-    Callback, business_profile, context, profile_repository, user_preferences,
+    Callback, artifact_repository, business_profile, context, profile_repository,
+    user_preferences,
 )
 from tests.test_workspace_signal_repository import setup as _radar_setup
 from tests.test_workspace_signal_repository import workspace as _radar_workspace
@@ -166,9 +167,10 @@ def test_intelligence_round_trip_and_selected_opportunity_uses_content_factory(t
     callback = Callback()
     callback.data = f"competitor:create:{competitor.id}:{restored.opportunities[0].id}"
     provider = FakeLLMProvider(draft=ContentDraft("Оригинальный материал", ()))
+    artifacts = artifact_repository()
     run(create_from_competitor_opportunity(
         callback, repository, context(workspace.id), provider,
-        profile_repository(business_profile(workspace.id)),
+        profile_repository(business_profile(workspace.id)), artifacts,
     ))
     provider.generate_draft.assert_called_once()
     source_text = provider.generate_draft.call_args.kwargs["source_text"]
@@ -176,6 +178,11 @@ def test_intelligence_round_trip_and_selected_opportunity_uses_content_factory(t
     assert "не рекламируй" in source_text
     assert "проверяйте срок акции, условия, направление и даты" in source_text
     assert "Оригинальный материал" in callback.message.answers[-1][0]
+    # Web/Telegram parity: the draft must also be persisted as a real
+    # Artifact (same as the Radar flow), not just shown in chat.
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    saved_kwargs = artifacts.create_artifact_with_initial_version.call_args.kwargs
+    assert saved_kwargs["content"] == "Оригинальный материал"
 
 
 def test_competitor_opportunity_draft_inherits_personal_style(tmp_path):
@@ -207,12 +214,56 @@ def test_competitor_opportunity_draft_inherits_personal_style(tmp_path):
 
     run(create_from_competitor_opportunity(
         callback, repository, context(workspace.id), provider, profiles,
+        artifact_repository(),
     ))
     source_text = provider.generate_draft.call_args.kwargs["source_text"]
     assert "[PERSONAL STYLE - DATA]" in source_text
     assert "Пишу с юмором" in source_text
     assert "Пример поста" in source_text
     assert "лучший тур" in source_text
+
+
+def test_competitor_opportunity_material_records_data_origin_in_provenance(tmp_path):
+    """Fallback provenance must survive into the saved Artifact's
+    generation_note - a Radar-signal-fallback analysis must never look
+    identical to a fresh direct fetch once it becomes a material."""
+    from app.domain.competitor_intelligence import ContentOpportunity
+
+    partners = PartnerRepository(tmp_path / "db.sqlite3")
+    run(partners.init())
+    workspace, _ = run(partners.ensure_owner_workspace(100))
+    repository = CompetitorRepository(tmp_path / "db.sqlite3")
+    run(repository.init())
+    competitor = run(repository.add_competitor(
+        workspace.id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
+    ))
+    opportunity = ContentOpportunity(
+        id="opp-fallback", competitor_id=competitor.id, topic="Тема",
+        source_title="Источник", source_url="https://example.com", freshness="сегодня",
+        key_thesis="Тезис", audience_value="Ценность", own_post_angle="Угол",
+        travel_advantage_link=None,
+    )
+    intelligence = CompetitorIntelligence(
+        competitor_id=competitor.id, competitor_label="Trip.com", analyzed_at="now",
+        positioning=(), products=(), destinations_and_categories=(), promotions=(),
+        loyalty_mechanics=(), service_and_ux=(), strengths=(), travel_advantage_comparison=(),
+        fresh_signals=(), sources=(), opportunities=(opportunity,),
+        data_origin=DATA_ORIGIN_RADAR_SIGNAL,
+    )
+    run(repository.save_intelligence(workspace.id, intelligence))
+
+    callback = Callback()
+    callback.data = f"competitor:create:{competitor.id}:opp-fallback"
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик", ()))
+    artifacts = artifact_repository()
+
+    run(create_from_competitor_opportunity(
+        callback, repository, context(workspace.id), provider,
+        profile_repository(business_profile(workspace.id)), artifacts,
+    ))
+
+    saved_kwargs = artifacts.create_artifact_with_initial_version.call_args.kwargs
+    assert "radar_signal" in saved_kwargs["generation_note"]
 
 
 def _source(title="Source"):
