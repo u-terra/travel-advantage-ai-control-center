@@ -41,7 +41,7 @@ from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
-from app.routing.keywords import REWRITE_ACTION_KEYWORDS
+from app.routing.keywords import ASSISTANT_INTENT_KEYWORDS, REWRITE_ACTION_KEYWORDS
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
@@ -1012,6 +1012,44 @@ async def _send_text_check(
 
 
 _CLIENT_REPLY_HEADING = "💬 Черновик ответа клиенту — для ручной проверки"
+
+# Live prod bug: any plain-typed TRAVEL_ASSISTANT question - including a
+# bare factual/current travel question like "Какие сейчас изменения правил
+# въезда в Индонезию для россиян?" - was unconditionally treated as a
+# CLIENT_REPLY ("what do I tell my client") request: heading "💬 Черновик
+# ответа клиенту", and build_client_reply_generation_spec's own OBJECTIVE
+# telling the model to write a short personal reply TO a client. The user
+# asking the question IS the audience here, not some third party - the
+# question was informational, not "help me answer my client".
+#
+# Minimal split, scoped to on_free_text only: on_free_text always calls
+# _maybe_send_draft with reply_context=None (no reply-subject step exists on
+# that path - see the comment at its call site above), while the explicit
+# "💬 Ответить клиенту" button flow (_route_and_dispatch, both v1's
+# on_category and v2's on_reply_subject_received/AwaitReplySubject) always
+# builds a real ReplyBridgeContext once primary_module is TRAVEL_ASSISTANT -
+# that is an explicit UI choice made by tapping "Ответить клиенту", not a
+# wording heuristic, and must keep exactly its previous behavior regardless
+# of what the typed text looks like. So the INFORMATIONAL/CLIENT_REPLY split
+# below only ever runs when reply_context is None - i.e. exactly the
+# on_free_text entry point this bug was reported against; every button-driven
+# reply_context/work item/safety flow is untouched.
+#
+# Within that on_free_text-only case, ASSISTANT_INTENT_KEYWORDS (router.py's
+# own explicit-client-intent keyword list - "клиент спрашивает", "что
+# ответить клиенту", "ответить человеку", etc.) is reused as-is: an explicit
+# client-intent phrase in the message means CLIENT_REPLY, exactly like
+# route_text() already treats it as a stronger signal than a bare topic word
+# when deciding assistant_score. No topic keyword (виза/въезд/тариф/...) on
+# its own implies CLIENT_REPLY - that class of query is INFORMATIONAL.
+_INFORMATIONAL_HEADING = "🧭 Ответ — сверьте актуальность перед использованием"
+
+
+def _is_explicit_client_reply_intent(task_text: str) -> bool:
+    lowered = task_text.lower()
+    return any(keyword in lowered for keyword in ASSISTANT_INTENT_KEYWORDS)
+
+
 _FREE_TEXT_ARTIFACT_TITLE_MAX_LEN = 80
 
 
@@ -1108,6 +1146,16 @@ async def _maybe_send_draft(
     if not is_regular_post and not is_client_reply:
         return
 
+    # See _INFORMATIONAL_HEADING above for the full reasoning: only the
+    # on_free_text entry point (reply_context is None) ever gets split into
+    # INFORMATIONAL vs CLIENT_REPLY; every reply_context-carrying call keeps
+    # the previous CLIENT_REPLY-only behavior unconditionally.
+    is_informational = (
+        is_client_reply
+        and reply_context is None
+        and not _is_explicit_client_reply_intent(decision.task_text)
+    )
+
     # Web Search MVP for Telegram - same decide_web_search()/WebSearchService/
     # format_search_context() the Web path already uses (see app.web_api),
     # just fed into GenerationSpec.source_facts here instead of the Web
@@ -1148,6 +1196,14 @@ async def _maybe_send_draft(
         # regex/intent для "multi-item" не заводим.
         if spec.output_format is OutputFormat.WEEKLY_PLAN:
             await message.answer(_LONG_TASK_ACK_MESSAGE)
+    elif is_informational:
+        spec = MaterialOrchestrationService().build_informational_generation_spec(
+            workspace_id, decision.task_text, profile,
+            safety_required=decision.safety_level is not SafetyLevel.NOT_REQUIRED,
+            user_preferences=user_preferences,
+            knowledge_bundle=knowledge_bundle,
+        )
+        heading = _INFORMATIONAL_HEADING
     else:
         spec = MaterialOrchestrationService().build_client_reply_generation_spec(
             workspace_id, decision.task_text, profile,

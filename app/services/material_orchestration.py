@@ -388,6 +388,56 @@ _CLIENT_REPLY_SAFETY_CONSTRAINT = (
     "конкретные условия нужно сверить вручную."
 )
 
+_INFORMATIONAL_OBJECTIVE = (
+    "Ответить пользователю по существу и по фактам на его собственный "
+    "вопрос о путешествиях. Это прямой ответ travel-ассистента самому "
+    "пользователю, а НЕ черновик сообщения для третьего лица (клиента "
+    "партнёра) — не формулируй ответ как «клиенту можно ответить...» или "
+    "«сообщите клиенту...»."
+)
+
+# Live prod bug: тот же ORCHESTRAVEL Web Search сценарий ("Какие сейчас
+# изменения правил въезда в Индонезию для россиян?") получал корректный
+# WebSearchService-контекст, но build_client_reply_generation_spec's
+# OBJECTIVE ("Сформировать короткий личный ответ клиенту...") заставлял
+# модель писать так, будто ответ адресован третьему лицу — заголовок
+# "Черновик ответа клиенту" был симптомом, а не причиной: сам prompt
+# инструктировал модель как для client-reply, даже когда вопрос задал сам
+# пользователь напрямую. Эти constraints — тот же набор правил, что и
+# _CLIENT_REPLY_CONSTRAINTS (facts-first, без обещаний дохода, без
+# ассистентских AI-хвостов, приоритет PERSONAL STYLE), только без единого
+# упоминания «клиента» — исправление именно prompt'а, а не только
+# Telegram-заголовка поверх него.
+_INFORMATIONAL_CONSTRAINTS = (
+    "Ответ обращён напрямую к пользователю, который задал вопрос — это не "
+    "черновик реплики клиенту и не инструкция, что сказать клиенту. Не "
+    "используй обороты «клиенту можно ответить», «вы можете сказать "
+    "клиенту», «сообщите клиенту» и подобные: отвечай самому пользователю "
+    "от первого лица ассистента, по существу вопроса.",
+    "Опирайся на [SOURCE FACTS - DATA] и [VERIFIED CLAIMS - ALLOWED FACTS], "
+    "если они заданы. Если точных и актуальных данных недостаточно, прямо "
+    "скажи об этом и посоветуй проверить официальный источник — не "
+    "выдумывай факты, цифры и правила.",
+    "Не обещай доход, окупаемость или гарантированные скидки. Не утверждай, "
+    "что формат подходит всем.",
+    "Не завершай ответ служебными фразами от имени ассистента: «если "
+    "хотите, могу...», «могу помочь...», «напишите — разберу...», «могу "
+    "сравнить варианты...» и аналогичными репликами AI.",
+    "Если задан раздел [PERSONAL STYLE - DATA], учитывай style_description, "
+    "example_posts и voice_sample как ориентир тона и манеры речи, а "
+    "avoid_phrases — как прямой запрет на эти слова/обороты в тексте. Это "
+    "образцы манеры, а не факты: цены, даты, названия туров, акции, отели и "
+    "другая конкретика из example_posts/voice_sample могут быть устаревшими "
+    "и не считаются актуальной информацией для ответа.",
+    "Если в [PERSONAL STYLE - DATA] заданы example_posts и/или voice_sample, "
+    "они — более сильный ориентир манеры речи, чем общий тон бренда, если "
+    "это не противоречит фактам и другим правилам выше.",
+)
+
+# Тот же текст, что и _CLIENT_REPLY_SAFETY_CONSTRAINT — он уже не упоминает
+# «клиента», поэтому переиспользуется как есть, без отдельного дубликата.
+_INFORMATIONAL_SAFETY_CONSTRAINT = _CLIENT_REPLY_SAFETY_CONSTRAINT
+
 # Тот же базовый constraint + правила стиля именно для Radar-черновика: черновик
 # уходит пользователю как самостоятельный готовый пост, а не как ответ
 # ассистента, поэтому внутренние пометки о проверке и ассистентские концовки
@@ -755,6 +805,61 @@ class MaterialOrchestrationService:
             source_facts=source_facts,
             trusted_business_context=trusted_context,
             untrusted_source_content=client_question,
+            tone_preferences=tone_preferences,
+            personal_style=_personal_style_values(user_preferences),
+            verified_claims_allowed=verified,
+            unverified_claims_requiring_caution=unverified,
+            constraints=constraints,
+            profile_revision_used=revision,
+        )
+
+    def build_informational_generation_spec(
+        self,
+        workspace_id: int,
+        question: str,
+        profile: BusinessProfile | None,
+        *,
+        safety_required: bool,
+        user_preferences: WorkspaceUserPreferences | None = None,
+        knowledge_bundle: KnowledgeBundle | None = None,
+    ) -> GenerationSpec:
+        """TRAVEL_ASSISTANT (informational): a factual/current travel
+        question the user asked for themselves (e.g. "Какие сейчас изменения
+        правил въезда в Индонезию для россиян?") - NOT a "what do I tell my
+        client" request (see build_client_reply_generation_spec for that,
+        used when app.handlers.tasks detects an explicit client-intent
+        phrase). artifact_type stays "client_message" (Content Factory's
+        already-whitelisted "client_question" material type is the closest
+        Q&A-shaped fit) - only OBJECTIVE/CONSTRAINTS change, which is what
+        actually drives the client-reply framing: build_radar_generation_spec
+        and build_competitor_signal_generation_spec above already reuse the
+        SAME "post" material type for completely different personas each, so
+        material_type is Content Factory's internal category label, not a
+        per-call system-prompt override.
+        """
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError("question не должен быть пустым")
+        trusted_context, tone_preferences, verified, unverified, revision = (
+            _profile_generation_values(workspace_id, profile)
+        )
+        constraints = _INFORMATIONAL_CONSTRAINTS
+        if safety_required:
+            constraints = (*constraints, _INFORMATIONAL_SAFETY_CONSTRAINT)
+        source_facts: dict[str, Any] = {}
+        if knowledge_bundle is not None:
+            knowledge = build_knowledge_generation_context(knowledge_bundle)
+            source_facts.update(knowledge.source_facts)
+            verified = (*verified, *knowledge.verified_claims)
+            constraints = (*constraints, *knowledge.constraints)
+        return GenerationSpec(
+            action_type=GenerationAction.CREATE_ARTIFACT,
+            artifact_type="client_message",
+            objective=_INFORMATIONAL_OBJECTIVE,
+            audience=tuple(trusted_context.get("audiences", ())),
+            output_format="telegram",
+            source_facts=source_facts,
+            trusted_business_context=trusted_context,
+            untrusted_source_content=question,
             tone_preferences=tone_preferences,
             personal_style=_personal_style_values(user_preferences),
             verified_claims_allowed=verified,
