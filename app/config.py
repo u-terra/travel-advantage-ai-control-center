@@ -108,6 +108,21 @@ class Settings:
     # Normalized lowercase emails. Empty (unset) = nobody is a platform
     # admin - fail-closed by construction, never hardcoded in code.
     orchestravel_admin_emails: frozenset[str]
+    # Web search MVP (see app.services.web_search) - OFF by default. False
+    # (or an unrecognized web_search_provider, or missing provider
+    # credentials) makes web_search_service a provider=None no-op:
+    # /api/chat behaves exactly as before this feature existed. Web only for
+    # now - Telegram is untouched.
+    web_search_enabled: bool
+    web_search_provider: str
+    # Yandex Web Search API v2 (aistudio.yandex.ru/docs/en/search-api/) - NOT
+    # the deprecated XML/v1 API. api_key/folder_id empty is a normal,
+    # expected state (same policy as ROBOKASSA_*): the app must start and run
+    # its test suite without any real Yandex secret ever existing.
+    yandex_search_api_key: str
+    yandex_search_folder_id: str
+    yandex_search_timeout_seconds: float
+    yandex_search_max_results: int
 
 
 def _parse_bool(raw: str | None) -> bool:
@@ -241,6 +256,16 @@ def load_settings() -> Settings:
         if email.strip()
     )
 
+    # Web search MVP - see app.services.web_search. Default "false"/"" means
+    # production behaves exactly as before this feature existed until both a
+    # provider is set AND its credentials are filled in.
+    web_search_enabled = _parse_bool(os.environ.get("WEB_SEARCH_ENABLED"))
+    web_search_provider = os.environ.get("WEB_SEARCH_PROVIDER", "").strip().lower()
+    yandex_search_api_key = os.environ.get("YANDEX_SEARCH_API_KEY", "").strip()
+    yandex_search_folder_id = os.environ.get("YANDEX_SEARCH_FOLDER_ID", "").strip()
+    yandex_search_timeout_raw = os.environ.get("YANDEX_SEARCH_TIMEOUT_SECONDS", "").strip()
+    yandex_search_max_results_raw = os.environ.get("YANDEX_SEARCH_MAX_RESULTS", "").strip()
+
     if not token:
         raise RuntimeError("BOT_TOKEN не задан. Заполните .env")
     if not admin_raw:
@@ -281,6 +306,19 @@ def load_settings() -> Settings:
     if planner_openai_timeout <= 0:
         planner_openai_timeout = 20.0
 
+    try:
+        yandex_search_timeout = (
+            float(yandex_search_timeout_raw) if yandex_search_timeout_raw else 5.0
+        )
+    except ValueError:
+        yandex_search_timeout = 5.0
+    if yandex_search_timeout <= 0:
+        yandex_search_timeout = 5.0
+
+    yandex_search_max_results = _parse_positive_int(
+        yandex_search_max_results_raw, default=5,
+    )
+
     return Settings(
         bot_token=token,
         admin_telegram_id=admin_id,
@@ -319,4 +357,10 @@ def load_settings() -> Settings:
         orchestravel_subscription_days=orchestravel_subscription_days,
         orchestravel_public_base_url=orchestravel_public_base_url,
         orchestravel_admin_emails=orchestravel_admin_emails,
+        web_search_enabled=web_search_enabled,
+        web_search_provider=web_search_provider,
+        yandex_search_api_key=yandex_search_api_key,
+        yandex_search_folder_id=yandex_search_folder_id,
+        yandex_search_timeout_seconds=yandex_search_timeout,
+        yandex_search_max_results=yandex_search_max_results,
     )

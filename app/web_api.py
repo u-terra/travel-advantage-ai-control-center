@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.admin_api import AdminDeps, build_admin_router
 from app.chat_provider import AttachmentInput, ChatConfig, OpenAIChatProvider
-from app.config import load_settings
+from app.config import Settings, load_settings
 from app.domain.business_profiles import (
     BusinessProfileValidationError,
     StaleBusinessProfileError,
@@ -87,6 +87,9 @@ from app.services.content_factory import ContentFactoryConfig
 from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
+from app.services.web_search.base import WebSearchProvider
+from app.services.web_search.service import WebSearchService, format_search_context
+from app.services.web_search.yandex_provider import YandexSearchConfig, YandexSearchProvider
 from app.services.lead_radar import (
     DISPLAY_LIMIT,
     LeadRadarConfig,
@@ -123,6 +126,28 @@ chat_provider = OpenAIChatProvider(
         timeout_seconds=180,
     )
 )
+
+
+def _build_web_search_service(config: Settings) -> WebSearchService:
+    """WEB_SEARCH_ENABLED=false (default), an unrecognized
+    WEB_SEARCH_PROVIDER, or missing Yandex credentials all fail-soft to a
+    provider=None service - maybe_search() then always returns None and
+    /api/chat behaves exactly as it did before this feature existed. Web
+    only for now - see app.services.web_search."""
+    provider: WebSearchProvider | None = None
+    if config.web_search_enabled and config.web_search_provider == YandexSearchProvider.name:
+        yandex_config = YandexSearchConfig(
+            api_key=config.yandex_search_api_key,
+            folder_id=config.yandex_search_folder_id,
+            timeout_seconds=config.yandex_search_timeout_seconds,
+            max_results=config.yandex_search_max_results,
+        )
+        if yandex_config.is_configured:
+            provider = YandexSearchProvider(yandex_config)
+    return WebSearchService(provider, enabled=config.web_search_enabled)
+
+
+web_search_service = _build_web_search_service(settings)
 
 knowledge_repository = KnowledgeRepository()
 usage_ledger_repository = UsageLedgerRepository(settings.journal_db_path)
@@ -2708,6 +2733,32 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                     error_code="unavailable", safe_message="no fresh source or matching signal",
                 )
 
+        # Web search MVP (see app.services.web_search) - OFF by default
+        # (WEB_SEARCH_ENABLED=false), and even when enabled maybe_search()
+        # only actually calls Yandex when decide_web_search() judges the
+        # message needs fresh/changeable external information. Any failure
+        # (disabled, unconfigured, timeout, HTTP error, malformed response)
+        # returns None here - the Assistant answers exactly as if web search
+        # did not exist, never a broken/incomplete response.
+        search_response = await asyncio.to_thread(
+            web_search_service.maybe_search, message,
+        )
+        if search_response is not None and search_response.results:
+            knowledge_context = "\n\n".join(
+                part for part in (knowledge_context, format_search_context(search_response))
+                if part
+            )
+            await record_event(
+                operational_event_repository, module="web_search", event_type="search",
+                success=True, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id,
+                metadata={
+                    "provider": search_response.provider,
+                    "result_count": len(search_response.results),
+                    "elapsed_ms": search_response.elapsed_ms,
+                },
+            )
+
         preferences = await partner_repository.get_user_preferences(
             principal.workspace_id,
             principal.telegram_user_id,
@@ -2819,6 +2870,21 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                     "verification_status": source.verification_status,
                 }
                 for source in bundle.sources[:8]
+            ],
+            # Deliberately separate from knowledge_sources above - different
+            # origin (live Yandex web search vs the internal knowledge base),
+            # see ORCHESTRAVEL web-search task. Only ever the results a
+            # search actually returned this turn, never an empty/placeholder
+            # entry; the UI is free to render both lists as one combined
+            # "Источники" block, but they are never merged server-side.
+            "search_sources": [
+                {
+                    "title": result.title,
+                    "url": result.url,
+                    "domain": result.domain,
+                    "provider": result.provider,
+                }
+                for result in (search_response.results if search_response is not None else [])
             ],
             "conversation": (
                 _conversation_payload(updated_conversation)

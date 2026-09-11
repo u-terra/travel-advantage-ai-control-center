@@ -694,6 +694,38 @@ button, textarea { font-family: inherit; }
 .assistant-bubble h2 { font-size: 21px; margin: 24px 0 12px; }
 .assistant-bubble h3 { font-size: 17.5px; margin: 20px 0 10px; }
 
+.answer-sources {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.answer-sources-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+}
+
+.answer-source-link {
+    font-size: 13px;
+    color: var(--teal-dark);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.answer-source-link::before {
+    content: "• ";
+}
+
+.answer-source-link:hover,
+.answer-source-link:focus-visible {
+    text-decoration: underline;
+}
+
 .assistant-bubble p { margin: 11px 0; }
 
 .assistant-bubble ul,
@@ -2397,6 +2429,74 @@ function addAssistant(html, plainText, meta) {
     return bubble;
 }
 
+// "Источники" block after an assistant answer - combines knowledge_sources
+// (internal knowledge base, app/services/knowledge_service.py) and
+// search_sources (live Yandex web search, app/services/web_search) into one
+// list. Different backend origins (see /api/chat's response shape), same
+// UI treatment - the user just sees where facts came from, not which
+// subsystem produced them. Only ever rendered for entries with a real,
+// clickable http(s) URL - a non-URL knowledge reference (e.g. a document
+// name) is not shown here rather than shown as a dead, unclickable line.
+function looksLikeHttpUrl(value) {
+    return typeof value === "string" && /^https?:\/\//i.test(value);
+}
+
+function domainFromUrl(url) {
+    try {
+        return new URL(url).hostname.replace(/^www\./, "");
+    } catch (_) {
+        return "";
+    }
+}
+
+function collectAnswerSources(data) {
+    const items = [];
+
+    (data.knowledge_sources || []).forEach(source => {
+        if (!looksLikeHttpUrl(source.reference)) return;
+        items.push({
+            url: source.reference,
+            title: source.title || source.reference,
+            domain: domainFromUrl(source.reference),
+        });
+    });
+
+    (data.search_sources || []).forEach(source => {
+        if (!looksLikeHttpUrl(source.url)) return;
+        items.push({
+            url: source.url,
+            title: source.title || source.url,
+            domain: source.domain || domainFromUrl(source.url),
+        });
+    });
+
+    return items;
+}
+
+function appendAnswerSources(bubble, items) {
+    if (!items.length) return;
+
+    const wrap = document.createElement("div");
+    wrap.className = "answer-sources";
+
+    const label = document.createElement("div");
+    label.className = "answer-sources-label";
+    label.textContent = "Источники:";
+    wrap.appendChild(label);
+
+    items.forEach(item => {
+        const link = document.createElement("a");
+        link.className = "answer-source-link";
+        link.href = item.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = item.domain ? `${item.title} — ${item.domain}` : item.title;
+        wrap.appendChild(link);
+    });
+
+    bubble.appendChild(wrap);
+}
+
 async function ensureConversationId() {
     if (currentConversationId) return currentConversationId;
 
@@ -2462,6 +2562,7 @@ async function submitMessage() {
         thinking.classList.remove("thinking");
         thinking.innerHTML =
             data.answer_html || data.answer;
+        appendAnswerSources(thinking, collectAnswerSources(data));
 
         if (data.message_id && thinking.parentElement) {
             thinking.parentElement.appendChild(
