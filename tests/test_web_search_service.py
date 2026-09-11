@@ -174,3 +174,14 @@ def test_format_search_context_includes_header_query_and_sources():
     assert "Текст." in text
     assert "https://example.com/a" in text
     assert "не придумывай" in text.lower()
+
+
+def test_format_search_context_instructs_model_not_to_add_final_sources_section():
+    """H: the model must be told not to print its own closing "Источники"
+    section - the Web UI is the single source of truth for that block (see
+    app/templates/chat.html's collectAnswerSources/appendAnswerSources)."""
+    text = format_search_context(_sample_response("Какие правила въезда?"))
+    lowered = text.lower()
+    assert "не добавляй" in lowered
+    assert "источники" in lowered
+    assert "отдельным блоком интерфейса" in lowered

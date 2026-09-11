@@ -2429,14 +2429,20 @@ function addAssistant(html, plainText, meta) {
     return bubble;
 }
 
-// "Источники" block after an assistant answer - combines knowledge_sources
-// (internal knowledge base, app/services/knowledge_service.py) and
-// search_sources (live Yandex web search, app/services/web_search) into one
-// list. Different backend origins (see /api/chat's response shape), same
-// UI treatment - the user just sees where facts came from, not which
-// subsystem produced them. Only ever rendered for entries with a real,
-// clickable http(s) URL - a non-URL knowledge reference (e.g. a document
-// name) is not shown here rather than shown as a dead, unclickable line.
+// "Источники" block after an assistant answer - the ONE place sources are
+// shown to the user (the model is instructed not to print its own final
+// "Источники"/"Sources" section - see format_search_context()/
+// _knowledge_context() on the backend). Combines search_sources (live
+// Yandex web search, app/services/web_search) and knowledge_sources
+// (internal knowledge base, app/services/knowledge_service.py) into one
+// list, live search first so it stays visible. Different backend origins
+// (see /api/chat's response shape), same UI treatment - the user just sees
+// where facts came from, not which subsystem produced them. Only ever
+// rendered for entries with a real, clickable http(s) URL - a non-URL
+// knowledge reference (e.g. a document name) is not shown here rather than
+// shown as a dead, unclickable line. Built as real <a> DOM nodes (never a
+// Markdown string), and deduplicated by exact URL - the same source URL
+// reaching us through both lists (or twice within one list) is shown once.
 function looksLikeHttpUrl(value) {
     return typeof value === "string" && /^https?:\/\//i.test(value);
 }
@@ -2449,25 +2455,38 @@ function domainFromUrl(url) {
     }
 }
 
+// A real, non-URL title -> "title — domain" (or just "title" without a
+// domain). No usable title (missing, or the "title" is just the URL again,
+// which some sources send as a fallback) -> the domain alone, never the
+// full long URL as the visible label.
+function sourceLabel(title, url, domain) {
+    const trimmedTitle = (title || "").trim();
+    const hasRealTitle = trimmedTitle && trimmedTitle !== url.trim();
+    if (hasRealTitle) {
+        return domain ? `${trimmedTitle} — ${domain}` : trimmedTitle;
+    }
+    return domain || url;
+}
+
 function collectAnswerSources(data) {
     const items = [];
+    const seenUrls = new Set();
 
-    (data.knowledge_sources || []).forEach(source => {
-        if (!looksLikeHttpUrl(source.reference)) return;
-        items.push({
-            url: source.reference,
-            title: source.title || source.reference,
-            domain: domainFromUrl(source.reference),
-        });
-    });
+    function addItem(url, title, domain) {
+        const trimmedUrl = url.trim();
+        if (seenUrls.has(trimmedUrl)) return;
+        seenUrls.add(trimmedUrl);
+        items.push({ url: trimmedUrl, label: sourceLabel(title, trimmedUrl, domain) });
+    }
 
     (data.search_sources || []).forEach(source => {
         if (!looksLikeHttpUrl(source.url)) return;
-        items.push({
-            url: source.url,
-            title: source.title || source.url,
-            domain: source.domain || domainFromUrl(source.url),
-        });
+        addItem(source.url, source.title, source.domain || domainFromUrl(source.url));
+    });
+
+    (data.knowledge_sources || []).forEach(source => {
+        if (!looksLikeHttpUrl(source.reference)) return;
+        addItem(source.reference, source.title, domainFromUrl(source.reference));
     });
 
     return items;
@@ -2490,7 +2509,7 @@ function appendAnswerSources(bubble, items) {
         link.href = item.url;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
-        link.textContent = item.domain ? `${item.title} — ${item.domain}` : item.title;
+        link.textContent = item.label;
         wrap.appendChild(link);
     });
 

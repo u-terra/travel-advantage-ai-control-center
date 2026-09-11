@@ -22,6 +22,8 @@ pytest.importorskip("markdown")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.chat_provider import ChatResult  # noqa: E402
+from app.domain.knowledge import KnowledgeItem  # noqa: E402
+from app.services.knowledge_service import KnowledgeBundle, SourceReference  # noqa: E402
 from app.services.web_search.base import SearchResponse, SearchResult, WebSearchProvider  # noqa: E402
 from app.services.web_search.service import WebSearchService  # noqa: E402
 
@@ -217,3 +219,61 @@ def test_web_search_context_appends_after_existing_knowledge_context(api, monkey
     base_index = knowledge_context.index("BASE KNOWLEDGE CONTEXT")
     search_index = knowledge_context.index("АКТУАЛЬНЫЙ ПОИСК")
     assert base_index < search_index
+
+
+# ── _knowledge_context() must also tell the model not to duplicate the ─────
+# ── UI's own "Источники" block (H) ──────────────────────────────────────────
+
+
+def _bundle_with_one_source() -> KnowledgeBundle:
+    # _knowledge_context() only emits anything when at least one of
+    # primary_items/facts/compliance_facts is present (see its early-return
+    # guard) - bundle.sources alone is, in this codebase, always populated
+    # alongside real content by KnowledgeService.retrieve(), so a primary
+    # item is included here to match that real shape.
+    return KnowledgeBundle(
+        question="q",
+        primary_items=(
+            KnowledgeItem(
+                id=1, stable_key="k1", category="general", title="MWR Life Compensation Plan",
+                content="Комиссионный план...", source_id=1, source_ref="doc-1", status="active",
+                sort_order=0, tags=(), created_at="2026-01-01", updated_at="2026-01-01",
+            ),
+        ),
+        related_items=(),
+        facts=(),
+        compliance_facts=(),
+        examples=(),
+        sources=(
+            SourceReference(
+                source_id=1, stable_key="k1", title="MWR Life Compensation Plan",
+                source_reference="https://example.org/plan.pdf", verification_status="verified",
+            ),
+        ),
+        potentially_ambiguous=False,
+        ambiguity_reasons=(),
+        missing_definitions=(),
+    )
+
+
+def _empty_bundle() -> KnowledgeBundle:
+    return KnowledgeBundle(
+        question="q", primary_items=(), related_items=(), facts=(), compliance_facts=(),
+        examples=(), sources=(), potentially_ambiguous=False, ambiguity_reasons=(),
+        missing_definitions=(),
+    )
+
+
+def test_knowledge_context_instructs_model_not_to_add_final_sources_section(api) -> None:
+    _, web_api, _, _ = api
+    text = web_api._knowledge_context(_bundle_with_one_source())
+    lowered = text.lower()
+    assert "источники" in lowered
+    assert "не добавляй" in lowered
+    assert "отдельным блоком интерфейса" in lowered
+
+
+def test_knowledge_context_without_sources_has_no_sources_instruction(api) -> None:
+    _, web_api, _, _ = api
+    text = web_api._knowledge_context(_empty_bundle())
+    assert text == ""

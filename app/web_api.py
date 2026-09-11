@@ -988,6 +988,13 @@ def _knowledge_context(bundle: KnowledgeBundle) -> str:
                 f"{source.source_reference}"
             )
 
+        lines.append(
+            "\nЭтот список сверху - справочный, для твоей проверки фактов. "
+            "Он уже показывается пользователю отдельным блоком интерфейса. "
+            "НЕ добавляй в конце своего ответа отдельный раздел или список "
+            "«Источники», «Sources», «Ссылки» и т.п."
+        )
+
     if bundle.potentially_ambiguous:
         lines.append(
             "\nВнимание: запрос потенциально неоднозначен."
