@@ -92,6 +92,8 @@ from app.services.lead_radar import (
     LeadRadarConfig,
     build_workspace_signals,
     category_label,
+    content_angle_hint,
+    why_text,
 )
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
@@ -1363,6 +1365,14 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
             success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
             metadata={"count": len(signals)},
         )
+        # Те же данные, что уже видит Telegram (app/handlers/menu.py:
+        # build_summary → _format_signal_block): why_text()/content_angle_hint()
+        # - единственный источник этих формулировок для обоих интерфейсов, а
+        # не отдельный текст для Web. recommended_action едет наружу, чтобы
+        # веб-клиент показывал контекстные действия по типу сигнала, а не
+        # одинаковый набор кнопок для всех карточек. score остаётся в ответе
+        # (поле не удаляем из модели/API), просто веб-интерфейс его не
+        # отображает - см. app/templates/chat.html.
         return {
             "signals": [
                 {
@@ -1370,12 +1380,16 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
                     "title": signal.title or "(без заголовка)",
                     "category": signal.category,
                     "category_label": category_label(signal.category),
+                    "recommended_action": signal.recommended_action,
                     "source_type": signal.source_type,
                     "source_name": source_names.get(signal.id) or "",
                     "created_at": signal.created_at,
                     "score": signal.score,
                     "url": signal.url,
-                    "action_reason": signal.action_reason,
+                    "action_reason": why_text(signal),
+                    "content_hint": (
+                        content_angle_hint() if signal.recommended_action == "content" else None
+                    ),
                 }
                 for signal in signals
             ]

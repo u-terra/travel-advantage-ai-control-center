@@ -1319,6 +1319,26 @@ textarea {
     outline-offset: 2px;
 }
 
+.signal-block-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    margin-top: 2px;
+}
+
+.signal-source-link {
+    align-self: flex-start;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--teal-dark);
+    text-decoration: none;
+}
+
+.signal-source-link:hover,
+.signal-source-link:focus-visible {
+    text-decoration: underline;
+}
+
 /* ---------- generic info cards (знания / материалы / история) ---------- */
 
 .info-grid {
@@ -3340,6 +3360,33 @@ async function createMaterialFromSignal(item, action, button, errorEl) {
     }
 }
 
+// Контекстные действия по recommended_action - та же логика, что Telegram
+// применяет к идеям Radar (только content получает draft-кнопку там сегодня;
+// здесь она распространена на observe/careful_reply тем же принципом: набор
+// действий должен подходить типу сигнала, а не быть одинаковым для всех).
+// "discuss" открывает Ассистента (чисто клиентский шаг, без вызова API).
+// "post"/"client_message" - существующие значения POST /api/signals/{id}/actions,
+// новых backend-действий не вводится.
+function signalActionPlan(recommendedAction) {
+    if (recommendedAction === "content") {
+        return [
+            { kind: "post", label: "Подготовить пост" },
+            { kind: "discuss", label: "Разобрать в Ассистенте" },
+        ];
+    }
+    if (recommendedAction === "careful_reply") {
+        return [
+            { kind: "client_message", label: "Подготовить ответ" },
+        ];
+    }
+    // observe и любой нераспознанный recommended_action - тот же безопасный
+    // набор, что и раньше был единственным для discuss-кнопки.
+    return [
+        { kind: "discuss", label: "Разобрать в Ассистенте" },
+        { kind: "post", label: "Подготовить пост" },
+    ];
+}
+
 function renderSignalsList(items) {
     signalsState.innerHTML = "";
 
@@ -3360,6 +3407,10 @@ function renderSignalsList(items) {
         title.textContent = item.title || "(без заголовка)";
         card.appendChild(title);
 
+        // Источник · дата. Score сюда намеренно не идёт: ai_score сейчас
+        // константа на категорию (45/32), а не оценка качества конкретного
+        // материала - показывать её пользователю значило бы выдавать
+        // технический артефакт за содержательный сигнал.
         const meta = document.createElement("div");
         meta.className = "signal-meta";
 
@@ -3367,29 +3418,52 @@ function renderSignalsList(items) {
         if (sourceText) {
             meta.appendChild(document.createTextNode(sourceText));
         }
-
         if (sourceText) {
             const dot = document.createElement("span");
             dot.className = "dot";
             meta.appendChild(dot);
         }
         meta.appendChild(document.createTextNode(formatSignalDate(item.created_at)));
-
-        if (typeof item.score === "number") {
-            const dot = document.createElement("span");
-            dot.className = "dot";
-            meta.appendChild(dot);
-            meta.appendChild(document.createTextNode("Score: " + Math.round(item.score)));
-        }
-
         card.appendChild(meta);
 
-        const discussBtn = document.createElement("button");
-        discussBtn.type = "button";
-        discussBtn.className = "signal-discuss-btn";
-        discussBtn.textContent = "Разобрать в Ассистенте";
-        discussBtn.addEventListener("click", () => openSignalInAssistant(item));
-        card.appendChild(discussBtn);
+        // "Почему стоит обратить внимание" - тот же action_reason (с тем же
+        // нейтральным fallback'ом), что уже показывает Telegram-сводка.
+        if (item.action_reason) {
+            const reasonLabel = document.createElement("div");
+            reasonLabel.className = "signal-block-label";
+            reasonLabel.textContent = "Почему стоит обратить внимание:";
+            card.appendChild(reasonLabel);
+
+            const reasonText = document.createElement("p");
+            reasonText.className = "info-card-text";
+            reasonText.textContent = item.action_reason;
+            card.appendChild(reasonText);
+        }
+
+        // "Как можно подать" - только для content, тот же текст, что и в
+        // Telegram-карточке (content_hint приходит пустым для остальных).
+        if (item.content_hint) {
+            const hintLabel = document.createElement("div");
+            hintLabel.className = "signal-block-label";
+            hintLabel.textContent = "Как можно подать:";
+            card.appendChild(hintLabel);
+
+            const hintText = document.createElement("p");
+            hintText.className = "info-card-text";
+            hintText.textContent = item.content_hint;
+            card.appendChild(hintText);
+        }
+
+        // "Открыть источник" - только если реально есть ссылка.
+        if (item.url) {
+            const sourceLink = document.createElement("a");
+            sourceLink.className = "signal-source-link";
+            sourceLink.href = item.url;
+            sourceLink.target = "_blank";
+            sourceLink.rel = "noopener noreferrer";
+            sourceLink.textContent = "Открыть источник";
+            card.appendChild(sourceLink);
+        }
 
         const materialError = document.createElement("p");
         materialError.className = "info-card-text material-edit-error";
@@ -3397,19 +3471,20 @@ function renderSignalsList(items) {
         const materialActions = document.createElement("div");
         materialActions.className = "report-opportunity-actions";
 
-        const postBtn = document.createElement("button");
-        postBtn.type = "button";
-        postBtn.className = "info-action-btn";
-        postBtn.textContent = "Подготовить пост";
-        postBtn.addEventListener("click", () => createMaterialFromSignal(item, "post", postBtn, materialError));
-        materialActions.appendChild(postBtn);
-
-        const clientMsgBtn = document.createElement("button");
-        clientMsgBtn.type = "button";
-        clientMsgBtn.className = "info-action-btn";
-        clientMsgBtn.textContent = "Сообщение клиентам";
-        clientMsgBtn.addEventListener("click", () => createMaterialFromSignal(item, "client_message", clientMsgBtn, materialError));
-        materialActions.appendChild(clientMsgBtn);
+        signalActionPlan(item.recommended_action).forEach(step => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = step.kind === "discuss" ? "signal-discuss-btn" : "info-action-btn";
+            button.textContent = step.label;
+            button.addEventListener("click", () => {
+                if (step.kind === "discuss") {
+                    openSignalInAssistant(item);
+                } else {
+                    createMaterialFromSignal(item, step.kind, button, materialError);
+                }
+            });
+            materialActions.appendChild(button);
+        });
 
         card.appendChild(materialActions);
         card.appendChild(materialError);

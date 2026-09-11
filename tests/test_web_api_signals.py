@@ -429,3 +429,66 @@ def test_signals_endpoint_returns_up_to_display_limit_not_hardcoded_one_plus_one
     # компромисс в tests/test_lead_radar.py::
     # test_overall_cap_trims_last_content_item_when_all_quotas_are_full.
     assert categories.count("content_signal") == 4
+
+
+def test_F_signal_order_and_composition_unchanged_by_ux_fields(api) -> None:
+    """ORCHESTRAVEL Web UX unification: adding recommended_action/content_hint
+    to the JSON payload must not change WHICH signals are returned or in
+    WHAT order - same 3 market + 5 content composition and the same
+    priority-then-freshness order as before this task touched the endpoint."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    rows = (
+        [_radar_row(i, source_id="src-1", category="market_signal", hours_ago=i)
+         for i in range(1, 4)]
+        + [_radar_row(i, source_id="src-1", category="content_signal", hours_ago=i)
+           for i in range(10, 15)]
+    )
+    _create_radar_db(radar_db_path, rows)
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id,
+        source_id="src-1", source_name="VK: Путешествия",
+    )
+    _sync(web_api)
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.get("/api/signals")
+
+    # Titles encode the original radar row_id (see _radar_row's default
+    # item_title) - the JSON "id" is the workspace interpretation id
+    # (autoincrement, unrelated to row_id), so titles are what's stable to
+    # assert an expected order against here.
+    titles = [s["title"] for s in response.json()["signals"]]
+    # observe (market_signal) first by _ACTION_PRIORITY, freshest-first within
+    # each bucket, exactly as build_workspace_signals() already ordered them
+    # before this task - this endpoint only added fields, not a new sort.
+    expected_row_order = [1, 2, 3, 10, 11, 12, 13, 14]
+    assert titles == [f"Заголовок {row_id}" for row_id in expected_row_order]
+
+
+def test_signal_json_exposes_recommended_action_and_content_hint(api) -> None:
+    """The Web card needs recommended_action to choose contextual buttons and
+    content_hint (same text Telegram shows as "Как можно подать") for
+    content signals only - both must come from the JSON, not be invented in
+    the frontend."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _create_radar_db(radar_db_path, [
+        _radar_row(1, source_id="src-1", category="market_signal"),
+        _radar_row(2, source_id="src-1", category="content_signal", hours_ago=2.0),
+    ])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id,
+        source_id="src-1", source_name="VK: Путешествия",
+    )
+    _sync(web_api)
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.get("/api/signals")
+
+    signals = {s["id"]: s for s in response.json()["signals"]}
+    assert signals[1]["recommended_action"] == "observe"
+    assert signals[1]["content_hint"] is None
+    assert signals[2]["recommended_action"] == "content"
+    assert signals[2]["content_hint"]  # непустая подсказка "Как можно подать"
+    # action_reason всегда непустой - тот же why_text()/fallback, что и у Telegram.
+    assert signals[1]["action_reason"]
+    assert signals[2]["action_reason"]

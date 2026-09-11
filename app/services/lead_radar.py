@@ -582,21 +582,33 @@ def category_label(category: str) -> str:
     return _CATEGORY_LABELS.get(key, _CATEGORY_FALLBACK)
 
 
-def _why_text(signal: LeadSignal) -> str:
+def why_text(signal: LeadSignal) -> str:
     """«Почему стоит обратить внимание» — человеческая формулировка без
     технического score/source_type. action_reason уже приходит человекочитаемым
     от action_recommender; пустой action_reason не заменяется выдуманной
-    статистикой, только нейтральным fallback по типу действия."""
+    статистикой, только нейтральным fallback по типу действия.
+
+    Публичная (без ведущего подчёркивания): единственный источник этого текста
+    и для Telegram (build_summary → _format_signal_block), и для Web
+    (/api/signals) — чтобы не завести вторую, отдельную формулировку для Web.
+    """
     reason = (signal.action_reason or "").strip()
     if reason:
         return reason
     return _WHY_FALLBACK.get(signal.recommended_action, _WHY_DEFAULT_FALLBACK)
 
 
+def content_angle_hint() -> str:
+    """«Как можно подать» для content-сигналов — тот же текст, что уже видит
+    Telegram (см. _format_signal_block). Единственный источник для обоих
+    интерфейсов, чтобы Web не завёл свою собственную формулировку."""
+    return _CONTENT_ANGLE_HINT
+
+
 def _format_signal_block(signal: LeadSignal, index: int) -> str:
     header = category_label(signal.category)
     title = _truncate(signal.title or "(без заголовка)", 110)
-    why = _truncate(_why_text(signal), 160)
+    why = _truncate(why_text(signal), 160)
     lines = [
         f"{index}. {header}",
         "",
