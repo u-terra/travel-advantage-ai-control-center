@@ -71,6 +71,23 @@ ASSISTANT_TOPIC_KEYWORDS: tuple[str, ...] = (
     "тариф",
     "брониров",
     "оплат",
+    # Live prod bug: «Какие сейчас изменения правил въезда в Индонезию для
+    # россиян?» matched none of the categories above (не контент, не Safety,
+    # не Radar, не Partner Packaging, нет явного "клиент спрашивает"/"ответ
+    # клиенту" intent) and fell through to Module.ORCHESTRATOR as
+    # is_uncertain — the user got "Не удалось уверенно определить маршрут"
+    # instead of an answer, and WebSearchService (wired into
+    # _maybe_send_draft, only reachable for CONTENT_FACTORY/TRAVEL_ASSISTANT)
+    # never even ran. This is the same "предметное слово без явного intent"
+    # class as travel advantage/тариф/брониров above — a bare visa/entry-
+    # rule/border/flight word, with no content-creation signal present, IS a
+    # travel question and belongs to AI Travel Assistant, same as "Что такое
+    # MWR Life?" already does (see test_router.py). Still gated by the same
+    # content_score>0-and-intent_score==0 rule above, so "Напиши пост про
+    # визу на Бали" stays Content Factory exactly as before.
+    "виза", "визы", "визовый", "визового", "безвиз",
+    "въезд", "границ", "погранич",
+    "перелёт", "перелет", "рейс", "рейсы",
 )
 
 # Product/rank signals that require context rather than broad single words.
