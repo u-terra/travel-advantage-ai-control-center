@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
+from typing import Sequence
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -55,6 +57,8 @@ from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.reference_resolver import ReferenceResolver, ResolvedActionContext
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
 from app.services.usage_recorder import record_llm_call
+from app.services.web_search.base import SearchResponse, SearchResult
+from app.services.web_search.service import WebSearchService, format_search_context
 from app.services.user_style import UserStyleService
 from app.storage import Journal
 from app.telegram_chunks import chunk_text
@@ -388,6 +392,7 @@ async def on_free_text(
     lead_radar_config: LeadRadarConfig | None = None,
     reference_resolver: ReferenceResolver | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
+    web_search_service: WebSearchService | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -467,6 +472,7 @@ async def on_free_text(
         state=state, v2_menu_enabled=v2_menu_enabled,
         reference_resolver=reference_resolver,
         usage_ledger_repository=usage_ledger_repository,
+        web_search_service=web_search_service,
     )
     await record_turn(
         state, role="assistant",
@@ -711,6 +717,7 @@ async def _maybe_send_module_result(
     v2_menu_enabled: bool = False,
     reference_resolver: ReferenceResolver | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
+    web_search_service: WebSearchService | None = None,
 ) -> bool:
     # Slice 1: one turn-local retrieval after the existing route decision and
     # before any generation.  Known non-KB modules bypass even the resolver;
@@ -797,6 +804,7 @@ async def _maybe_send_module_result(
         reply_context=reply_context,
         knowledge_bundle=knowledge_bundle,
         usage_ledger_repository=usage_ledger_repository,
+        web_search_service=web_search_service,
     )
     return False
 
@@ -1036,6 +1044,33 @@ async def _send_chunked(
         await message.answer(_DRAFT_SEND_FAILURE_MESSAGE)
 
 
+_MAX_TELEGRAM_SOURCES = 5
+
+
+def _format_telegram_sources(results: Sequence[SearchResult]) -> list[str]:
+    """Compact "Источники:" block rendered here, never by the LLM -
+    format_search_context()'s rules already tell the model not to add its
+    own closing sources section (same contract as the Web UI's
+    collectAnswerSources/appendAnswerSources in app/templates/chat.html).
+    Telegram has no client-side rendering step, so the same by-URL dedup
+    that chat.html does in JS is done here instead, defensively - a provider
+    is already expected not to return duplicate URLs, but this block must
+    hold even if one somehow did."""
+    seen: set[str] = set()
+    urls: list[str] = []
+    for result in results:
+        url = result.url.strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+        if len(urls) >= _MAX_TELEGRAM_SOURCES:
+            break
+    if not urls:
+        return []
+    return ["Источники:", *urls]
+
+
 async def _maybe_send_draft(
     message: Message,
     decision: RouteDecision,
@@ -1049,6 +1084,7 @@ async def _maybe_send_draft(
     reply_context: ReplyBridgeContext | None = None,
     knowledge_bundle: KnowledgeBundle | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
+    web_search_service: WebSearchService | None = None,
 ) -> None:
     workspace_id = workspace_context.workspace_id
     # Radar UX / free-text fix: раньше сюда дополнительно требовалось буквальное
@@ -1071,6 +1107,25 @@ async def _maybe_send_draft(
     is_client_reply = decision.primary_module is Module.TRAVEL_ASSISTANT
     if not is_regular_post and not is_client_reply:
         return
+
+    # Web Search MVP for Telegram - same decide_web_search()/WebSearchService/
+    # format_search_context() the Web path already uses (see app.web_api),
+    # just fed into GenerationSpec.source_facts here instead of the Web
+    # chat_provider's knowledge_context string. maybe_search() already never
+    # raises (disabled/unconfigured/no-match/provider-error all return None -
+    # see app.services.web_search.service) - the try/except below is
+    # defense-in-depth only, same policy as _run_orchestration_shadow/
+    # _try_planner_flow: an optional enrichment step must never turn into a
+    # user-facing failure of the whole reply.
+    search_response: SearchResponse | None = None
+    if web_search_service is not None:
+        try:
+            search_response = await asyncio.to_thread(
+                web_search_service.maybe_search, decision.task_text,
+            )
+        except Exception:
+            log.warning("web_search: unexpected failure", exc_info=True)
+            search_response = None
 
     profile = await partner_repository.get_business_profile(workspace_id)
     # Stage 3B1: личный стиль ТЕКУЩЕГО пользователя — UserStyleService читает
@@ -1101,6 +1156,17 @@ async def _maybe_send_draft(
             knowledge_bundle=knowledge_bundle,
         )
         heading = _CLIENT_REPLY_HEADING
+
+    # Same format_search_context() text the Web path injects into
+    # knowledge_context, folded into source_facts here the same way
+    # build_client_reply_generation_spec already folds in knowledge_bundle
+    # (see app.services.material_orchestration) - one more DATA key, no new
+    # GenerationSpec field, no change to either builder.
+    search_context_text = format_search_context(search_response)
+    if search_context_text:
+        spec = replace(
+            spec, source_facts={**spec.source_facts, "web_search": search_context_text},
+        )
 
     provider_request = build_provider_generation_request(spec, limit=6000)
     draft = await asyncio.to_thread(
@@ -1226,6 +1292,12 @@ async def _maybe_send_draft(
                 active_module="content_factory", current_task="content_factory_free_text",
                 last_action="generate_content",
             )
+
+    if search_response is not None and search_response.results:
+        sources_lines = _format_telegram_sources(search_response.results)
+        if sources_lines:
+            lines.append("")
+            lines.extend(sources_lines)
 
     reply_keyboard: InlineKeyboardMarkup | None = None
     if (

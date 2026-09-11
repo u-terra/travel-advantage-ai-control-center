@@ -27,6 +27,7 @@ from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.telegram_bind_token_repository import TelegramBindTokenRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
@@ -38,6 +39,8 @@ from app.services.llm.base import LLMProvider
 from app.services.llm.factory import create_llm_provider
 from app.services.reference_resolver import ReferenceResolver
 from app.services.source_registry import SEED_REGISTRY_PATH
+from app.services.web_search.factory import create_web_search_service
+from app.services.web_search.service import WebSearchService
 from app.storage import Journal
 from app.workspace_context import WorkspaceContextMiddleware
 
@@ -66,6 +69,8 @@ def _build_dispatcher(
     knowledge_service: KnowledgeService | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
     subscription_repository: SubscriptionRepository | None = None,
+    telegram_bind_token_repository: TelegramBindTokenRepository | None = None,
+    web_search_service: WebSearchService | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -141,6 +146,12 @@ def _build_dispatcher(
     # dependency here, so existing callers/tests are unaffected.
     dp["usage_ledger_repository"] = usage_ledger_repository
     dp["subscription_repository"] = subscription_repository
+    dp["telegram_bind_token_repository"] = telegram_bind_token_repository
+    # Web Search MVP - see app.services.web_search. Same WebSearchService/
+    # decide_web_search/format_search_context the Web path already uses (see
+    # app.web_api); defaults to None like every other optional dependency
+    # here, so existing callers/tests are unaffected.
+    dp["web_search_service"] = web_search_service
     return dp
 
 
@@ -211,6 +222,12 @@ async def _async_main() -> None:
     subscription_repository = SubscriptionRepository(settings.journal_db_path)
     await subscription_repository.init()
 
+    # Telegram-connect deep-link tokens - see app.web_api's POST
+    # /api/telegram/bind-token and app.handlers.start's /start <token>
+    # handling. Same journal DB as everything else here.
+    telegram_bind_token_repository = TelegramBindTokenRepository(settings.journal_db_path)
+    await telegram_bind_token_repository.init()
+
     knowledge_repository = KnowledgeRepository()
     await knowledge_repository.init()
     knowledge_service = KnowledgeService(knowledge_repository)
@@ -260,6 +277,11 @@ async def _async_main() -> None:
         openai_config=planner_openai_config,
     )
 
+    # Web Search MVP - see app.services.web_search. Same construction rules
+    # as app.web_api's Web path (WEB_SEARCH_ENABLED/WEB_SEARCH_PROVIDER/
+    # Yandex credentials) - off (fail-soft, provider=None) unless configured.
+    web_search_service = create_web_search_service(settings)
+
     bot = Bot(settings.bot_token)
     dp = _build_dispatcher(
         settings.allowed_user_ids,
@@ -285,6 +307,8 @@ async def _async_main() -> None:
         knowledge_service=knowledge_service,
         usage_ledger_repository=usage_ledger_repository,
         subscription_repository=subscription_repository,
+        telegram_bind_token_repository=telegram_bind_token_repository,
+        web_search_service=web_search_service,
     )
 
     await dp.start_polling(bot)
