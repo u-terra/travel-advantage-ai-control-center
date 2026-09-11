@@ -1,41 +1,61 @@
-"""Yandex Web Search API v2 adapter (Search API / Smart Snippets), NOT the
-deprecated XML/v1 API.
+"""Yandex Web Search API v2 adapter - Smart Snippets mode, NOT the deprecated
+XML/v1 API and NOT plain (title/url/headline) Web Search.
 
-Endpoint and schema confirmed against the current official documentation
-(https://aistudio.yandex.ru/docs/en/search-api/ - "Web Search API, REST:
-WebSearch.Search" and "Getting started with Yandex Search API") before
-writing this file, per the ORCHESTRAVEL web-search task's explicit
-instruction not to guess:
+Endpoint and request/response schema re-confirmed against the current
+official documentation
+(https://aistudio.yandex.ru/docs/en/search-api/operations/smart-snippets -
+"Getting smart snippets") before this rewrite, per the ORCHESTRAVEL
+web-search task's explicit instruction not to guess. The docs page's own
+example request body, quoted verbatim:
 
-    POST https://searchapi.api.cloud.yandex.net/v2/web/search
-    Headers: Authorization: Api-Key <api_key>
-    Body:    {"query": {"searchType": ..., "queryText": ...},
-              "folderId": ..., "responseFormat": "FORMAT_XML" | "FORMAT_HTML",
-              "groupSpec": {"groupMode": ..., "groupsOnPage": ..., "docsInGroup": ...}}
-    Response: {"rawData": "<base64>"}  - base64-encoded XML (or HTML) document.
+    {
+      "query": {
+        "searchType": "SEARCH_TYPE_RU",
+        "queryText": "Yandex Cloud"
+      },
+      "folderId": "<folder_ID>",
+      "metadata": {
+        "fields": {
+          "x-genesis-info-context": "on"
+        }
+      }
+    }
 
-``responseFormat=FORMAT_XML`` is used here (not HTML) because the decoded
-payload is the well-established Yandex search XML shape
-(``yandexsearch/response/results/grouping/group/doc`` with ``url``/``title``/
-``headline``/``passages`` children) - the same shape Yandex's XML search API
-has used for years, now delivered base64-wrapped inside a v2 JSON envelope.
-Third-party client libraries built against this v2 endpoint
-(e.g. github.com/starkeen/yandex-search-api) confirm the same
-title/url/domain/snippet field mapping used below.
+The ``metadata.fields`` key is documented as: "Object containing search
+flags in the key:value format. To enable getting smart snippets, provide
+the x-genesis-info-context key with on as its value." Without this flag the
+same endpoint instead returns plain Web Search results (a different,
+XML-shaped payload) - the flag is what selects Smart Snippets, not
+``searchType`` (which only selects the RU/regional index).
 
-Honest limitation, documented rather than silently assumed: the Search-API-
-specific operator list documented at .../concepts/search-operators only
-covers word-level operators (``-``, ``!``, ``+``, quotes, ``[]``, ``(|)``) -
-it does NOT list a ``site:``/``host:`` domain-restriction operator for this
-particular API. ``host:<domain>`` is Yandex's long-standing general search
-query-language operator (see yandex.com/support/search "query-language" docs)
-and this endpoint runs on the same search index, so it is used here as a
-best-effort restriction: if Yandex ignores or mishandles it, the query simply
-degrades to an unrestricted search (never an error), which is exactly the
-fail-soft behavior this module is built around either way.
+Two fields present in the *plain* Web Search request are deliberately
+ABSENT here, confirmed absent from the Smart Snippets example above:
+``responseFormat`` (Smart Snippets responses are always JSON; there is no
+XML/HTML choice to make) and ``groupSpec`` (no grouping applies to Smart
+Snippets docs). Adding them back would be guessing at an undocumented
+combination, and there is nothing they'd buy: the result count is already
+capped client-side in ``_parse_smart_snippet_results`` below via ``limit``.
 
-No page is fetched here - only the snippet/title/url Yandex itself returns is
-used (see the task's explicit "one search call instead of Search + N fetch").
+Response envelope is unchanged from plain Web Search: {"rawData": "<base64>"}.
+With the Smart Snippets flag set, the base64-decoded payload is UTF-8 JSON
+(not XML) shaped as:
+
+    {"docs": [{"Num": 1, "DocumentTitle": "...", "FullUrl": "https://...",
+                "Description": "...", "info_context": "..."}, ...]}
+
+``info_context`` is the actual smart-snippet text (what this integration
+exists to fetch); ``Description`` is the plain search-result blurb and is
+only used as a fallback when a doc has no ``info_context``. There is no XML
+fallback path in this module: Smart Snippets is the only mode this
+integration ever requests (the metadata flag is always sent), so a second,
+unused parser for the old XML shape would be complexity with no live code
+path exercising it - see the task's "Не усложняй код без необходимости".
+If plain Web Search is ever needed again, it should come back as an
+explicit, separately-tested mode, not a silent fallback here.
+
+No page is fetched here - only the snippet/title/url Yandex itself returns
+is used (see the task's explicit "one search call instead of Search + N
+fetch").
 """
 
 from __future__ import annotations
@@ -46,7 +66,6 @@ import json
 import logging
 import urllib.error
 import urllib.request
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
@@ -66,13 +85,11 @@ _MAX_QUERY_TEXT_CHARS = 400
 # exposed as a config knob - there is no real scenario for another value yet,
 # and adding one is a one-line change here plus one new env var when needed.
 _SEARCH_TYPE = "SEARCH_TYPE_RU"
-_RESPONSE_FORMAT = "FORMAT_XML"
-# GROUP_MODE_FLAT + docsInGroup=1: one document per group, so
-# groupsOnPage behaves like a plain "top N results" limit instead of
-# Yandex's usual "N distinct hosts, each possibly expandable" grouping -
-# the simplest mapping onto SearchResponse.results.
-_GROUP_MODE = "GROUP_MODE_FLAT"
-_DOCS_IN_GROUP = 1
+
+# Selects Smart Snippets instead of plain Web Search - see module docstring
+# for the verbatim official example this is copied from.
+_SMART_SNIPPET_METADATA_FIELD_KEY = "x-genesis-info-context"
+_SMART_SNIPPET_METADATA_FIELD_VALUE = "on"
 
 
 @dataclass(frozen=True)
@@ -95,6 +112,11 @@ class _YandexSearchCallError(RuntimeError):
     def __init__(self, safe_reason: str) -> None:
         super().__init__(safe_reason)
         self.safe_reason = safe_reason
+
+
+class _SmartSnippetShapeError(ValueError):
+    """Decoded payload was valid UTF-8 but not the expected Smart Snippets
+    JSON shape ({"docs": [...]})."""
 
 
 class YandexSearchProvider(WebSearchProvider):
@@ -125,17 +147,16 @@ class YandexSearchProvider(WebSearchProvider):
                 "queryText": query_text_for_api[:_MAX_QUERY_TEXT_CHARS],
             },
             "folderId": self.config.folder_id,
-            "responseFormat": _RESPONSE_FORMAT,
-            "groupSpec": {
-                "groupMode": _GROUP_MODE,
-                "groupsOnPage": effective_limit,
-                "docsInGroup": _DOCS_IN_GROUP,
+            "metadata": {
+                "fields": {
+                    _SMART_SNIPPET_METADATA_FIELD_KEY: _SMART_SNIPPET_METADATA_FIELD_VALUE,
+                },
             },
         }
 
         started = monotonic()
         try:
-            xml_text = self._call(payload)
+            decoded_text = self._call(payload)
         except _YandexSearchCallError as exc:
             # Fixed, secret-free reason only - see _YandexSearchCallError.
             log.warning("web_search: yandex request failed (%s)", exc.safe_reason)
@@ -143,11 +164,13 @@ class YandexSearchProvider(WebSearchProvider):
         elapsed_ms = int((monotonic() - started) * 1000)
 
         try:
-            results = _parse_xml_results(
-                xml_text, provider=self.name, limit=effective_limit
+            results = _parse_smart_snippet_results(
+                decoded_text, provider=self.name, limit=effective_limit
             )
-        except ET.ParseError:
-            log.warning("web_search: yandex response could not be parsed (bad xml)")
+        except ValueError:
+            # Covers both malformed JSON (json.JSONDecodeError, a ValueError
+            # subclass) and an unexpected-shape payload (_SmartSnippetShapeError).
+            log.warning("web_search: yandex response could not be parsed (bad smart snippets json)")
             return None
 
         return SearchResponse(
@@ -210,55 +233,59 @@ def _clean_site(site: str) -> str:
     return value
 
 
-def _parse_xml_results(
-    xml_text: str, *, provider: str, limit: int
+def _parse_smart_snippet_results(
+    decoded_text: str, *, provider: str, limit: int
 ) -> list[SearchResult]:
-    root = ET.fromstring(xml_text)
+    parsed = json.loads(decoded_text)  # may raise json.JSONDecodeError (ValueError)
+    if not isinstance(parsed, dict):
+        raise _SmartSnippetShapeError("smart snippets payload is not a JSON object")
+    docs = parsed.get("docs")
+    if not isinstance(docs, list):
+        raise _SmartSnippetShapeError("smart snippets payload has no docs list")
+
     results: list[SearchResult] = []
     seen_urls: set[str] = set()
 
-    for doc in root.iter("doc"):
+    for doc in docs:
         if len(results) >= limit:
             break
+        if not isinstance(doc, dict):
+            continue
 
-        url = _text(doc.find("url")).strip()
+        url = doc.get("FullUrl")
+        url = url.strip() if isinstance(url, str) else ""
         if not url:
             continue
         if url in seen_urls:
             continue
         seen_urls.add(url)
 
-        title = _text(doc.find("title")) or url
-        domain = _text(doc.find("domain")) or (urlsplit(url).hostname or "")
+        title = doc.get("DocumentTitle")
+        title = title.strip() if isinstance(title, str) and title.strip() else url
+
+        snippet = doc.get("info_context")
+        snippet = snippet.strip() if isinstance(snippet, str) else ""
+        if not snippet:
+            description = doc.get("Description")
+            snippet = description.strip() if isinstance(description, str) else ""
+
+        domain = urlsplit(url).hostname or ""
+
+        num = doc.get("Num")
+        # bool is an int subclass in Python - exclude it explicitly so a
+        # stray True/False in the payload can't masquerade as a rank.
+        rank = num if isinstance(num, int) and not isinstance(num, bool) and num > 0 else len(results) + 1
 
         results.append(SearchResult(
             title=title,
             url=url,
-            snippet=_extract_snippet(doc),
+            snippet=snippet,
             domain=domain,
-            # The Search API's <doc> does not carry a publication date field
-            # - never invented here, only ever a real value if one shows up.
+            # Smart Snippets docs carry no publication-date field - never
+            # invented here, only ever a real value if one shows up.
             published_at=None,
             provider=provider,
-            rank=len(results) + 1,
+            rank=rank,
         ))
 
     return results
-
-
-def _extract_snippet(doc: ET.Element) -> str:
-    passages = doc.find("passages")
-    if passages is not None:
-        parts = [_text(passage) for passage in passages.findall("passage")]
-        joined = " … ".join(part for part in parts if part)
-        if joined:
-            return joined
-    return _text(doc.find("headline"))
-
-
-def _text(element: ET.Element | None) -> str:
-    """Text content including nested tags (Yandex wraps matched query words
-    in <hlword> inside title/headline/passage) - itertext() flattens that."""
-    if element is None:
-        return ""
-    return "".join(element.itertext()).strip()
