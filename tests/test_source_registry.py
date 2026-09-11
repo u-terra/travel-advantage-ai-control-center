@@ -740,12 +740,31 @@ def test_migrated_telegram_sources_keep_drop_promo():
         assert source.collector_setting("analysis_profile") == "publisher"
 
 
+# Trip-источники (см. ORCHESTRAVEL: аудит малого числа материалов) —
+# единственное намеренное исключение из fetch_limit=3: подняты до 10, чтобы
+# на входе в скоринг было больше кандидатов, а не искусственно "1+1" на
+# выходе. min_score_for_llm и language при этом не менялись.
+_RAISED_FETCH_LIMIT = {"vk_triptodreamru", "telegram_tripsterofficial"}
+
+
 def test_migrated_sources_keep_numeric_collector_settings():
     registry = load_registry()
-    for source_id in ALL_MIGRATED - MIGRATED_RSS:
+    for source_id in ALL_MIGRATED - MIGRATED_RSS - _RAISED_FETCH_LIMIT:
         source = registry.get(source_id)
         assert source is not None
         assert source.collector_setting("fetch_limit") == 3
+        assert source.collector_setting("min_score_for_llm") == 70
+        assert source.collector_setting("language") == "ru"
+
+
+def test_trip_sources_have_raised_fetch_limit_others_unchanged():
+    # Единственное разрешённое расхождение с "остальные = 3": ровно два
+    # Trip-источника подняты до 10, min_score_for_llm/language не тронуты.
+    registry = load_registry()
+    for source_id in _RAISED_FETCH_LIMIT:
+        source = registry.get(source_id)
+        assert source is not None
+        assert source.collector_setting("fetch_limit") == 10
         assert source.collector_setting("min_score_for_llm") == 70
         assert source.collector_setting("language") == "ru"
 

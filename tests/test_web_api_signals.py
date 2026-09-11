@@ -34,6 +34,7 @@ pytest.importorskip("markdown")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from tests._web_auth_test_helpers import login_as  # noqa: E402
+from app.services.lead_radar import DISPLAY_LIMIT  # noqa: E402
 
 OWNER_ID = 586249067
 
@@ -389,3 +390,42 @@ def test_noise_and_stale_signals_are_excluded_same_as_telegram(api) -> None:
 
     titles = [item["title"] for item in response.json()["signals"]]
     assert titles == ["Заголовок 3"]
+
+
+def test_signals_endpoint_returns_up_to_display_limit_not_hardcoded_one_plus_one(api) -> None:
+    """/api/signals must use the same DISPLAY_LIMIT as the Telegram handler
+    (app/handlers/menu.py), not a stale hardcoded 5. Builds exactly enough
+    eligible rows (3 careful_reply + 3 observe + 5 content = 11) to fill every
+    quota bucket at once, then asserts the endpoint returns DISPLAY_LIMIT (10)
+    - not the old 1 market + 1 content, and not all 11 candidates either."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    rows = (
+        [_radar_row(i, source_id="src-1", category="lead_signal", hours_ago=i)
+         for i in range(1, 4)]
+        + [_radar_row(i, source_id="src-1", category="market_signal", hours_ago=i)
+           for i in range(10, 13)]
+        + [_radar_row(i, source_id="src-1", category="content_signal", hours_ago=i)
+           for i in range(20, 25)]
+    )
+    assert len(rows) == 11
+    _create_radar_db(radar_db_path, rows)
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id,
+        source_id="src-1", source_name="VK: Путешествия",
+    )
+    _sync(web_api)
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.get("/api/signals")
+
+    signals = response.json()["signals"]
+    assert DISPLAY_LIMIT == 10
+    assert len(signals) == DISPLAY_LIMIT
+    categories = [s["category"] for s in signals]
+    assert categories.count("lead_signal") == 3
+    assert categories.count("market_signal") == 3
+    # Квота content — 5, но сумма квот (11) больше DISPLAY_LIMIT (10), поэтому
+    # самый старый content_signal обрезается итоговым срезом — см. тот же
+    # компромисс в tests/test_lead_radar.py::
+    # test_overall_cap_trims_last_content_item_when_all_quotas_are_full.
+    assert categories.count("content_signal") == 4

@@ -53,6 +53,7 @@ from app.orchestration.context import record_turn
 from app.routing.modules import Module
 from app.routing.safety import SafetyLevel
 from app.services.lead_radar import (
+    DISPLAY_LIMIT,
     LeadRadarConfig,
     build_summary,
     build_workspace_signals,
@@ -562,7 +563,7 @@ async def on_find_signals(
     records = await workspace_signal_repository.list_for_workspace(
         workspace_context.workspace_id, limit=200
     )
-    signals = build_workspace_signals(lead_radar_config, records, limit=5)
+    signals = build_workspace_signals(lead_radar_config, records, limit=DISPLAY_LIMIT)
     if signals is None:
         await message.answer(unavailable_summary())
         return

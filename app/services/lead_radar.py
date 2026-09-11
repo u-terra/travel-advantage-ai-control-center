@@ -12,7 +12,12 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 
-_MAX_LIMIT = 8
+# Итоговый показ количества материалов не должен быть жёстко "1+1": он растёт
+# вместе с суммой квот ниже (см. _ACTION_QUOTA). Telegram и Web обязаны звать
+# build_workspace_signals(..., limit=DISPLAY_LIMIT) — один и тот же импортируемый
+# символ, а не повторённое число в двух местах, иначе они могут незаметно разойтись.
+DISPLAY_LIMIT = 10
+_MAX_LIMIT = max(10, DISPLAY_LIMIT)
 _DEFAULT_LIMIT = 5
 _FETCH_BATCH = 200
 _FRESH_DAYS = 30
@@ -63,10 +68,19 @@ _ACTION_FRESHNESS_HOURS: dict[str, float] = {
 
 # Квота итоговой выдачи по типу сигнала. Отсутствующая категория НЕ
 # добивается другой — итог может быть короче суммы квот.
+#
+# Сумма квот (3+3+5=11) НАМЕРЕННО больше DISPLAY_LIMIT (10): это не баг, а
+# осознанный компромисс минимальной реализации. Если все три bucket'а разом
+# заполнены до квоты, финальный срез build_workspace_signals() по DISPLAY_LIMIT
+# обрежет ровно один элемент — самый старый из bucket'а "content" (он идёт
+# последним по _ACTION_PRIORITY). См. test_overall_cap_trims_last_content_item
+# в tests/test_lead_radar.py и раздел про ranking в отчёте: если это поведение
+# нежелательно, следующий шаг — либо поднять DISPLAY_LIMIT до 11, либo снизить
+# квоту content до 4, а не менять сортировку.
 _ACTION_QUOTA: dict[str, int] = {
     "careful_reply": 3,
-    "observe": 1,
-    "content": 1,
+    "observe": 3,
+    "content": 5,
 }
 
 # Категория из Lead Radar (`ai_category`), которую вообще не показываем.

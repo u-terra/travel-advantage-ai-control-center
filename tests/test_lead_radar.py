@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services.lead_radar import (
+    DISPLAY_LIMIT,
     LeadSignal,
     build_summary,
     build_workspace_signals,
@@ -142,7 +143,7 @@ def test_careful_reply_signal_card_has_no_forced_content_angle():
     assert "Как можно подать:" not in summary
 
 
-# --- build_workspace_signals: freshness по смыслу категории + квоты 3/1/1 ---
+# --- build_workspace_signals: freshness по смыслу категории + квоты 3/3/5 ---
 # ai_score сюда намеренно не подмешиваем: он константа на категорию в
 # продакшен-данных (lead=70/market=45/content=32) и не различает качество
 # внутри категории — единственный осмысленный критерий сейчас — свежесть.
@@ -232,17 +233,69 @@ def test_quota_keeps_up_to_three_newest_lead_signals():
     assert [s.id for s in result] == [1, 2, 3]
 
 
-def test_quota_is_three_one_one_across_categories():
+def test_quota_observe_keeps_up_to_three_newest_market_signals():
+    # observe квота поднята с 1 до 3 — из четырёх свежих market_signal
+    # остаются три самых новых, а не один.
+    records = [
+        _fake_record("market_signal", hours_ago=h, interpretation_id=i)
+        for i, h in enumerate([1, 2, 3, 4], start=1)
+    ]
+    result = _build(records)
+    assert [s.id for s in result] == [1, 2, 3]
+
+
+def test_quota_content_keeps_up_to_five_newest_content_signals():
+    # content квота поднята с 1 до 5 — из шести свежих content_signal
+    # остаются пять самых новых, а не один. limit=DISPLAY_LIMIT передан явно,
+    # чтобы тест проверял реальную квоту, а не случайно совпал с дефолтным
+    # limit=5 хелпера _build().
+    records = [
+        _fake_record("content_signal", hours_ago=h, interpretation_id=i)
+        for i, h in enumerate([1, 2, 3, 4, 5, 6], start=1)
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    assert [s.id for s in result] == [1, 2, 3, 4, 5]
+
+
+def test_quota_is_three_three_five_across_categories():
     records = (
         [_fake_record("lead_signal", hours_ago=h, interpretation_id=i)
          for i, h in enumerate([1, 2, 3, 4], start=1)]
         + [_fake_record("market_signal", hours_ago=h, interpretation_id=i)
-           for i, h in enumerate([1, 2], start=10)]
+           for i, h in enumerate([1, 2, 3, 4], start=10)]
         + [_fake_record("content_signal", hours_ago=h, interpretation_id=i)
-           for i, h in enumerate([1, 2], start=20)]
+           for i, h in enumerate([1, 2, 3, 4, 5, 6], start=20)]
     )
-    result = _build(records)
-    assert [s.id for s in result] == [1, 2, 3, 10, 20]
+    # limit=DISPLAY_LIMIT явно: это тест на реальный лимит показа (10), а не
+    # на дефолтный limit=5 хелпера _build().
+    result = _build(records, limit=DISPLAY_LIMIT)
+    # careful_reply: 3 новейших из 4 (id 1-3); observe: 3 новейших из 4
+    # (id 10-12); content: квота даёт 5 (id 20-24), но итоговый срез по
+    # DISPLAY_LIMIT=10 обрезает самый старый из них — см. тест ниже.
+    assert [s.id for s in result] == [1, 2, 3, 10, 11, 12, 20, 21, 22, 23]
+
+
+def test_overall_cap_trims_last_content_item_when_all_quotas_are_full():
+    """Сумма квот (3+3+5=11) намеренно больше DISPLAY_LIMIT (10) — это
+    зафиксированный, а не случайный компромисс минимальной реализации (см.
+    комментарий у _ACTION_QUOTA в app/services/lead_radar.py). Когда все три
+    bucket'а заполнены до квоты одновременно, итоговый срез по DISPLAY_LIMIT
+    обрезает ровно один элемент — самый старый допущенный content_signal,
+    потому что content идёт последним по _ACTION_PRIORITY."""
+    records = (
+        [_fake_record("lead_signal", hours_ago=h, interpretation_id=i)
+         for i, h in enumerate([1, 2, 3], start=1)]
+        + [_fake_record("market_signal", hours_ago=h, interpretation_id=i)
+           for i, h in enumerate([1, 2, 3], start=10)]
+        + [_fake_record("content_signal", hours_ago=h, interpretation_id=i)
+           for i, h in enumerate([1, 2, 3, 4, 5], start=20)]
+    )
+    assert len(records) == 11
+    result = _build(records, limit=DISPLAY_LIMIT)
+    assert len(result) == 10
+    assert [s.id for s in result] == [1, 2, 3, 10, 11, 12, 20, 21, 22, 23]
+    # id 24 — пятый (самый старый допустимый) content_signal — не поместился.
+    assert 24 not in [s.id for s in result]
 
 
 def test_missing_category_is_not_backfilled_by_another():
@@ -257,3 +310,40 @@ def test_result_can_be_shorter_than_five_signals():
         _fake_record("lead_signal", hours_ago=2, interpretation_id=2),
     ]
     assert len(_build(records)) == 2
+
+
+# --- DISPLAY_LIMIT: единая точка настройки для Telegram и Web -----------------
+
+def test_display_limit_constant_is_ten():
+    # Пин значения: случайное изменение константы должно быть осознанным,
+    # а не побочным эффектом соседней правки.
+    assert DISPLAY_LIMIT == 10
+
+
+def test_telegram_and_web_call_sites_share_the_display_limit_constant():
+    """Единая бизнес-логика Telegram и Web: оба вызова build_workspace_signals()
+    для списка сигналов ОБЯЗАНЫ ссылаться на один и тот же импортированный
+    lead_radar.DISPLAY_LIMIT, а не на повторённое число в двух местах —
+    иначе значения могут незаметно разойтись при будущей правке одного файла."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    menu_src = (root / "app" / "handlers" / "menu.py").read_text(encoding="utf-8")
+    web_api_src = (root / "app" / "web_api.py").read_text(encoding="utf-8")
+
+    assert "build_workspace_signals(lead_radar_config, records, limit=DISPLAY_LIMIT)" in menu_src
+    assert "build_workspace_signals(lead_radar_config, records, limit=DISPLAY_LIMIT)" in web_api_src
+
+
+def test_authorization_lookups_still_use_limit_one():
+    """limit=1 в проверке конкретной записи — это намеренная авторизационная
+    проверка (см. app/handlers/menu.py и app/web_api.py), а не список для
+    показа. Она не должна случайно расшириться вместе с DISPLAY_LIMIT."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    menu_src = (root / "app" / "handlers" / "menu.py").read_text(encoding="utf-8")
+    web_api_src = (root / "app" / "web_api.py").read_text(encoding="utf-8")
+
+    assert "build_workspace_signals(lead_radar_config, [record], limit=1)" in menu_src
+    assert "build_workspace_signals(lead_radar_config, [record], limit=1)" in web_api_src

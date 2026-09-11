@@ -87,7 +87,12 @@ from app.services.content_factory import ContentFactoryConfig
 from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
-from app.services.lead_radar import LeadRadarConfig, build_workspace_signals, category_label
+from app.services.lead_radar import (
+    DISPLAY_LIMIT,
+    LeadRadarConfig,
+    build_workspace_signals,
+    category_label,
+)
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
@@ -1344,7 +1349,7 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
         records = await workspace_signal_repository.list_for_workspace(
             principal.workspace_id, limit=200,
         )
-        signals = build_workspace_signals(lead_radar_config, records, limit=5)
+        signals = build_workspace_signals(lead_radar_config, records, limit=DISPLAY_LIMIT)
 
         if signals is None:
             return {"error": "Радар сигналов сейчас недоступен.", "signals": []}

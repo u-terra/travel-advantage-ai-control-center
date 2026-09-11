@@ -114,7 +114,7 @@
         "vk_group_id": null,
         "posts_enabled": true,
         "comments_enabled": false,
-        "fetch_limit": 3,
+        "fetch_limit": 10,
         "min_score_for_llm": 70
       }
     },
@@ -285,7 +285,7 @@
       "collector": {
         "analysis_profile": "publisher",
         "language": "ru",
-        "fetch_limit": 3,
+        "fetch_limit": 10,
         "drop_promo": false,
         "min_score_for_llm": 70
       }
