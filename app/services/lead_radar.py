@@ -253,6 +253,93 @@ def _is_allowed_row(row: dict[str, object]) -> bool:
     return True
 
 
+# ── Content-bucket ranking (только action == "content") ──────────────────────
+# Раньше content-bucket сортировался только по created_at DESC, поэтому более
+# свежая, но слабая публикация или товарная реклама могла оказаться выше
+# действительно полезного travel-материала. Ниже — небольшой deterministic
+# вторичный ключ по item_title + item_summary (НЕ ai_score — он константа на
+# категорию, не оценка качества; НЕ LLM). Ничего не дропается: даже сигнал
+# самого низкого тира остаётся кандидатом и конкурирует за квоту, просто после
+# более высокотировых — см. ORCHESTRAVEL: ranking внутри content bucket.
+
+_CONTENT_TIER_PRODUCT_AD = 0  # товарная реклама без travel-пользы
+_CONTENT_TIER_WEAK = 1        # абстрактный lifestyle без конкретной пользы
+_CONTENT_TIER_DEFAULT = 2     # обычная конкретная travel-тема
+_CONTENT_TIER_STRONG = 3      # практическая инструкция/маршрут/чек-лист
+
+# Сильные практические сигналы — явные how-to/гид/чек-лист формулировки.
+_CONTENT_STRONG_MARKERS: tuple[str, ...] = (
+    "как добраться", "как доехать", "что взять с собой", "что взять в поездку",
+    "чек-лист", "чеклист", "список вещей",
+    "маршрут по", "маршрут выходного дня", "туристический маршрут",
+    "путеводит", "куда сходить", "что посмотреть", "необычные места",
+    "советы туристам", "инструкция для туриста",
+)
+# "Аэропорт" сам по себе ни о чём не говорит (может быть про авиакатастрофу),
+# но "аэропорт" + практическая транспортная связка — это гид "как добраться".
+_AIRPORT_TRANSPORT_WORDS: tuple[str, ...] = (
+    "транспорт", "центр", "автобус", "метро", "трансфер", "вокзал", "такси",
+)
+
+# Полезные конкретные travel-темы без формального how-to: события, опыт
+# туристов, необычные факты — не дотягивают до "сильных", но точно не слабые
+# и не должны провалиться в weak-tier только из-за короткого текста (пример D:
+# "мыс Четырёх скал" не должен проваливаться из-за отсутствия "как добраться").
+_CONTENT_GOOD_TOPIC_MARKERS: tuple[str, ...] = (
+    "фестивал", "событие в", "необычные факты", "необычный факт",
+    "интересный факт", "типичные ошибки", "жалобы туристов",
+    "нелепые жалобы", "смешные жалобы", "опыт туристов", "личный опыт",
+)
+
+# Абстрактный lifestyle-клишированный текст без конкретной пользы (места,
+# совета, маршрута) — короткая эмоциональная фраза типа "Красота северного
+# леса." Длина — намеренно низкий порог: реальный travel-контент почти всегда
+# длиннее одной эмоциональной фразы.
+_CONTENT_WEAK_MARKERS: tuple[str, ...] = (
+    "невероятная красота", "потрясающие виды", "волшебная атмосфера",
+    "заряжает энергией", "дарит вдохновение", "вдохновляет",
+    "трогает до глубины души", "просто красота", "какая красота",
+)
+_CONTENT_WEAK_MAX_LEN = 40
+
+# Товарная реклама гаджетов — самый низкий тир, но НЕ drop: пограничный
+# случай (гид со спонсорской интеграцией) защищён тем, что _CONTENT_STRONG_MARKERS
+# проверяются раньше и выигрывают, если реально есть практическая польза.
+_CONTENT_PRODUCT_AD_MARKERS: tuple[str, ...] = (
+    "смартфон", "смарт-часы", "смарт часы", "фитнес-браслет", "фитнес браслет",
+    "наушники", "ноутбук", "гаджет", "gps-трек", "gps трек", "трекер",
+    "на правах рекламы", "партнёрский материал", "промокод",
+)
+
+
+def _content_quality_rank(title: str, summary: str) -> int:
+    """Deterministic tier для сортировки content-bucket. Выше — лучше.
+
+    Использует item_title + item_summary целиком (не только title и не
+    action_reason). Не использует ai_score. Не вызывает LLM.
+    """
+    text = f"{title or ''} {summary or ''}".lower()
+
+    has_airport_transport = "аэропорт" in text and any(
+        word in text for word in _AIRPORT_TRANSPORT_WORDS
+    )
+    if has_airport_transport or any(marker in text for marker in _CONTENT_STRONG_MARKERS):
+        return _CONTENT_TIER_STRONG
+
+    if any(marker in text for marker in _CONTENT_PRODUCT_AD_MARKERS):
+        return _CONTENT_TIER_PRODUCT_AD
+
+    if any(marker in text for marker in _CONTENT_GOOD_TOPIC_MARKERS):
+        return _CONTENT_TIER_DEFAULT
+
+    if len(text.strip()) < _CONTENT_WEAK_MAX_LEN or any(
+        marker in text for marker in _CONTENT_WEAK_MARKERS
+    ):
+        return _CONTENT_TIER_WEAK
+
+    return _CONTENT_TIER_DEFAULT
+
+
 # ── Чтение сигналов ──────────────────────────────────────────────────────────
 
 
@@ -376,6 +463,11 @@ def build_workspace_signals(
         return None
 
     by_action: dict[str, list[LeadSignal]] = {action: [] for action in _ACTION_PRIORITY}
+    # id -> content quality tier. Отдельная структура, а не поле LeadSignal:
+    # ранг считаем из record.item_summary, которого в публичном dataclass нет
+    # и добавлять незачем — ключ по id достаточен только для финальной
+    # сортировки content-bucket ниже.
+    content_quality: dict[int, int] = {}
     for record in records:
         row = {
             "created_at": record.raw_created_at,
@@ -403,6 +495,10 @@ def build_workspace_signals(
             label = action_label_fn(action) or action
         except Exception:
             label = action
+        if action == "content":
+            content_quality[record.interpretation_id] = _content_quality_rank(
+                record.item_title, record.item_summary
+            )
         by_action[action].append(LeadSignal(
             id=record.interpretation_id,
             created_at=record.raw_created_at,
@@ -417,11 +513,23 @@ def build_workspace_signals(
         ))
 
     # Квота на bucket, без добивки отсутствующей категории другой. ai_score
-    # здесь намеренно не участвует (см. _ACTION_FRESHNESS_HOURS выше) — внутри
-    # bucket'а единственный осмысленный критерий сейчас — свежесть.
+    # здесь намеренно не участвует (см. _ACTION_FRESHNESS_HOURS выше). Для
+    # careful_reply/observe единственный осмысленный критерий сейчас —
+    # свежесть. Для content — сначала quality tier (см. _content_quality_rank
+    # выше), внутри одного тира — та же свежесть как tie-breaker.
     signals: list[LeadSignal] = []
     for action in sorted(_ACTION_PRIORITY, key=_ACTION_PRIORITY.get):
-        bucket = sorted(by_action[action], key=lambda signal: signal.created_at, reverse=True)
+        if action == "content":
+            bucket = sorted(
+                by_action[action],
+                key=lambda signal: (
+                    content_quality.get(signal.id, _CONTENT_TIER_DEFAULT),
+                    signal.created_at,
+                ),
+                reverse=True,
+            )
+        else:
+            bucket = sorted(by_action[action], key=lambda signal: signal.created_at, reverse=True)
         signals.extend(bucket[: _ACTION_QUOTA.get(action, limit)])
     return signals[: max(1, min(limit, _MAX_LIMIT))]
 

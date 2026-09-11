@@ -11,7 +11,14 @@ from app.services.lead_radar import (
     build_workspace_signals,
     category_label,
 )
-from app.services.lead_radar import _is_allowed_row
+from app.services.lead_radar import (
+    _CONTENT_TIER_DEFAULT,
+    _CONTENT_TIER_PRODUCT_AD,
+    _CONTENT_TIER_STRONG,
+    _CONTENT_TIER_WEAK,
+    _content_quality_rank,
+    _is_allowed_row,
+)
 
 
 def _fresh_row(**overrides) -> dict[str, object]:
@@ -347,3 +354,162 @@ def test_authorization_lookups_still_use_limit_one():
 
     assert "build_workspace_signals(lead_radar_config, [record], limit=1)" in menu_src
     assert "build_workspace_signals(lead_radar_config, [record], limit=1)" in web_api_src
+
+
+# --- Content-bucket ranking: quality tier, не только created_at DESC --------
+# ai_score здесь ИГНОРИРУЕТСЯ намеренно (он константа на категорию, не оценка
+# качества конкретной записи) — тесты ниже это явно проверяют.
+
+def test_content_quality_rank_unit_values():
+    # Сильный практический сигнал.
+    assert _content_quality_rank("Как добраться из аэропорта Галеан", "") == _CONTENT_TIER_STRONG
+    assert _content_quality_rank("Маршрут выходного дня по Карелии", "") == _CONTENT_TIER_STRONG
+    assert _content_quality_rank("Что взять с собой в Китай", "") == _CONTENT_TIER_STRONG
+    # Товарная реклама гаджета.
+    assert _content_quality_rank(
+        "Когда впереди новый маршрут",
+        "Amazfit T-Rex 3 Pro отслеживает GPS-трек и высоту на любом рельефе",
+    ) == _CONTENT_TIER_PRODUCT_AD
+    # Абстрактный lifestyle без пользы.
+    assert _content_quality_rank("Красота северного леса.", "") == _CONTENT_TIER_WEAK
+    # Конкретная travel-тема без формального how-to — не проваливается в weak.
+    assert _content_quality_rank(
+        "Хотите увидеть камушки в горошек?",
+        "Отправляйтесь на мыс Четырёх скал — одно из самых живописных и "
+        "малоизвестных мест побережья",
+    ) == _CONTENT_TIER_DEFAULT
+
+
+def test_A_practical_guide_outranks_fresher_gadget_ad():
+    records = [
+        _fake_record(
+            "content_signal", hours_ago=5, interpretation_id=1,
+            item_title="Как добраться из аэропорта Галеан в центр Рио",
+            item_summary="Сравниваем автобус, метро и такси",
+        ),
+        _fake_record(
+            "content_signal", hours_ago=1, interpretation_id=2,
+            item_title="Когда впереди новый маршрут",
+            item_summary="Amazfit T-Rex 3 Pro отслеживает GPS-трек и высоту на любом рельефе",
+        ),
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    assert [s.id for s in result] == [1, 2]
+
+
+def test_B_packing_list_outranks_fresher_abstract_lifestyle_post():
+    records = [
+        _fake_record(
+            "content_signal", hours_ago=5, interpretation_id=1,
+            item_title="Что взять с собой в Китай", item_summary="",
+        ),
+        _fake_record(
+            "content_signal", hours_ago=1, interpretation_id=2,
+            item_title="Красота северного леса.", item_summary="",
+        ),
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    assert [s.id for s in result] == [1, 2]
+
+
+def test_C_weekend_route_outranks_abstract_lifestyle_post():
+    records = [
+        _fake_record(
+            "content_signal", hours_ago=5, interpretation_id=1,
+            item_title="Маршрут выходного дня по Карелии", item_summary="",
+        ),
+        _fake_record(
+            "content_signal", hours_ago=1, interpretation_id=2,
+            item_title="Красота северного леса.", item_summary="",
+        ),
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    assert [s.id for s in result] == [1, 2]
+
+
+def test_D_specific_place_topic_does_not_fall_below_product_ad():
+    """"мыс Четырёх скал" не должен проваливаться только потому, что в нём
+    нет формального "как добраться" — старее рекламы, но всё равно выше."""
+    records = [
+        _fake_record(
+            "content_signal", hours_ago=10, interpretation_id=1,
+            item_title="Хотите увидеть камушки в горошек?",
+            item_summary=(
+                "Отправляйтесь на мыс Четырёх скал — одно из самых "
+                "живописных и малоизвестных мест побережья"
+            ),
+        ),
+        _fake_record(
+            "content_signal", hours_ago=1, interpretation_id=2,
+            item_title="Когда впереди новый маршрут",
+            item_summary="Amazfit T-Rex 3 Pro отслеживает GPS-трек и высоту на любом рельефе",
+        ),
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    assert [s.id for s in result] == [1, 2]
+
+
+def test_E_product_ad_still_appears_when_few_content_candidates():
+    """Не жёсткий drop: если других content-кандидатов нет, реклама всё
+    равно попадает в выдачу — просто не выигрывает за более высокий тир."""
+    records = [
+        _fake_record(
+            "content_signal", hours_ago=1, interpretation_id=1,
+            item_title="Когда впереди новый маршрут",
+            item_summary="Amazfit T-Rex 3 Pro отслеживает GPS-трек",
+        ),
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    assert [s.id for s in result] == [1]
+
+
+def test_F_same_tier_ties_are_broken_by_freshness():
+    records = [
+        _fake_record(
+            "content_signal", hours_ago=5, interpretation_id=1,
+            item_title="Как добраться до вулкана", item_summary="",
+        ),
+        _fake_record(
+            "content_signal", hours_ago=1, interpretation_id=2,
+            item_title="Как доехать до водопада", item_summary="",
+        ),
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    # Оба tier STRONG — внутри тира более свежий (id=2) идёт первым.
+    assert [s.id for s in result] == [2, 1]
+
+
+def test_G_observe_and_careful_reply_still_sort_by_freshness_only():
+    """Content-ranking не должен утекать в другие bucket'ы: observe/
+    careful_reply сортируются только по времени, даже если текст выглядел бы
+    "сильным"/"рекламным" в content-ranking."""
+    records = [
+        _fake_record(
+            "market_signal", hours_ago=5, interpretation_id=1,
+            item_title="Смартфон нового поколения", item_summary="реклама гаджета",
+        ),
+        _fake_record(
+            "market_signal", hours_ago=1, interpretation_id=2,
+            item_title="Как добраться из аэропорта", item_summary="",
+        ),
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    assert [s.id for s in result] == [2, 1]
+
+
+def test_H_ai_score_does_not_affect_content_ordering():
+    records = [
+        _fake_record(
+            "content_signal", hours_ago=5, interpretation_id=1,
+            item_title="Как добраться до вулкана", item_summary="", ai_score=10.0,
+        ),
+        _fake_record(
+            "content_signal", hours_ago=1, interpretation_id=2,
+            item_title="Смартфон нового поколения", item_summary="реклама гаджета",
+            ai_score=99.0,
+        ),
+    ]
+    result = _build(records, limit=DISPLAY_LIMIT)
+    # id=2 свежее и имеет намного более высокий ai_score, но реклама
+    # (tier PRODUCT_AD) не должна обогнать гид (tier STRONG).
+    assert [s.id for s in result] == [1, 2]
