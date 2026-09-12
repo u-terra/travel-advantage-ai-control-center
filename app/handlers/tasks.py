@@ -58,7 +58,12 @@ from app.services.reference_resolver import ReferenceResolver, ResolvedActionCon
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
 from app.services.usage_recorder import record_llm_call
 from app.services.web_search.base import SearchResponse, SearchResult
-from app.services.web_search.service import WebSearchService, format_search_context
+from app.services.web_search.service import (
+    OFFICIAL_SOURCE_MISSING_USER_NOTICE,
+    WebSearchService,
+    format_search_context,
+    official_source_missing,
+)
 from app.services.user_style import UserStyleService
 from app.storage import Journal
 from app.telegram_chunks import chunk_text
@@ -1348,6 +1353,15 @@ async def _maybe_send_draft(
                 active_module="content_factory", current_task="content_factory_free_text",
                 last_action="generate_content",
             )
+
+    if official_source_missing(search_response):
+        # Deterministic, non-LLM caveat - see
+        # app.services.web_search.service.official_source_missing's
+        # docstring for why the prompt-level instruction alone is not
+        # trusted for this. Placed before the sources block so the user
+        # sees it right alongside the (secondary) sources it refers to.
+        lines.append("")
+        lines.append(OFFICIAL_SOURCE_MISSING_USER_NOTICE)
 
     if search_response is not None and search_response.results:
         sources_lines = _format_telegram_sources(search_response.results)

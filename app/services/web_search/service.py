@@ -209,7 +209,20 @@ def _rank_by_authority(response: SearchResponse) -> SearchResponse:
 # yandex_provider.py's SEARCH_TYPE_INTERNATIONAL comment. The default/normal
 # search above is untouched - it never passes search_type, so it keeps
 # using SEARCH_TYPE_RU exactly as before.
+#
+# Next live test (after the dual JSON/XML parser fix) confirmed the fallback
+# now genuinely runs and gets real results under SEARCH_TYPE_COM - but with
+# no official domain among the first 5. _OFFICIAL_FALLBACK_SEARCH_LIMIT
+# raises only the FALLBACK request to 15 raw results (via
+# allow_exceeding_configured_max=True, since YandexSearchConfig.max_results
+# would otherwise silently clamp it straight back down to 5) so an official
+# domain ranked below position 5 still has a chance to be seen and
+# promoted. _FALLBACK_COMBINED_RESULTS_LIMIT (the final, user-facing size
+# after merging) is intentionally a SEPARATE, unchanged constant - still 5.
+# The default/normal search above still never passes limit or
+# allow_exceeding_configured_max, so it is completely unaffected.
 _OFFICIAL_FALLBACK_QUERY_SUFFIX = " official government immigration entry requirements"
+_OFFICIAL_FALLBACK_SEARCH_LIMIT = 15
 _FALLBACK_COMBINED_RESULTS_LIMIT = 5
 
 
@@ -254,12 +267,15 @@ def _ensure_official_source(
         )
         return response
     fallback_query = _official_fallback_query(query)
-    # DIAG: points 2/3/4 - fallback called, exact query and search_type used.
+    # DIAG: points 2/3/4 - fallback called, exact query/search_type/limit used.
     log.info(
-        "%s: fallback_called=True fallback_query=%r search_type=%r",
-        _DIAG_PREFIX, fallback_query, SEARCH_TYPE_INTERNATIONAL,
+        "%s: fallback_called=True fallback_query=%r search_type=%r limit=%d",
+        _DIAG_PREFIX, fallback_query, SEARCH_TYPE_INTERNATIONAL, _OFFICIAL_FALLBACK_SEARCH_LIMIT,
     )
-    fallback = provider.search(fallback_query, site=None, search_type=SEARCH_TYPE_INTERNATIONAL)
+    fallback = provider.search(
+        fallback_query, site=None, search_type=SEARCH_TYPE_INTERNATIONAL,
+        limit=_OFFICIAL_FALLBACK_SEARCH_LIMIT, allow_exceeding_configured_max=True,
+    )
     # DIAG: points 6/7 - raw fallback results and _is_official_domain() per result.
     if fallback is None:
         log.info("%s: fallback_result=<none - provider returned None>", _DIAG_PREFIX)
@@ -447,6 +463,35 @@ _OFFICIAL_SOURCE_STATUS_INSTRUCTION = (
 )
 
 
+def official_source_missing(response: SearchResponse | None) -> bool:
+    """True only for the same high-risk/changeable-rules queries the
+    official-source fallback (_ensure_official_source) and the
+    OFFICIAL_SOURCE_STATUS line are gated on, when no official domain ended
+    up in the results. Deterministic, no LLM involved - callers
+    (app.handlers.tasks / app.web_api) use this to guarantee
+    OFFICIAL_SOURCE_MISSING_USER_NOTICE reaches the user even when the
+    model's generated answer does not actually mention the missing
+    confirmation - live testing showed the prose _RULES instruction alone
+    (and even the machine-checkable OFFICIAL_SOURCE_STATUS context line) is
+    not a strong enough guarantee for a fact this safety-sensitive."""
+    if response is None or not response.results:
+        return False
+    if not _matches_changeable_rules((response.query or "").lower()):
+        return False
+    return not any(_is_official_domain(result.domain) for result in response.results)
+
+
+# Deterministic, non-LLM caveat - see official_source_missing()'s docstring
+# for why this exists as code, not only as a model instruction. Callers
+# append this verbatim to the user-visible answer (never fold it into the
+# LLM prompt/context - it must show up whether or not the model cooperates).
+OFFICIAL_SOURCE_MISSING_USER_NOTICE = (
+    "⚠️ Официальный государственный источник в текущем поиске не найден; "
+    "данные ниже основаны на вторичных источниках и требуют дополнительной "
+    "проверки."
+)
+
+
 def format_search_context(response: SearchResponse | None) -> str:
     """Same "=== HEADER ===" + per-item + rules shape as
     app.web_api._knowledge_context, so it reads as one consistent style of
@@ -471,9 +516,12 @@ def format_search_context(response: SearchResponse | None) -> str:
     is_high_risk_query = _matches_changeable_rules((response.query or "").lower())
     status_line = None
     if is_high_risk_query:
-        has_official = any(_is_official_domain(result.domain) for result in response.results)
+        # Reuses official_source_missing() rather than recomputing the same
+        # check separately, so this status line and the deterministic
+        # OFFICIAL_SOURCE_MISSING_USER_NOTICE caveat can never drift apart.
         status_line = (
-            _OFFICIAL_SOURCE_STATUS_FOUND if has_official else _OFFICIAL_SOURCE_STATUS_NOT_FOUND
+            _OFFICIAL_SOURCE_STATUS_NOT_FOUND if official_source_missing(response)
+            else _OFFICIAL_SOURCE_STATUS_FOUND
         )
         lines.append(status_line)
         lines.append(_OFFICIAL_SOURCE_STATUS_INSTRUCTION)

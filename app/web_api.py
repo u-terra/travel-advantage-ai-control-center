@@ -43,13 +43,17 @@ from app.repositories.feedback_repository import FeedbackRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.operational_event_repository import OperationalEventRepository
 from app.repositories.partner_repository import (
+    PartnerProvisioningConflictError,
     PartnerRepository,
     TooManyUserExamplesError,
     VoiceSampleTooLongError,
     business_context_to_dict,
+    is_telegram_linked,
+    slugify,
 )
 from app.repositories.payment_order_repository import PaymentOrderRepository
 from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.telegram_bind_token_repository import TelegramBindTokenRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.web_attachment_repository import WebAttachmentRepository
 from app.repositories.web_auth_repository import (
@@ -73,7 +77,7 @@ from app.services.attachment_validation import (
     sanitize_display_filename,
     validate_attachment,
 )
-from app.services.billing_service import BillingNotConfigured, BillingService
+from app.services.billing_service import BillingNotConfigured, BillingService, UnknownPlanError
 from app.services.business_profile_context import (
     BusinessProfileAccessError,
     BusinessProfileService,
@@ -88,7 +92,12 @@ from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
 from app.services.web_search.base import WebSearchProvider
-from app.services.web_search.service import WebSearchService, format_search_context
+from app.services.web_search.service import (
+    OFFICIAL_SOURCE_MISSING_USER_NOTICE,
+    WebSearchService,
+    format_search_context,
+    official_source_missing,
+)
 from app.services.web_search.yandex_provider import YandexSearchConfig, YandexSearchProvider
 from app.services.lead_radar import (
     DISPLAY_LIMIT,
@@ -101,6 +110,8 @@ from app.services.lead_radar import (
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
+from app.services.rate_limit import signup_rate_limiter
 from app.services.robokassa import RoboKassaConfig
 from app.services.telemetry import record_event
 from app.services.usage_recorder import record_llm_call
@@ -175,6 +186,10 @@ subscription_repository = SubscriptionRepository(settings.journal_db_path)
 # configured", nothing crashes) whenever ROBOKASSA_* env vars are missing -
 # expected in dev/CI, where no real RoboKassa secret should ever exist.
 payment_order_repository = PaymentOrderRepository(settings.journal_db_path)
+# Telegram-connect deep-link tokens (see POST /api/telegram/bind-token and
+# app.handlers.start's /start <token> handling) - not RoboKassa-specific,
+# just declared alongside it since both are billing/onboarding adjacent.
+telegram_bind_token_repository = TelegramBindTokenRepository(settings.journal_db_path)
 robokassa_config = RoboKassaConfig(
     merchant_login=settings.robokassa_merchant_login,
     password1=settings.robokassa_password1,
@@ -540,6 +555,26 @@ class RegisterRequest(BaseModel):
     password: str
 
 
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    business_name: str
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client identity for the signup rate limiter only -
+    never used for anything security-critical (auth/CSRF/payment rely on
+    the session cookie/CSRF token/RoboKassa signature, never on IP).
+    X-Forwarded-For first: nginx (see the deployment report) always sets
+    it for this app; request.client.host would otherwise just be nginx's
+    own loopback address for every visitor."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 @app.post("/api/auth/login")
 async def login(request: LoginRequest, response: Response):
     generic_error = {"error": "Неверный email или пароль."}
@@ -588,8 +623,9 @@ async def login(request: LoginRequest, response: Response):
 
 @app.post("/api/auth/register")
 async def register(request: RegisterRequest, response: Response):
-    """Beta registration is invite-only - see scripts/create_beta_invite.py.
-    No public self-serve signup exists."""
+    """Invite-only registration - see scripts/create_beta_invite.py. Kept
+    exactly as-is for existing invite links; public self-service signup
+    without an invite is POST /api/auth/signup below."""
     email = request.email.strip().lower()
     # Same normalization as email above - a token copy-pasted from a
     # terminal (e.g. the CLI's printed URL/token) very easily picks up a
@@ -670,6 +706,92 @@ async def register(request: RegisterRequest, response: Response):
         return {"error": "Не удалось завершить регистрацию. Попробуйте ещё раз."}
 
 
+@app.post("/api/auth/signup")
+async def signup(payload: SignupRequest, http_request: Request, response: Response):
+    """Public self-service signup - no invite required. The invite-only
+    path above (POST /api/auth/register, scripts/create_beta_invite.py) is
+    untouched and keeps working for CLI-provisioned partners.
+
+    Creates a brand-new workspace/tenant automatically
+    (provision_self_service_workspace - one atomic transaction for
+    workspace+membership+profile) and starts its subscription 'pending'
+    (SubscriptionRepository.create_pending) - registering grants a login,
+    never product access; that only unlocks once a real RoboKassa payment
+    confirms (see POST /api/billing/robokassa/result).
+
+    The workspace-creation transaction and the web-account creation that
+    follows it are two separate DB connections/transactions (same
+    established shape as /api/auth/register above, not a new pattern) - if
+    web-account creation fails afterwards (e.g. an email-uniqueness race),
+    the just-created workspace is explicitly deleted
+    (delete_freshly_provisioned_workspace) rather than left as an orphaned,
+    unreachable tenant.
+    """
+    client_ip = _client_ip(http_request)
+    if not signup_rate_limiter.allow(client_ip):
+        return {"error": "Слишком много попыток регистрации. Попробуйте позже."}
+
+    name = payload.name.strip()
+    email = payload.email.strip().lower()
+    business_name = payload.business_name.strip()
+
+    if not name:
+        return {"error": "Укажите имя."}
+    if not business_name:
+        return {"error": "Укажите название бизнеса."}
+
+    try:
+        validate_password_policy(payload.password)
+    except WeakPasswordError as exc:
+        return {"error": str(exc)}
+
+    if await web_auth_repository.get_user_by_email(email) is not None:
+        return {"error": "Этот email уже зарегистрирован."}
+
+    try:
+        provisioned = await partner_repository.provision_self_service_workspace(
+            business_name, base_slug=slugify(business_name),
+        )
+    except Exception:
+        log.exception("signup: workspace provisioning failed")
+        await record_event(
+            operational_event_repository, module="auth", event_type="signup",
+            success=False, severity=EventSeverity.ERROR,
+            safe_message="signup raised an exception during workspace provisioning",
+        )
+        return {"error": "Не удалось завершить регистрацию. Попробуйте ещё раз."}
+    workspace_id = provisioned.workspace.id
+    placeholder_telegram_id = provisioned.membership.telegram_user_id
+
+    try:
+        password_hash = hash_password(payload.password)
+        user = await web_auth_repository.create_user(email, password_hash)
+        binding = await web_auth_repository.create_binding(
+            user.id, workspace_id, placeholder_telegram_id,
+        )
+        await subscription_repository.create_pending(workspace_id)
+    except Exception:
+        await partner_repository.delete_freshly_provisioned_workspace(workspace_id)
+        await record_event(
+            operational_event_repository, module="auth", event_type="signup",
+            success=False, severity=EventSeverity.ERROR,
+            safe_message="signup raised an exception after workspace creation - rolled back",
+        )
+        return {"error": "Не удалось завершить регистрацию. Попробуйте ещё раз."}
+
+    await _start_session(response, user.id, binding.id)
+    await record_event(
+        operational_event_repository, module="auth", event_type="signup",
+        success=True, workspace_id=workspace_id, web_user_id=user.id,
+    )
+    await record_event(
+        operational_event_repository, module="auth", event_type="workspace_created",
+        success=True, workspace_id=workspace_id, web_user_id=user.id,
+    )
+
+    return {"email": user.email, "workspace_id": workspace_id}
+
+
 @app.post("/api/auth/logout")
 async def logout(
     request: Request, response: Response,
@@ -730,26 +852,46 @@ async def billing_status(principal: WebPrincipal = Depends(get_current_principal
         "trial_until": subscription.trial_until if subscription is not None else None,
         "billing_configured": robokassa_config.is_configured,
         "is_test": robokassa_config.is_test,
+        # Legacy single-tier fields - kept for any old caller, superseded
+        # by "plans" below for the real three starter tariffs.
         "standard_price_rub": (
             str(robokassa_config.standard_price_rub)
             if robokassa_config.standard_price_rub is not None else None
         ),
         "subscription_days": robokassa_config.subscription_days,
+        "plans": [
+            {
+                "code": plan.code, "label": plan.label,
+                "amount": str(plan.amount), "duration_days": plan.duration_days,
+            }
+            for plan in list_plans()
+        ],
     }
 
 
 @app.post("/api/billing/create-payment")
-async def create_payment_endpoint(principal: WebPrincipal = Depends(require_csrf)):
-    """amount/plan/description come only from server-side RoboKassaConfig
-    (see BillingService.create_payment) - the request body is intentionally
-    not even parsed, there is nothing for a client to influence beyond
-    "pay for MY workspace, on the one plan that exists"."""
+async def create_payment_endpoint(
+    http_request: Request, principal: WebPrincipal = Depends(require_csrf),
+):
+    """amount/duration come only from the server-side plan catalog (see
+    app.services.plans.PLAN_CATALOG / BillingService.create_payment) - the
+    request body may name WHICH plan to buy, nothing else. A missing/empty
+    body (any pre-existing caller that never sent a plan) defaults to the
+    original single "standard" tariff, so nothing already deployed against
+    this endpoint breaks."""
     if not robokassa_config.is_configured:
         return {"error": "Оплата временно недоступна. Обратитесь к администратору."}
     try:
-        result = await billing_service.create_payment(principal.workspace_id)
+        body = await http_request.json()
+    except Exception:
+        body = {}
+    plan_code = str((body or {}).get("plan") or DEFAULT_PLAN_CODE).strip()
+    try:
+        result = await billing_service.create_payment(principal.workspace_id, plan_code)
     except BillingNotConfigured:
         return {"error": "Оплата временно недоступна. Обратитесь к администратору."}
+    except UnknownPlanError:
+        return {"error": "Неизвестный тариф."}
     except Exception:
         log.exception("billing: create_payment failed for workspace_id=%s", principal.workspace_id)
         await record_event(
@@ -769,6 +911,8 @@ async def create_payment_endpoint(principal: WebPrincipal = Depends(require_csrf
         "is_test": result.is_test,
         "amount": result.order.amount,
         "currency": result.order.currency,
+        "plan": result.order.plan,
+        "duration_days": result.order.duration_days,
     }
 
 
@@ -796,6 +940,40 @@ async def get_payment_order(
             "paid_at": order.paid_at,
         }
     }
+
+
+# ── Telegram connect (one-time deep-link bind token) ────────────────────
+#
+# Not subscription-gated (same reasoning as billing above): connecting
+# Telegram is account linking, not a paid product feature - a still-
+# 'pending' (unpaid) self-service workspace can link Telegram before ever
+# paying, so its access opens in both channels the instant it does pay.
+
+BOT_BIND_TOKEN_TTL_MINUTES = 30
+
+
+@app.post("/api/telegram/bind-token")
+async def create_telegram_bind_token(
+    principal: WebPrincipal = Depends(require_csrf),
+):
+    """workspace_id always comes from the session (principal), never a
+    request parameter - a client can only ever generate a bind link for
+    its OWN workspace. Refuses to issue a new token once Telegram is
+    already connected (a real, positive telegram_user_id - see
+    is_telegram_linked) - reconnecting/moving Telegram to a different
+    account is not this endpoint's job."""
+    if is_telegram_linked(principal.telegram_user_id):
+        return {"error": "Telegram уже подключён к этому рабочему пространству."}
+
+    raw_token = generate_token()
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=BOT_BIND_TOKEN_TTL_MINUTES)
+    ).isoformat()
+    await telegram_bind_token_repository.create_token(
+        principal.workspace_id, hash_token(raw_token), expires_at,
+    )
+    deep_link = f"https://t.me/{settings.orchestravel_bot_username}?start={raw_token}"
+    return {"deep_link": deep_link, "expires_at": expires_at}
 
 
 @app.post("/api/billing/robokassa/result")
@@ -867,6 +1045,7 @@ async def startup() -> None:
     await web_auth_repository.init()
     await subscription_repository.init()
     await payment_order_repository.init()
+    await telegram_bind_token_repository.init()
     await operational_event_repository.init()
     await feedback_repository.init()
     await admin_audit_log_repository.init()
@@ -2850,6 +3029,15 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
             .replace("\u00a0", " ")
         )
 
+        if official_source_missing(search_response):
+            # Deterministic, non-LLM caveat - see
+            # app.services.web_search.service.official_source_missing's
+            # docstring for why the prompt-level instruction alone is not
+            # trusted for this. Appended to the persisted answer itself
+            # (not just search_sources) so it always reaches the user
+            # regardless of whether the model mentioned it.
+            clean_answer = f"{clean_answer}\n\n{OFFICIAL_SOURCE_MISSING_USER_NOTICE}"
+
         answer_html = _render_markdown(clean_answer)
 
         # Оригинальный текст ответа, не HTML - HTML восстанавливается тем же
@@ -2966,6 +3154,16 @@ async def home(request: Request):
     ).read_text(encoding="utf-8")
 
 
+@app.get("/demo", response_class=HTMLResponse)
+async def demo_page(request: Request):
+    """Public marketing/demo page - no session check by design. Renders
+    static, pre-scripted scenarios only; touches no tenant/user data,
+    no auth state, and no admin surface."""
+    return Path(
+        "app/templates/demo.html"
+    ).read_text(encoding="utf-8")
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     if await _has_valid_session(request):
@@ -2981,6 +3179,17 @@ async def register_page(request: Request):
         return RedirectResponse(url="/", status_code=303)
     return Path(
         "app/templates/register.html"
+    ).read_text(encoding="utf-8")
+
+
+@app.get("/signup", response_class=HTMLResponse)
+async def signup_page(request: Request):
+    """Public self-service signup - no invite token needed (see POST
+    /api/auth/signup). Linked from /demo's "Получить доступ" button."""
+    if await _has_valid_session(request):
+        return RedirectResponse(url="/", status_code=303)
+    return Path(
+        "app/templates/signup.html"
     ).read_text(encoding="utf-8")
 
 

@@ -156,18 +156,25 @@ class YandexSearchProvider(WebSearchProvider):
         site: str | None = None,
         limit: int = 5,
         search_type: str | None = None,
+        allow_exceeding_configured_max: bool = False,
     ) -> SearchResponse | None:
         """``search_type`` optionally overrides the default SEARCH_TYPE_RU
         request scope (e.g. SEARCH_TYPE_INTERNATIONAL for a worldwide
         search) - every existing caller that omits it keeps today's exact
-        RU-only behavior unchanged."""
+        RU-only behavior unchanged. ``allow_exceeding_configured_max`` lets
+        ``limit`` exceed ``self.config.max_results`` for this one call -
+        default False reproduces the exact prior clamped formula, so every
+        existing caller (including the default/normal search, which never
+        passes this) is unaffected."""
         if not self.config.is_configured:
             return None
         query_text = (query or "").strip()
         if not query_text:
             return None
 
-        effective_limit = max(1, min(int(limit), max(1, self.config.max_results)))
+        effective_limit = max(1, int(limit))
+        if not allow_exceeding_configured_max:
+            effective_limit = min(effective_limit, max(1, self.config.max_results))
         query_text_for_api = query_text
         if site:
             cleaned_site = _clean_site(site)

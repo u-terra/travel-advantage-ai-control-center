@@ -25,7 +25,10 @@ from app.chat_provider import ChatResult  # noqa: E402
 from app.domain.knowledge import KnowledgeItem  # noqa: E402
 from app.services.knowledge_service import KnowledgeBundle, SourceReference  # noqa: E402
 from app.services.web_search.base import SearchResponse, SearchResult, WebSearchProvider  # noqa: E402
-from app.services.web_search.service import WebSearchService  # noqa: E402
+from app.services.web_search.service import (  # noqa: E402
+    OFFICIAL_SOURCE_MISSING_USER_NOTICE,
+    WebSearchService,
+)
 
 from tests._web_auth_test_helpers import login_as  # noqa: E402
 
@@ -72,7 +75,7 @@ class _FakeSearchProvider(WebSearchProvider):
         self._response = response
         self.calls: list[tuple[str, str | None, int]] = []
 
-    def search(self, query, *, site=None, limit=5, search_type=None):
+    def search(self, query, *, site=None, limit=5, search_type=None, allow_exceeding_configured_max=False):
         self.calls.append((query, site, limit))
         return self._response
 
@@ -159,6 +162,55 @@ def test_search_enabled_with_results_adds_context_and_sources(api, monkeypatch) 
     # either and the merged results/sources are unchanged - only the call
     # count reflects the new fallback attempt.
     assert len(fake_provider.calls) == 2
+    # No official domain anywhere (first search or fallback) -> the
+    # deterministic, non-LLM caveat must be appended to the persisted
+    # answer text itself, not just implied by search_sources.
+    assert OFFICIAL_SOURCE_MISSING_USER_NOTICE in body["answer"]
+
+
+def test_fallback_official_source_promoted_and_no_missing_notice(api, monkeypatch) -> None:
+    """When the official-source fallback DOES find a government domain
+    (even ranked below position 5, made possible by the wider limit=15
+    fallback search), it must be promoted first AND the deterministic
+    no-official-source notice must NOT appear - it would be misleading."""
+    client, web_api, _, _ = api
+    monkeypatch.setattr(web_api.chat_provider, "generate", _fake_generate())
+
+    official_result = SearchResult(
+        title="Imigrasi RI", url="https://imigrasi.go.id/entry-rules", snippet="...",
+        domain="imigrasi.go.id", provider="fake_yandex", published_at=None, rank=8,
+    )
+    fallback_response = SearchResponse(
+        query="fallback", results=[official_result], provider="fake_yandex", elapsed_ms=5,
+    )
+    fake_provider = _FakeSearchProvider(_search_response("правила въезда"))
+    # First call returns the fixture below (no official); make the SECOND
+    # (fallback) call return the official-bearing response instead.
+    original_search = fake_provider.search
+    call_count = {"n": 0}
+
+    def sequenced_search(query, *, site=None, limit=5, search_type=None,
+                          allow_exceeding_configured_max=False):
+        call_count["n"] += 1
+        result = original_search(
+            query, site=site, limit=limit, search_type=search_type,
+            allow_exceeding_configured_max=allow_exceeding_configured_max,
+        )
+        return fallback_response if call_count["n"] == 2 else result
+
+    monkeypatch.setattr(fake_provider, "search", sequenced_search)
+    monkeypatch.setattr(web_api, "web_search_service", WebSearchService(fake_provider, enabled=True))
+
+    conversation_id = _new_conversation(client)
+    response = client.post("/api/chat", json={
+        "message": "Какие сейчас изменения правил въезда в Индонезию для россиян?",
+        "conversation_id": conversation_id,
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["search_sources"][0]["domain"] == "imigrasi.go.id"
+    assert OFFICIAL_SOURCE_MISSING_USER_NOTICE not in body["answer"]
 
 
 def test_search_not_triggered_for_ordinary_content_request(api, monkeypatch) -> None:

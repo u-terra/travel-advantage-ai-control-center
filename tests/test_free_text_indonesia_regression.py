@@ -28,7 +28,7 @@ from app.routing.modules import Module
 from app.routing.router import route_text
 from app.services.llm.models import ContentDraft
 from app.services.web_search.base import SearchResponse, SearchResult, WebSearchProvider
-from app.services.web_search.service import WebSearchService
+from app.services.web_search.service import OFFICIAL_SOURCE_MISSING_USER_NOTICE, WebSearchService
 from tests.llm_fakes import FakeLLMProvider
 from tests.test_journal_handlers import Message, business_profile, context, journal, profile_repository
 
@@ -50,7 +50,7 @@ class _FakeProvider(WebSearchProvider):
         self._response = response
         self.calls: list[str] = []
 
-    def search(self, query, *, site=None, limit=5, search_type=None):
+    def search(self, query, *, site=None, limit=5, search_type=None, allow_exceeding_configured_max=False):
         self.calls.append(query)
         return self._response
 
@@ -124,6 +124,18 @@ def test_exact_indonesia_query_shows_sources_to_user():
     assert _SOURCE_URL in text
 
 
+# 4b. No official domain anywhere (neither the first search nor the
+# fallback, since this fake returns the same non-official response for
+# both calls) -> the deterministic, non-LLM caveat must reach the user
+# regardless of whether the model's own generated draft mentions it.
+def test_exact_indonesia_query_shows_deterministic_no_official_source_notice():
+    fake_provider = _FakeProvider(_sample_response())
+    service = WebSearchService(fake_provider, enabled=True)
+    message, _ = run_free_text(_QUERY, web_search_service=service)
+    text = message.answers[-1][0]
+    assert OFFICIAL_SOURCE_MISSING_USER_NOTICE in text
+
+
 # ── Official-source priority + geo-scope guard regression ───────────────────
 #
 # The real prod bug: the answer generalized Bali's regional tourist fee
@@ -193,6 +205,16 @@ def test_indonesia_query_shows_official_source_first_to_user():
     message, _ = run_free_text(_QUERY, web_search_service=service)
     text = message.answers[-1][0]
     assert text.index(_OFFICIAL_URL) < text.index(_SECONDARY_BALI_URL)
+
+
+# 7b. An official source WAS found -> the deterministic no-official-source
+# notice must NOT appear (it would be actively misleading otherwise).
+def test_indonesia_query_with_official_source_omits_the_missing_notice():
+    fake_provider = _FakeProvider(_bali_and_official_response())
+    service = WebSearchService(fake_provider, enabled=True)
+    message, _ = run_free_text(_QUERY, web_search_service=service)
+    text = message.answers[-1][0]
+    assert OFFICIAL_SOURCE_MISSING_USER_NOTICE not in text
 
 
 # 5. A content-creation request naming a nearby destination must not search -

@@ -16,11 +16,13 @@ import pytest
 
 from app.services.web_search.base import SearchResponse, SearchResult, WebSearchProvider
 from app.services.web_search.service import (
+    OFFICIAL_SOURCE_MISSING_USER_NOTICE,
     WebSearchService,
     _merge_official_fallback,
     _official_fallback_query,
     decide_web_search,
     format_search_context,
+    official_source_missing,
 )
 from app.services.web_search.yandex_provider import SEARCH_TYPE_INTERNATIONAL
 
@@ -184,8 +186,11 @@ class _FakeProvider(WebSearchProvider):
         self._responses = list(responses) if responses is not None else None
         self._calls = calls if calls is not None else []
 
-    def search(self, query, *, site=None, limit=5, search_type=None):
-        self._calls.append((query, site, limit, search_type))
+    def search(
+        self, query, *, site=None, limit=5, search_type=None,
+        allow_exceeding_configured_max=False,
+    ):
+        self._calls.append((query, site, limit, search_type, allow_exceeding_configured_max))
         if self._responses is not None:
             return self._responses.pop(0) if self._responses else None
         return self._response
@@ -616,6 +621,158 @@ def test_fallback_never_passes_a_site_restriction():
     )
     service.maybe_search("Какие сейчас правила въезда в Индонезию?")
     assert calls[1][1] is None  # (query, site, limit, search_type) -> site
+
+
+# ── Wider fallback search (15) + deterministic no-official-source notice ───
+#
+# Live prod test after the dual JSON/XML parser fix confirmed the fallback
+# genuinely runs under SEARCH_TYPE_COM and gets real results - but none of
+# the first 5 was an official domain, and OFFICIAL_SOURCE_STATUS: NOT_FOUND
+# reached the context correctly while the model's actual answer still did
+# not mention the missing confirmation. Two fixes: (1) the fallback now
+# requests 15 raw results instead of 5, so an official domain ranked below
+# position 5 still has a chance to be found and promoted - the final
+# user-facing size is UNCHANGED (still capped at 5); (2) a deterministic,
+# non-LLM notice (official_source_missing() / OFFICIAL_SOURCE_MISSING_USER_
+# NOTICE) that callers append directly to the user-visible answer, so it no
+# longer depends on the model choosing to follow the prompt instruction.
+
+def _fallback_response_with_n_secondary_and_official_at(
+    position: int, total: int, *, query: str = "q",
+) -> SearchResponse:
+    """Builds a fallback SearchResponse with ``total`` results, all
+    secondary except one official domain at zero-based index ``position``."""
+    results = []
+    for i in range(total):
+        if i == position:
+            results.append(SearchResult(
+                title="Imigrasi RI", url=f"https://imigrasi.go.id/{i}", snippet="...",
+                domain="imigrasi.go.id", published_at=None, provider="fake", rank=i + 1,
+            ))
+        else:
+            results.append(SearchResult(
+                title=f"Secondary {i}", url=f"https://secondary{i}.example/a", snippet="...",
+                domain=f"secondary{i}.example", published_at=None, provider="fake", rank=i + 1,
+            ))
+    return SearchResponse(query=query, results=results, provider="fake", elapsed_ms=5)
+
+
+def test_fallback_search_requests_limit_15():
+    calls: list = []
+    responses = [_sample_response("q"), None]
+    service = WebSearchService(_FakeProvider(calls=calls, responses=responses), enabled=True)
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    assert len(calls) == 2
+    assert calls[1][2] == 15  # (query, site, limit, search_type, allow_exceeding_configured_max)
+    assert calls[1][4] is True
+
+
+def test_default_search_does_not_request_exceeding_configured_max():
+    """The default/normal search must stay completely unaffected - it never
+    asks to exceed the provider's configured max_results."""
+    calls: list = []
+    service = WebSearchService(_FakeProvider(_multi_source_response(), calls=calls), enabled=True)
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    assert calls[0][4] is False
+
+
+def test_official_at_position_eight_of_fifteen_is_promoted_to_top_five():
+    """An official domain that only shows up at position 8 (index 7) out of
+    15 raw fallback results must still end up first in the final,
+    user-facing top-5 - this only works because the fallback now actually
+    requests 15 results instead of being silently limited to 5."""
+    original = _sample_response("Какие правила въезда?")  # secondary only
+    fallback = _fallback_response_with_n_secondary_and_official_at(7, 15)
+    service = WebSearchService(_FakeProvider(responses=[original, fallback]), enabled=True)
+    result = service.maybe_search("Какие правила въезда?")
+    assert result.results[0].domain == "imigrasi.go.id"
+    assert len(result.results) <= 5
+
+
+def _secondary_only_response(count: int, *, query: str = "q") -> SearchResponse:
+    return SearchResponse(
+        query=query,
+        results=[
+            SearchResult(
+                title=f"Secondary {i}", url=f"https://original{i}.example/a", snippet="...",
+                domain=f"original{i}.example", published_at=None, provider="fake", rank=i + 1,
+            )
+            for i in range(count)
+        ],
+        provider="fake", elapsed_ms=5,
+    )
+
+
+def test_final_merged_result_still_capped_at_five():
+    """Requirement: the final, user-facing merged output must stay the same
+    size as before (max 5), even though the fallback SEARCH now goes wider
+    (15) to find the official domain in the first place. Original search
+    already has 5 secondary results on its own, so adding the fallback's
+    official result would make 6 without the cap."""
+    original = _secondary_only_response(5, query="Какие правила въезда?")
+    fallback = _fallback_response_with_n_secondary_and_official_at(0, 15)
+    service = WebSearchService(_FakeProvider(responses=[original, fallback]), enabled=True)
+    result = service.maybe_search("Какие правила въезда?")
+    assert len(result.results) == 5
+    assert result.results[0].domain == "imigrasi.go.id"
+
+
+def test_official_source_missing_true_when_high_risk_and_no_official():
+    response = _sample_response("Какие правила въезда?")
+    assert official_source_missing(response) is True
+
+
+def test_official_source_missing_false_when_official_present():
+    response = _multi_source_response("Какие правила въезда?")  # includes imigrasi.go.id
+    assert official_source_missing(response) is False
+
+
+def test_official_source_missing_false_for_non_high_risk_query():
+    response = _sample_response("Что нового у Travel Advantage?")
+    assert official_source_missing(response) is False
+
+
+@pytest.mark.parametrize("response", [None, SearchResponse(query="Какие правила въезда?", results=[])])
+def test_official_source_missing_false_for_none_or_empty_response(response):
+    assert official_source_missing(response) is False
+
+
+def test_official_source_missing_user_notice_wording():
+    """Guardrail on the exact required content of the deterministic caveat -
+    callers rely on this constant, never a re-derived string."""
+    lowered = OFFICIAL_SOURCE_MISSING_USER_NOTICE.lower()
+    assert "официальный государственный источник" in lowered
+    assert "не найден" in lowered
+    assert "вторичных источниках" in lowered
+    assert "дополнительной проверки" in lowered
+
+
+def test_end_to_end_not_found_after_fallback_still_marks_official_source_missing():
+    """Full maybe_search() path: first search secondary-only, fallback ALSO
+    finds nothing official -> official_source_missing() must be True on the
+    final result, guaranteeing the deterministic notice fires downstream."""
+    original = _sample_response("Какие правила въезда?")
+    fallback = SearchResponse(
+        query="Какие правила въезда? official government immigration entry requirements",
+        results=[
+            SearchResult(
+                title="Ещё вторичный", url="https://otherblog.example/a", snippet="",
+                domain="otherblog.example", published_at=None, provider="fake", rank=1,
+            ),
+        ],
+        provider="fake", elapsed_ms=5,
+    )
+    service = WebSearchService(_FakeProvider(responses=[original, fallback]), enabled=True)
+    result = service.maybe_search("Какие правила въезда?")
+    assert official_source_missing(result) is True
+
+
+def test_end_to_end_found_after_fallback_clears_official_source_missing():
+    original = _sample_response("Какие правила въезда?")
+    fallback = _fallback_response_with_n_secondary_and_official_at(0, 15)
+    service = WebSearchService(_FakeProvider(responses=[original, fallback]), enabled=True)
+    result = service.maybe_search("Какие правила въезда?")
+    assert official_source_missing(result) is False
 
 
 # ══════════════════════════════════════════════════════════════════════════

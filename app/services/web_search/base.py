@@ -64,6 +64,7 @@ class WebSearchProvider(ABC):
         site: str | None = None,
         limit: int = 5,
         search_type: str | None = None,
+        allow_exceeding_configured_max: bool = False,
     ) -> SearchResponse | None:
         """Run one search call. ``site`` restricts results to one domain when
         the concrete provider supports it (best-effort - a provider that
@@ -73,4 +74,11 @@ class WebSearchProvider(ABC):
         contract as ``site``, only used today by the official-source
         fallback (app.services.web_search.service._ensure_official_source)
         to search a wider scope when the default one found no official
-        domain. Returns ``None`` on any error - see module docstring."""
+        domain. ``allow_exceeding_configured_max`` lets ``limit`` exceed the
+        provider's own configured result cap (e.g. YandexSearchConfig.
+        max_results) for this ONE call - same best-effort contract, default
+        False preserves every existing caller's behavior unchanged; used
+        today only by the same official-source fallback, which needs to see
+        further down the ranking than the default cap allows in order to
+        find an official domain the default-size search would have missed.
+        Returns ``None`` on any error - see module docstring."""
