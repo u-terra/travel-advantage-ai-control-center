@@ -391,6 +391,105 @@
       "enabled": false,
       "priority": 30,
       "notes": "Кандидат на мониторинг. Зарегистрирован, но выключен. Источник отзывов, пользовательских историй и идей для контента. Отзывы не публикуются дословно и не используются как подтверждённые факты — только как материал для анализа и новых формулировок."
+    },
+    {
+      "id": "trip_com",
+      "name": "Trip.com Travel Guide",
+      "platform": "web",
+      "url": "https://www.trip.com/travel-guide/",
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "enabled": true,
+      "priority": 20,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Глобальный travel-конкурент и источник тем: гиды по направлениям и практические статьи. Контент не копируется — только основа для нового материала с ручной проверкой."
+    },
+    {
+      "id": "aviasales_psgr",
+      "name": "Aviasales ПСЖР",
+      "platform": "web",
+      "url": "https://www.aviasales.ru/psgr/",
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "enabled": true,
+      "priority": 20,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Блог Aviasales (ПСЖР): перелёты, цены, направления. Конкурент и источник тем одновременно."
+    },
+    {
+      "id": "yandex_web_journal",
+      "name": "Яндекс Путешествия — Журнал",
+      "platform": "web",
+      "url": "https://travel.yandex.ru/journal/",
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "enabled": true,
+      "priority": 20,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Редакционный журнал Яндекс Путешествий: гиды и подборки направлений. Конкурент и источник тем. Telegram-канал того же продукта уже отдельно в реестре (telegram_yandex_travel)."
+    },
+    {
+      "id": "tj_travel",
+      "name": "Т—Ж Путешествия",
+      "platform": "web",
+      "url": "https://t-j.ru/flows/travel/",
+      "source_type": "monitored_source",
+      "purpose": "content",
+      "enabled": true,
+      "priority": 30,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Раздел «Путешествия» журнала Т—Ж: практические материалы о поездках. Источник тем для контента, не конкурент."
+    },
+    {
+      "id": "onetwotrip_blog",
+      "name": "OneTwoTrip Blog",
+      "platform": "web",
+      "url": "https://www.onetwotrip.com/ru/blog/",
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "enabled": true,
+      "priority": 40,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Блог OneTwoTrip: направления, советы, акции. Конкурент и источник тем одновременно."
+    },
+    {
+      "id": "tutu_guide",
+      "name": "Туту Путеводитель",
+      "platform": "web",
+      "url": "https://www.tutu.ru/geo/",
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "enabled": true,
+      "priority": 40,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Путеводитель Туту по направлениям. Конкурент и источник тем одновременно."
+    },
+    {
+      "id": "skyscanner_travel_tips",
+      "name": "Skyscanner Travel Tips",
+      "platform": "web",
+      "url": "https://www.skyscanner.net/news/features/travel-tips",
+      "source_type": "monitored_source",
+      "purpose": "travel_content_and_market_signals",
+      "enabled": true,
+      "priority": 40,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Раздел советов путешественникам Skyscanner: международный travel-контент и рыночные сигналы."
+    },
+    {
+      "id": "lonely_planet_advice",
+      "name": "Lonely Planet Travel Advice",
+      "platform": "web",
+      "url": "https://www.lonelyplanet.com/articles/category/travel-advice",
+      "source_type": "monitored_source",
+      "purpose": "content",
+      "enabled": true,
+      "priority": 50,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Раздел советов Lonely Planet: авторитетный англоязычный travel-контент. Только источник тем, не конкурент — требует адаптации/перевода при использовании."
+    },
+    {
+      "id": "traveloka_explore",
+      "name": "Traveloka Explore",
+      "platform": "web",
+      "url": "https://www.traveloka.com/en-en/explore/tips",
+      "source_type": "monitored_source",
+      "purpose": "content",
+      "enabled": true,
+      "priority": 55,
+      "notes": "ORCHESTRAVEL default source pack (этап 1). Раздел советов Traveloka (фокус на Юго-Восточную Азию): источник тем по азиатским направлениям. Не конкурент."
     }
   ]
 }

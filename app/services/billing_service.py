@@ -18,12 +18,13 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from app.domain.billing import PaymentOrder
-from app.domain.subscription import SubscriptionPlan
+from app.domain.subscription import SubscriptionPlan, SubscriptionStatus
 from app.repositories.payment_order_repository import PaymentOrderRepository
+from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.repositories.subscription_repository import SubscriptionRepository
+from app.services.plans import DEFAULT_PLAN_CODE, get_plan
 from app.services.robokassa import (
     CURRENCY_RUB,
-    STANDARD_PLAN,
     RoboKassaConfig,
     build_payment_signature,
     build_payment_url,
@@ -40,6 +41,11 @@ class BillingNotConfigured(RuntimeError):
     Deliberately not a crash at import/startup time (test/dev environments
     routinely run without real payment secrets - see the task notes), only
     raised when someone actually tries to create a payment."""
+
+
+class UnknownPlanError(RuntimeError):
+    """plan_code isn't a key in app.services.plans.PLAN_CATALOG - a client
+    can pick WHICH plan to buy, never invent a new one or its price."""
 
 
 @dataclass(frozen=True)
@@ -63,27 +69,40 @@ class BillingService:
         config: RoboKassaConfig,
         payment_order_repository: PaymentOrderRepository,
         subscription_repository: SubscriptionRepository,
+        source_catalog_repository: SourceCatalogRepository | None = None,
     ) -> None:
         self._config = config
         self._orders = payment_order_repository
         self._subscriptions = subscription_repository
+        # Optional/default-None (ORCHESTRAVEL default source pack, stage 1)
+        # - every existing caller/test that doesn't pass this is completely
+        # unaffected: no source assignment is attempted, same as before
+        # this feature existed. See _extend_subscription().
+        self._source_catalog = source_catalog_repository
 
-    async def create_payment(self, workspace_id: int) -> PaymentCreationResult:
+    async def create_payment(
+        self, workspace_id: int, plan_code: str = DEFAULT_PLAN_CODE,
+    ) -> PaymentCreationResult:
         """workspace_id must already be resolved server-side from the
         caller's authenticated session (see app.web_api.create_payment_endpoint) -
         this method never accepts or trusts anything else about who's
-        paying or how much; amount/plan/description are entirely
-        server-side (RoboKassaConfig), never client input."""
+        paying. plan_code selects WHICH tariff from PLAN_CATALOG - amount
+        and duration_days are looked up there, never accepted as separate
+        parameters, so a caller can pick a plan by name but can never
+        smuggle in its own amount."""
         if not self._config.is_configured:
             raise BillingNotConfigured("RoboKassa не настроен (ENV не заполнены).")
 
-        amount = self._config.standard_price_rub
+        plan = get_plan(plan_code)
+        if plan is None:
+            raise UnknownPlanError(f"Неизвестный тариф: {plan_code!r}")
+
         order = await self._orders.create_order(
-            workspace_id=workspace_id, plan=STANDARD_PLAN,
-            amount=format_amount(amount), currency=CURRENCY_RUB,
-            provider="robokassa",
+            workspace_id=workspace_id, plan=plan.code,
+            amount=format_amount(plan.amount), currency=CURRENCY_RUB,
+            provider="robokassa", duration_days=plan.duration_days,
         )
-        out_sum = format_amount(amount)
+        out_sum = format_amount(plan.amount)
         signature = build_payment_signature(
             merchant_login=self._config.merchant_login, out_sum=out_sum,
             inv_id=order.id, password1=self._config.password1,
@@ -91,7 +110,7 @@ class BillingService:
         payment_url = build_payment_url(
             merchant_login=self._config.merchant_login, out_sum=out_sum,
             inv_id=order.id,
-            description=f"ORCHESTRAVEL, тариф standard (workspace {workspace_id})",
+            description=f"ORCHESTRAVEL, тариф {plan.label} (workspace {workspace_id})",
             signature=signature, is_test=self._config.is_test,
         )
         return PaymentCreationResult(
@@ -166,11 +185,16 @@ class BillingService:
         return ResultOutcome(ok=True, inv_id=inv_id)
 
     async def _extend_subscription(self, order: PaymentOrder) -> None:
+        """Activates exactly the plan/duration the order itself was
+        created with (see create_payment) - never the global
+        RoboKassaConfig.subscription_days/STANDARD default, so a $START$
+        order can never accidentally grant $FULL$-length access or vice
+        versa."""
         existing = await self._subscriptions.get_for_workspace(order.workspace_id)
         now = datetime.now(timezone.utc)
         new_paid_until = compute_extended_paid_until(
             current_paid_until=existing.paid_until if existing is not None else None,
-            subscription_days=self._config.subscription_days,
+            subscription_days=order.duration_days,
             now=now,
         )
         await self._subscriptions.mark_paid(
@@ -178,5 +202,29 @@ class BillingService:
             external_payment_id=str(order.id),
             payment_provider="robokassa",
             paid_until=new_paid_until,
-            plan=SubscriptionPlan.STANDARD,
+            plan=SubscriptionPlan(order.plan),
         )
+
+        # ORCHESTRAVEL default source pack (stage 1) - only for a
+        # workspace's FIRST-EVER successful activation: no subscription row
+        # yet, or it was still 'pending' (self-service signup's
+        # zero-access state before any payment - see
+        # PartnerRepository.provision_self_service_workspace /
+        # SubscriptionRepository.create_pending). A renewal or
+        # reactivation of an existing/legacy workspace - status was
+        # already trial/beta/active/past_due/expired/suspended BEFORE this
+        # payment - never triggers this: those workspaces keep exactly
+        # whatever sources they already have, untouched.
+        is_first_activation = (
+            existing is None or existing.status is SubscriptionStatus.PENDING
+        )
+        if self._source_catalog is not None and is_first_activation:
+            try:
+                await self._source_catalog.assign_default_sources(order.workspace_id)
+            except Exception:
+                # Best-effort: a source-catalog hiccup must never fail an
+                # already-verified, already-recorded payment.
+                log.warning(
+                    "billing: assign_default_sources failed for workspace %s",
+                    order.workspace_id, exc_info=True,
+                )

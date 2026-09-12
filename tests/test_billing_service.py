@@ -49,6 +49,11 @@ def _service(db_path: Path, **config_overrides) -> BillingService:
 # ── create_payment ────────────────────────────────────────────────────────
 
 def test_create_payment_builds_a_signed_url_for_the_configured_price(tmp_path: Path):
+    """Amount/duration come from app.services.plans.PLAN_CATALOG, not from
+    RoboKassaConfig.standard_price_rub/subscription_days anymore (the
+    legacy single-tier config fields are still parsed by app.config for
+    /api/billing/status's display, but no longer feed create_payment) -
+    default plan_code (DEFAULT_PLAN_CODE="standard") prices at 990.00/30d."""
     db_path = tmp_path / "db.sqlite3"
     workspace_id = _workspace(db_path)
     service, orders, _ = _service(db_path)
@@ -57,12 +62,13 @@ def test_create_payment_builds_a_signed_url_for_the_configured_price(tmp_path: P
 
     assert result.order.workspace_id == workspace_id
     assert result.order.plan == "standard"
-    assert result.order.amount == "999.00"
+    assert result.order.amount == "990.00"
+    assert result.order.duration_days == 30
     assert result.is_test is True
 
     query = parse_qs(urlsplit(result.payment_url).query)
     assert query["MerchantLogin"][0] == "orchestravel-test"
-    assert query["OutSum"][0] == "999.00"
+    assert query["OutSum"][0] == "990.00"
     assert query["InvId"][0] == str(result.order.id)
     assert query["IsTest"][0] == "1"
     assert "SignatureValue" in query
@@ -80,13 +86,41 @@ def test_create_payment_raises_when_not_configured(tmp_path: Path):
         run(service.create_payment(workspace_id))
 
 
-def test_create_payment_price_comes_only_from_config_not_a_parameter(tmp_path: Path):
-    """create_payment() takes only workspace_id - there is no amount/plan
-    parameter for a caller to influence at all."""
+def test_create_payment_has_no_amount_parameter(tmp_path: Path):
+    """create_payment() takes workspace_id and (now) which plan to buy -
+    but there is still no amount/price parameter anywhere: a caller can
+    pick WHICH catalog entry, never influence what it costs."""
     import inspect
     assert list(inspect.signature(BillingService.create_payment).parameters) == [
-        "self", "workspace_id",
+        "self", "workspace_id", "plan_code",
     ]
+
+
+def test_create_payment_rejects_an_unknown_plan_code(tmp_path: Path):
+    from app.services.billing_service import UnknownPlanError
+
+    db_path = tmp_path / "db.sqlite3"
+    workspace_id = _workspace(db_path)
+    service, _, _ = _service(db_path)
+
+    with pytest.raises(UnknownPlanError):
+        run(service.create_payment(workspace_id, "made-up-plan"))
+
+
+def test_create_payment_start_and_full_plans_price_from_the_catalog(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    workspace_id = _workspace(db_path)
+    service, _, _ = _service(db_path)
+
+    start_result = run(service.create_payment(workspace_id, "start"))
+    assert start_result.order.plan == "start"
+    assert start_result.order.amount == "490.00"
+    assert start_result.order.duration_days == 14
+
+    full_result = run(service.create_payment(workspace_id, "full"))
+    assert full_result.order.plan == "full"
+    assert full_result.order.amount == "1490.00"
+    assert full_result.order.duration_days == 30
 
 
 # ── process_result_callback: the security-critical path ────────────────
@@ -225,9 +259,13 @@ def test_repeated_callback_does_not_extend_the_subscription_twice(tmp_path: Path
 
 
 def test_renewal_extends_a_future_paid_until_instead_of_resetting_it(tmp_path: Path):
+    """The renewal period comes from the ORDER's own duration_days (frozen
+    at create_order() time from app.services.plans.PLAN_CATALOG) - not
+    from RoboKassaConfig.subscription_days, which no longer feeds this
+    path at all (see BillingService._extend_subscription)."""
     db_path = tmp_path / "db.sqlite3"
     workspace_id = _workspace(db_path)
-    service, orders, subscriptions = _service(db_path, subscription_days=10)
+    service, orders, subscriptions = _service(db_path)
 
     far_future = (datetime.now(timezone.utc) + timedelta(days=20)).isoformat()
     run(subscriptions.mark_paid(
@@ -235,16 +273,19 @@ def test_renewal_extends_a_future_paid_until_instead_of_resetting_it(tmp_path: P
         paid_until=far_future, plan=SubscriptionPlan.STANDARD,
     ))
 
-    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+    order = run(orders.create_order(
+        workspace_id=workspace_id, plan="start", amount="490.00", duration_days=14,
+    ))
     run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
 
     updated = run(subscriptions.get_for_workspace(workspace_id))
     new_paid_until = datetime.fromisoformat(updated.paid_until)
     old_paid_until = datetime.fromisoformat(far_future)
-    # extended BY the new period from the existing future date, not reset
-    # to "now + subscription_days".
+    # extended BY the order's own 14 days from the existing future date,
+    # not reset to "now + 14 days".
     assert new_paid_until > old_paid_until
-    assert (new_paid_until - old_paid_until) == timedelta(days=10)
+    assert (new_paid_until - old_paid_until) == timedelta(days=14)
+    assert updated.plan is SubscriptionPlan.START
 
 
 def test_result_callback_rejected_when_not_configured(tmp_path: Path):
@@ -258,3 +299,167 @@ def test_result_callback_rejected_when_not_configured(tmp_path: Path):
 
     assert outcome.ok is False
     assert outcome.reason == "not_configured"
+
+
+# ── ORCHESTRAVEL default source pack (stage 1) ──────────────────────────────
+#
+# BillingService only ever calls source_catalog_repository.assign_default_
+# sources(workspace_id) - correctness of that method itself (idempotency,
+# isolation, etc.) is covered in tests/test_source_catalog_repository.py.
+# These tests cover WHEN it is (and is not) called - a plain recording fake
+# is enough for that, no real SQLite-backed SourceCatalogRepository needed.
+
+class _RecordingSourceCatalog:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    async def assign_default_sources(self, workspace_id: int, *args, **kwargs) -> None:
+        self.calls.append(workspace_id)
+
+
+def _pending_signup_workspace(db_path: Path, subscriptions: SubscriptionRepository) -> int:
+    """Mirrors the real self-service signup flow (app.repositories.
+    partner_repository.provision_self_service_workspace + immediately
+    SubscriptionRepository.create_pending - see app.web_api's POST
+    /api/auth/signup) rather than _workspace()'s CLI/owner path above,
+    which grandfathers straight in as 'beta' via SubscriptionRepository.
+    init()'s backfill - NOT the "never paid yet" state stage 1 cares about.
+
+    Ordering matters: the workspace is provisioned AFTER `subscriptions`
+    already exists (so its init()'s backfill-for-existing-workspaces has
+    nothing to grab yet), then create_pending() sets the real 'pending'
+    status explicitly - exactly the sequence a live signup goes through.
+    """
+    partners = PartnerRepository(db_path)
+    run(partners.init())
+    provisioned = run(partners.provision_self_service_workspace(
+        "Test Business", base_slug=f"test-biz-{id(db_path)}",
+    ))
+    run(subscriptions.create_pending(provisioned.workspace.id))
+    return provisioned.workspace.id
+
+
+def _service_with_source_catalog(db_path: Path):
+    # partner_workspaces must exist BEFORE subscriptions.init()'s backfill
+    # query runs against it - and must still have zero rows at that point,
+    # so _pending_signup_workspace()'s later provision_self_service_
+    # workspace() is free to set the real 'pending' status itself instead
+    # of being grandfathered as 'beta' by the backfill (see that helper's
+    # docstring for why the ordering matters).
+    run(PartnerRepository(db_path).init())
+    config = RoboKassaConfig(
+        merchant_login="orchestravel-test", password1="pw1-test", password2="pw2-test",
+        is_test=True, standard_price_rub=Decimal("999.00"), subscription_days=30,
+        public_base_url="https://app.orchestravel.ru",
+    )
+    orders = PaymentOrderRepository(db_path)
+    run(orders.init())
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())
+    source_catalog = _RecordingSourceCatalog()
+    service = BillingService(
+        config=config, payment_order_repository=orders,
+        subscription_repository=subscriptions, source_catalog_repository=source_catalog,
+    )
+    return service, orders, subscriptions, source_catalog
+
+
+def test_first_successful_payment_for_a_new_signup_assigns_default_sources(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, subscriptions, source_catalog = _service_with_source_catalog(db_path)
+    workspace_id = _pending_signup_workspace(db_path, subscriptions)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    outcome = run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert outcome.ok is True
+    assert source_catalog.calls == [workspace_id]
+
+
+def test_pending_subscription_never_assigns_sources_before_payment(tmp_path: Path):
+    """Requirement: sources are never assigned before a successful
+    payment - a pending signup alone must not trigger anything."""
+    db_path = tmp_path / "db.sqlite3"
+    _, _, subscriptions, source_catalog = _service_with_source_catalog(db_path)
+    _pending_signup_workspace(db_path, subscriptions)
+
+    assert source_catalog.calls == []
+
+
+def test_rejected_callback_never_assigns_default_sources(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, subscriptions, source_catalog = _service_with_source_catalog(db_path)
+    workspace_id = _pending_signup_workspace(db_path, subscriptions)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    outcome = run(service.process_result_callback(
+        out_sum=order.amount, inv_id=order.id, signature="0" * 32,
+    ))
+
+    assert outcome.ok is False
+    assert source_catalog.calls == []
+
+
+def test_replayed_webhook_assigns_default_sources_only_once(tmp_path: Path):
+    """Requirement: a replayed RoboKassa ResultURL notification for the
+    same already-paid order must not call assign_default_sources twice."""
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, subscriptions, source_catalog = _service_with_source_catalog(db_path)
+    workspace_id = _pending_signup_workspace(db_path, subscriptions)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+    callback = _signed_callback(order, "pw2-test")
+
+    run(service.process_result_callback(**callback))
+    run(service.process_result_callback(**callback))
+
+    assert source_catalog.calls == [workspace_id]
+
+
+def test_grandfathered_beta_workspace_first_payment_does_not_assign_default_sources(tmp_path: Path):
+    """Requirement: existing/legacy workspaces must not be changed by this
+    patch - a CLI/owner-provisioned workspace (grandfathered in as 'beta'
+    by SubscriptionRepository.init()'s backfill, never 'pending') making
+    its first tracked payment here must NOT get the default pack."""
+    db_path = tmp_path / "db.sqlite3"
+    workspace_id = _workspace(db_path)
+    service, orders, subscriptions, source_catalog = _service_with_source_catalog(db_path)
+    assert run(subscriptions.get_for_workspace(workspace_id)).status is SubscriptionStatus.BETA
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert source_catalog.calls == []
+
+
+def test_renewal_of_an_already_active_workspace_does_not_assign_default_sources(tmp_path: Path):
+    """Requirement: a second/renewal payment for a workspace that is
+    already 'active' (not a first-ever activation) must not assign
+    default sources again."""
+    db_path = tmp_path / "db.sqlite3"
+    workspace_id = _workspace(db_path)
+    service, orders, subscriptions, source_catalog = _service_with_source_catalog(db_path)
+    far_future = (datetime.now(timezone.utc) + timedelta(days=20)).isoformat()
+    run(subscriptions.mark_paid(
+        workspace_id, external_payment_id="prior", payment_provider="robokassa",
+        paid_until=far_future, plan=SubscriptionPlan.STANDARD,
+    ))
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert source_catalog.calls == []
+
+
+def test_billing_service_without_source_catalog_repository_still_activates_payment(tmp_path: Path):
+    """Backward compatibility: source_catalog_repository defaults to None -
+    every pre-existing caller/test in this file (which never passes it)
+    keeps working exactly as before this feature existed."""
+    db_path = tmp_path / "db.sqlite3"
+    workspace_id = _workspace(db_path)
+    service, orders, subscriptions = _service(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    outcome = run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert outcome.ok is True
+    assert run(subscriptions.get_for_workspace(workspace_id)).status is SubscriptionStatus.ACTIVE

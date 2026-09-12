@@ -12,6 +12,7 @@ import pytest
 
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_catalog_repository import (
+    DEFAULT_SOURCE_PACK_IDS,
     SourceCatalogMigrationError,
     SourceCatalogRepository,
     SourceRequestAuthorizationError,
@@ -28,6 +29,20 @@ def legacy_file(path: Path, sources: list[dict] | None = None) -> Path:
     payload = {"schema_version": 2, "sources": sources or []}
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def web_source(source_id: str, *, url: str | None = None, enabled: bool = True) -> dict:
+    return {
+        "id": source_id,
+        "name": source_id,
+        "platform": "web",
+        "source_type": "monitored_source",
+        "purpose": "content",
+        "enabled": enabled,
+        "priority": 40,
+        "notes": "",
+        "url": url or f"https://example.com/{source_id}",
+    }
 
 
 def legacy_source(source_id="legacy", *, enabled=True, platform="telegram"):
@@ -577,3 +592,182 @@ def test_concurrent_exporters_are_serialized_by_sqlite(
     assert maximum_active == 1
     payload = json.loads(projection.read_text(encoding="utf-8"))
     assert any(row.get("url") == "https://example.com/current" for row in payload["sources"])
+
+
+# ── assign_default_sources: ORCHESTRAVEL default source pack (stage 1) ─────
+#
+# A small, self-contained 3-source fixture pack ("pack_a/b/c"), independent
+# of the real 9-source DEFAULT_SOURCE_PACK_IDS/config/sources.json content -
+# these tests exercise the MECHANISM (idempotency, isolation, per-workspace
+# toggling), not the specific production source list, which is instead
+# covered by the two dedicated tests at the end of this section.
+
+PACK_IDS = ("pack_a", "pack_b", "pack_c")
+
+
+def pack_seed(tmp_path: Path) -> Path:
+    return legacy_file(tmp_path / "pack_seed.json", [web_source(pid) for pid in PACK_IDS])
+
+
+def test_assign_default_sources_creates_catalog_rows_and_subscriptions(tmp_path: Path) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner")
+    seed = pack_seed(tmp_path)
+
+    run(repo.assign_default_sources(new_id, PACK_IDS, seed_path=seed))
+
+    sources = run(repo.list_for_workspace(new_id))
+    assert {s.id for s in sources} == set(PACK_IDS)
+    assert all(s.enabled for s in sources)
+    assert all(s.platform == "web" for s in sources)
+    assert all(s.usage_role == "monitoring" for s in sources)
+    # The pre-existing (legacy owner) workspace never gets these - default
+    # pack assignment is scoped to exactly the workspace it's called for.
+    assert {s.id for s in run(repo.list_for_workspace(owner))}.isdisjoint(PACK_IDS)
+
+
+def test_assign_default_sources_is_idempotent_on_repeat_call(tmp_path: Path) -> None:
+    """Requirement: a replayed payment webhook (or any repeat call) must
+    not create duplicate subscription rows."""
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner-2")
+    seed = pack_seed(tmp_path)
+
+    run(repo.assign_default_sources(new_id, PACK_IDS, seed_path=seed))
+    run(repo.assign_default_sources(new_id, PACK_IDS, seed_path=seed))
+
+    with sqlite3.connect(db) as conn:
+        subscription_count = conn.execute(
+            "SELECT COUNT(*) FROM workspace_source_subscriptions WHERE workspace_id = ?",
+            (new_id,),
+        ).fetchone()[0]
+        catalog_count = conn.execute(
+            "SELECT COUNT(*) FROM source_catalog WHERE id IN (?, ?, ?)", PACK_IDS,
+        ).fetchone()[0]
+    assert subscription_count == len(PACK_IDS)
+    assert catalog_count == len(PACK_IDS)
+
+
+def test_assign_default_sources_does_not_reset_a_workspace_own_customization(tmp_path: Path) -> None:
+    """A second call (e.g. a replayed payment webhook, or being called
+    again for a workspace that already has some of these ids from
+    elsewhere) must never override settings the workspace already changed
+    for itself."""
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner-3")
+    seed = pack_seed(tmp_path)
+    run(repo.assign_default_sources(new_id, PACK_IDS, seed_path=seed))
+
+    run(repo.set_enabled(new_id, "pack_a", False))
+    run(repo.set_usage_role(new_id, "pack_b", "competitor"))
+
+    run(repo.assign_default_sources(new_id, PACK_IDS, seed_path=seed))
+
+    sources = {s.id: s for s in run(repo.list_for_workspace(new_id))}
+    assert sources["pack_a"].enabled is False
+    assert sources["pack_b"].usage_role == "competitor"
+    assert sources["pack_c"].enabled is True
+
+
+def test_assign_default_sources_toggle_still_works_per_workspace(tmp_path: Path) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner-4")
+    seed = pack_seed(tmp_path)
+    run(repo.assign_default_sources(new_id, PACK_IDS, seed_path=seed))
+
+    updated = run(repo.toggle(new_id, "pack_a"))
+
+    assert updated.enabled is False
+    sources = {s.id: s for s in run(repo.list_for_workspace(new_id))}
+    assert sources["pack_a"].enabled is False
+    assert sources["pack_b"].enabled is True
+
+
+def test_assign_default_sources_keeps_private_sources_workspace_isolated(tmp_path: Path) -> None:
+    """A private source another workspace adds for itself must never become
+    visible to the workspace that received the default pack."""
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner-5")
+    seed = pack_seed(tmp_path)
+    run(repo.assign_default_sources(new_id, PACK_IDS, seed_path=seed))
+
+    private_result = run(repo.add_source(owner, "https://example.com/owner-private"))
+
+    new_workspace_source_ids = {s.id for s in run(repo.list_for_workspace(new_id))}
+    assert private_result.source.id not in new_workspace_source_ids
+    owner_source_ids = {s.id for s in run(repo.list_for_workspace(owner))}
+    assert owner_source_ids.isdisjoint(PACK_IDS)
+
+
+def test_assign_default_sources_skips_unknown_id_without_raising(tmp_path: Path) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner-6")
+    seed = pack_seed(tmp_path)
+
+    run(repo.assign_default_sources(new_id, (*PACK_IDS, "does_not_exist"), seed_path=seed))
+
+    sources = {s.id for s in run(repo.list_for_workspace(new_id))}
+    assert sources == set(PACK_IDS)
+
+
+def test_assign_default_sources_empty_pack_is_a_no_op(tmp_path: Path) -> None:
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner-7")
+
+    run(repo.assign_default_sources(new_id, ()))
+
+    assert run(repo.list_for_workspace(new_id)) == ()
+
+
+def test_assign_default_sources_supports_a_future_disabled_optional_pack(tmp_path: Path) -> None:
+    """Architectural hook for a later, separate 'рынок / турагенты и
+    эксперты' pack (purpose=market_experts) - not added in this stage, but
+    the enabled= parameter already lets a future call opt a second pack in
+    as disabled by default, with no further change to this method."""
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner-8")
+    seed = pack_seed(tmp_path)
+
+    run(repo.assign_default_sources(new_id, PACK_IDS, seed_path=seed, enabled=False))
+
+    sources = run(repo.list_for_workspace(new_id))
+    assert {s.id for s in sources} == set(PACK_IDS)
+    assert all(not s.enabled for s in sources)
+
+
+def test_default_source_pack_ids_are_exactly_the_nine_stage_one_sources() -> None:
+    assert set(DEFAULT_SOURCE_PACK_IDS) == {
+        "trip_com", "aviasales_psgr", "yandex_web_journal", "tj_travel",
+        "onetwotrip_blog", "tutu_guide", "skyscanner_travel_tips",
+        "lonely_planet_advice", "traveloka_explore",
+    }
+    assert len(DEFAULT_SOURCE_PACK_IDS) == 9
+
+
+def test_default_source_pack_ids_resolve_in_the_real_seed_registry() -> None:
+    """Regression guard tying the code constant to config/sources.json - a
+    future edit to either one going out of sync would otherwise only show
+    up as a silent 'unknown source id skipped' warning in production."""
+    from app.services.source_registry import SEED_REGISTRY_PATH, load_registry
+
+    registry = load_registry(SEED_REGISTRY_PATH, use_cache=False)
+    for source_id in DEFAULT_SOURCE_PACK_IDS:
+        source = registry.get(source_id)
+        assert source is not None, f"missing from config/sources.json: {source_id}"
+        assert source.platform == "web"
+        assert source.enabled is True
+        assert source.url and source.url.startswith("https://")
+
+
+def test_assign_default_sources_with_real_pack_assigns_all_nine(tmp_path: Path) -> None:
+    """End-to-end with the REAL default pack (still against a throwaway
+    DB/projection - only config/sources.json itself is the real, shared
+    file) - the actual scenario a new paid workspace hits."""
+    db, _, _, owner, repo = setup(tmp_path)
+    new_id = new_workspace(db, "paid-partner-9")
+
+    run(repo.assign_default_sources(new_id))  # default source_ids, default seed_path
+
+    sources = run(repo.list_for_workspace(new_id))
+    assert {s.id for s in sources} == set(DEFAULT_SOURCE_PACK_IDS)
+    assert all(s.enabled for s in sources)

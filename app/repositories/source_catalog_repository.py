@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Iterable, Literal
 
 import aiosqlite
 
 from app.domain.sources import WorkspaceSource
 from app.services.source_catalog_export import export_radar_projection
-from app.services.source_registry import SourceRegistry, load_registry
+from app.services.source_registry import SEED_REGISTRY_PATH, SourceRegistry, load_registry
 from app.services.source_registry_store import UnknownSourceError, resolve_address
+
+log = logging.getLogger(__name__)
 
 
 VISIBILITIES = frozenset({"platform", "private"})
@@ -20,6 +23,26 @@ SOURCE_STATUSES = frozenset({"active", "inactive"})
 USAGE_ROLES = frozenset({"monitoring", "competitor"})
 SOURCE_REQUEST_STATUSES = frozenset({"pending", "approved", "rejected"})
 _MIGRATION_KEY = "source_catalog_v1"
+
+# ORCHESTRAVEL stage 1: default source pack for a newly-paid workspace (see
+# SourceCatalogRepository.assign_default_sources below). All nine ship
+# ENABLED by default. A future, separate "рынок / турагенты и эксперты"
+# pack (purpose="market_experts") is deliberately NOT added here - the
+# task's own scope for this stage - but assign_default_sources()'s
+# `enabled` parameter already supports calling it again later with a
+# different id list and enabled=False for that pack, without any further
+# change to this method.
+DEFAULT_SOURCE_PACK_IDS: tuple[str, ...] = (
+    "trip_com",
+    "aviasales_psgr",
+    "yandex_web_journal",
+    "tj_travel",
+    "onetwotrip_blog",
+    "tutu_guide",
+    "skyscanner_travel_tips",
+    "lonely_planet_advice",
+    "traveloka_explore",
+)
 
 
 class SourceCatalogMigrationError(RuntimeError):
@@ -298,6 +321,85 @@ class SourceCatalogRepository:
         if result is None:
             raise RuntimeError("Не удалось добавить источник workspace")
         return AddSourceResult(source=result, outcome=outcome)
+
+    async def assign_default_sources(
+        self,
+        workspace_id: int,
+        source_ids: Iterable[str] = DEFAULT_SOURCE_PACK_IDS,
+        *,
+        enabled: bool = True,
+        seed_path: Path | None = None,
+    ) -> None:
+        """Idempotently subscribes ``workspace_id`` to a platform source
+        pack (defaults to the 9-source ORCHESTRAVEL default pack) - meant
+        to run exactly once, right after a workspace's first successful
+        payment (see app.services.billing_service.BillingService.
+        _extend_subscription), never for signup/pending or for an existing/
+        legacy workspace's renewal.
+
+        Reads each id's definition from the seed registry (``seed_path``,
+        defaulting to the repo's own config/sources.json) rather than
+        requiring the caller to pass full source metadata - this also
+        covers the case where the one-time legacy migration in ``init()``
+        already ran (so a source added to the seed file AFTER that never
+        makes it into ``source_catalog`` on its own): the ``source_catalog``
+        row is created here, from the seed, if it does not exist yet.
+
+        Both inserts are ``INSERT OR IGNORE``: a source_catalog row that
+        already exists is left exactly as it is (never overwritten from the
+        seed), and a workspace that already has ANY subscription state for
+        one of these ids - including one it disabled itself - keeps that
+        state. This is what makes the method safe to call more than once
+        (a replayed payment webhook) or a second time for a workspace that
+        already has some of these ids from elsewhere.
+
+        An id with no matching seed entry is skipped with a warning, never
+        raised - a seed/config mismatch must not fail an already-verified
+        payment.
+        """
+        ids = tuple(dict.fromkeys(source_ids))
+        if not ids:
+            return
+        registry = load_registry(seed_path or SEED_REGISTRY_PATH)
+        now = _now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                for source_id in ids:
+                    source = registry.get(source_id)
+                    if source is None:
+                        log.warning(
+                            "assign_default_sources: unknown source id '%s' skipped",
+                            source_id,
+                        )
+                        continue
+                    await db.execute(
+                        "INSERT OR IGNORE INTO source_catalog "
+                        "(id, identity_key, name, platform, url, username, source_type, "
+                        "purpose, priority, notes, collector_json, visibility, "
+                        "owner_workspace_id, status, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'platform', NULL, "
+                        "'active', ?, ?)",
+                        (
+                            source.id, source.identity_key, source.name, source.platform,
+                            source.url, source.username, source.source_type, source.purpose,
+                            source.priority, source.notes,
+                            json.dumps(dict(source.collector), ensure_ascii=False, sort_keys=True),
+                            now, now,
+                        ),
+                    )
+                    await db.execute(
+                        "INSERT OR IGNORE INTO workspace_source_subscriptions "
+                        "(workspace_id, source_id, enabled, usage_role, created_at, updated_at) "
+                        "VALUES (?, ?, ?, 'monitoring', ?, ?)",
+                        (workspace_id, source_id, int(enabled), now, now),
+                    )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        await self.export_projection()
 
     async def submit_source_request(
         self, workspace_id: int, telegram_user_id: int, address: str

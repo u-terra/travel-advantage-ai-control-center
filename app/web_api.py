@@ -52,6 +52,10 @@ from app.repositories.partner_repository import (
     slugify,
 )
 from app.repositories.payment_order_repository import PaymentOrderRepository
+from app.repositories.source_catalog_repository import (
+    SourceCatalogMigrationError,
+    SourceCatalogRepository,
+)
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.telegram_bind_token_repository import TelegramBindTokenRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
@@ -113,6 +117,7 @@ from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
 from app.services.rate_limit import signup_rate_limiter
 from app.services.robokassa import RoboKassaConfig
+from app.services.source_registry import SEED_REGISTRY_PATH
 from app.services.telemetry import record_event
 from app.services.usage_recorder import record_llm_call
 from app.services.web_auth_passwords import (
@@ -190,6 +195,14 @@ payment_order_repository = PaymentOrderRepository(settings.journal_db_path)
 # app.handlers.start's /start <token> handling) - not RoboKassa-specific,
 # just declared alongside it since both are billing/onboarding adjacent.
 telegram_bind_token_repository = TelegramBindTokenRepository(settings.journal_db_path)
+# Same shared-DB instance app.main.py's Telegram bot process already owns
+# (see its startup wiring) - declared here too, same convention as
+# workspace_signal_repository below, so the Web process can call
+# assign_default_sources() from the RoboKassa success flow without needing
+# the bot process to be the one handling that request.
+source_catalog_repository = SourceCatalogRepository(
+    settings.journal_db_path, settings.sources_registry_path
+)
 robokassa_config = RoboKassaConfig(
     merchant_login=settings.robokassa_merchant_login,
     password1=settings.robokassa_password1,
@@ -203,6 +216,7 @@ billing_service = BillingService(
     config=robokassa_config,
     payment_order_repository=payment_order_repository,
     subscription_repository=subscription_repository,
+    source_catalog_repository=source_catalog_repository,
 )
 
 # Beta Control Center (see app/admin_api.py) - telemetry/feedback/audit-log
@@ -1054,6 +1068,33 @@ async def startup() -> None:
     # journal DB - this just ensures the schema exists, it never re-runs
     # that backfill from the web process.
     await workspace_signal_repository.init(None)
+    # Same reasoning as workspace_signal_repository above - the one-time
+    # legacy Source Registry migration is already owned by app/main.py's
+    # bot process against the same shared journal DB; this call only
+    # ensures the source_catalog/workspace_source_subscriptions schema
+    # exists so assign_default_sources() (RoboKassa success flow) has
+    # tables to write to even if this Web process starts independently.
+    # Unlike workspace_signal_repository.init(None), SourceCatalogRepository
+    # .init() raises SourceCatalogMigrationError when the one-time
+    # migration hasn't happened yet AND no owner workspace exists at all
+    # (a fresh DB the bot process hasn't started against yet, e.g. tests or
+    # a Web-only dev environment) - caught here, not propagated, so this
+    # never blocks Web startup; the bot process (or a later Web restart
+    # once an owner exists) completes the migration whenever it runs.
+    try:
+        await source_catalog_repository.init(
+            None,
+            legacy_path=(
+                settings.sources_registry_path
+                if settings.sources_registry_path.exists()
+                else SEED_REGISTRY_PATH
+            ),
+        )
+    except SourceCatalogMigrationError:
+        log.warning(
+            "web_api: source catalog schema/migration not ready at startup "
+            "(no owner workspace yet) - will retry on next startup",
+        )
 
     try:
         await _reap_orphan_attachments()
