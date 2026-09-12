@@ -118,6 +118,77 @@ def test_exact_indonesia_query_shows_sources_to_user():
     assert _SOURCE_URL in text
 
 
+# ── Official-source priority + geo-scope guard regression ───────────────────
+#
+# The real prod bug: the answer generalized Bali's regional tourist fee
+# (150,000 IDR) into a rule for all of Indonesia, and leaned on secondary
+# sources (aggregators/media/insurers/agencies) instead of the government
+# immigration site. These tests guard both fixes end to end, through the
+# same on_free_text() path as the tests above - not just unit tests of
+# app.services.web_search.service in isolation.
+
+_SECONDARY_BALI_URL = "https://travelblog.example/bali-tourist-fee"
+_OFFICIAL_URL = "https://imigrasi.go.id/entry-rules"
+
+
+def _bali_and_official_response() -> SearchResponse:
+    """Secondary/Bali-only source ranked first by the provider (as Yandex's
+    own SEO-driven ranking can genuinely do) - official government source
+    ranked last. This is the exact ordering that produced the prod bug."""
+    return SearchResponse(
+        query=_QUERY,
+        results=[
+            SearchResult(
+                title="Туристический сбор на Бали для иностранцев",
+                url=_SECONDARY_BALI_URL,
+                snippet="На Бали введён туристический сбор 150 000 IDR.",
+                domain="travelblog.example", published_at=None, provider="fake", rank=1,
+            ),
+            SearchResult(
+                title="Immigration of Republic of Indonesia - Entry Rules",
+                url=_OFFICIAL_URL,
+                snippet="Официальные правила въезда в Индонезию.",
+                domain="imigrasi.go.id", published_at=None, provider="fake", rank=2,
+            ),
+        ],
+        provider="fake",
+        elapsed_ms=5,
+    )
+
+
+# 5. Official source is promoted ahead of the Bali-only secondary source in
+# the text actually sent to the LLM.
+def test_indonesia_query_promotes_official_source_in_generation_context():
+    fake_provider = _FakeProvider(_bali_and_official_response())
+    service = WebSearchService(fake_provider, enabled=True)
+    _, provider = run_free_text(_QUERY, web_search_service=service)
+    source_text = provider.generate_draft.call_args.kwargs["source_text"]
+    assert source_text.index(_OFFICIAL_URL) < source_text.index(_SECONDARY_BALI_URL)
+
+
+# 6. The geo-scope guard text (Bali != Indonesia, currency, no-official-
+# confirmation, official-wins-on-conflict) reaches the generation context.
+def test_indonesia_query_context_includes_geo_scope_guard():
+    fake_provider = _FakeProvider(_bali_and_official_response())
+    service = WebSearchService(fake_provider, enabled=True)
+    _, provider = run_free_text(_QUERY, web_search_service=service)
+    source_text = provider.generate_draft.call_args.kwargs["source_text"]
+    lowered = source_text.lower()
+    assert "бали" in lowered and "индонез" in lowered
+    assert "пункт въезда" in lowered
+    assert "приоритет всегда у официального" in lowered
+
+
+# 7. The user-visible Telegram sources list also shows the official source
+# first - the same reordering the LLM context got, not a second mechanism.
+def test_indonesia_query_shows_official_source_first_to_user():
+    fake_provider = _FakeProvider(_bali_and_official_response())
+    service = WebSearchService(fake_provider, enabled=True)
+    message, _ = run_free_text(_QUERY, web_search_service=service)
+    text = message.answers[-1][0]
+    assert text.index(_OFFICIAL_URL) < text.index(_SECONDARY_BALI_URL)
+
+
 # 5. A content-creation request naming a nearby destination must not search -
 # no freshness/rules/market/explicit-intent marker means no search, even
 # though it is routed confidently (Content Factory, not uncertain).

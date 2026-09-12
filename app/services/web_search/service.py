@@ -13,7 +13,7 @@ without mocking an LLM.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 from app.services.web_search.base import SearchResponse, WebSearchProvider
@@ -29,6 +29,24 @@ _CHANGEABLE_RULES_MARKERS: tuple[str, ...] = (
     "въезд", "виза", "визы", "визовый", "визового", "безвиз",
     "ограничен", "перелёт", "перелет", "рейс", "рейсы", "цена", "цены",
     "тариф", "тарифы", "расписание",
+    # Official-source-priority / geo-scope-guard task: high-risk categories
+    # the user named that were not previously covered (tourist fees, customs,
+    # passport/medical entry requirements). Deliberately phrase-level
+    # (multi-word) or a narrow single-word stem per item, NOT a bare "сбор"/
+    # "налог"/"паспорт" - those collide with unrelated text ("сбор
+    # документов", general tax talk, "паспортный стол"). "таможен"/"декларац"
+    # stay single-stem because in Russian they are near-exclusively customs/
+    # declaration vocabulary already, so a stem is not "too broad" here.
+    "туристический сбор", "туристического сбора", "туристическим сбором",
+    "туристическом сборе", "курортный сбор", "налог для туристов",
+    "туристический налог",
+    # "таможня" (noun: на таможне, через таможню) and "таможенный" (adjective:
+    # таможенные правила) are two different stems in Russian morphology
+    # (irregular "-ен-" insertion for the adjective) - both kept, since both
+    # are unambiguous customs vocabulary with no unrelated meaning.
+    "таможн", "таможен", "декларац",
+    "паспортные требования", "требования к паспорту",
+    "медицинские требования",
 )
 
 # ── C. Market / named companies ──────────────────────────────────────────
@@ -54,6 +72,68 @@ _URL_RE = re.compile(
 )
 
 
+# ── Official-source priority ─────────────────────────────────────────────
+#
+# Domain-suffix/substring check, not a geography ontology: government sites
+# follow a small number of real, well-known naming conventions across
+# countries (.gov, .gov.<cc>, .go.<cc>, .gob.<cc>, .gouv.<cc>) plus a few
+# named exceptions (Russian MFA/consular sites, embassy/consulate/imigrasi
+# subdomains). New countries need no code change as long as they follow one
+# of these conventions; one that doesn't simply stays "other" - reranking
+# degrades to a no-op for it (see the "targeted fallback" limitation noted
+# in the task write-up), it never mislabels or drops a result.
+_OFFICIAL_DOMAIN_SUFFIX_PATTERN = re.compile(
+    r"\.(gov|go|gob|gouv)\.[a-z]{2,3}$", re.IGNORECASE
+)
+_OFFICIAL_DOMAIN_EXACT_SUFFIXES: tuple[str, ...] = (".gov", ".mid.ru", ".kdmid.ru")
+_OFFICIAL_DOMAIN_SUBSTRING_MARKERS: tuple[str, ...] = (
+    "embassy", "consulate", "imigrasi",
+)
+
+
+def _is_official_domain(domain: str) -> bool:
+    """True for a government/embassy/consulate/immigration-authority domain.
+
+    Best-effort, deliberately conservative: only well-known conventions and
+    a short substring list, so a false negative (a real official site not
+    recognized) just falls back to today's unranked order for that one
+    result - never a false claim of authority for a random domain.
+    """
+    lowered = (domain or "").strip().lower()
+    if not lowered:
+        return False
+    for suffix in _OFFICIAL_DOMAIN_EXACT_SUFFIXES:
+        # endswith() alone misses the bare domain equal to the suffix
+        # itself (e.g. domain == "mid.ru", suffix == ".mid.ru").
+        if lowered == suffix.lstrip(".") or lowered.endswith(suffix):
+            return True
+    if _OFFICIAL_DOMAIN_SUFFIX_PATTERN.search(lowered):
+        return True
+    return any(marker in lowered for marker in _OFFICIAL_DOMAIN_SUBSTRING_MARKERS)
+
+
+def _rank_by_authority(response: SearchResponse) -> SearchResponse:
+    """Stable-sorts results so official domains come first - reorder only,
+    nothing is dropped or added. Stable sort (Python's sort() guarantee)
+    keeps relative order within each tier, so results the provider already
+    ranked against each other stay in that order among themselves.
+
+    This is stage one of official-source priority: it can only reorder
+    what the provider already returned in this one search call. If Yandex
+    never returned an official domain within ``max_results``, there is
+    nothing here to promote - see the task write-up's "targeted fallback"
+    follow-up for closing that gap.
+    """
+    if response is None or not response.results:
+        return response
+    ranked = sorted(
+        response.results, key=lambda result: 0 if _is_official_domain(result.domain) else 1,
+    )
+    if ranked == list(response.results):
+        return response
+    return replace(response, results=ranked)
+
+
 @dataclass(frozen=True)
 class SearchDecision:
     """Result of decide_web_search() - a plain value, kept separate from
@@ -62,6 +142,10 @@ class SearchDecision:
     should_search: bool
     site: str | None
     matched_category: str | None
+
+
+def _matches_changeable_rules(lowered: str) -> bool:
+    return any(marker in lowered for marker in _CHANGEABLE_RULES_MARKERS)
 
 
 def _matches_market(lowered: str) -> bool:
@@ -106,7 +190,7 @@ def decide_web_search(query: str) -> SearchDecision:
         return SearchDecision(True, detected_site, "site")
     if any(marker in lowered for marker in _FRESHNESS_MARKERS):
         return SearchDecision(True, None, "freshness")
-    if any(marker in lowered for marker in _CHANGEABLE_RULES_MARKERS):
+    if _matches_changeable_rules(lowered):
         return SearchDecision(True, None, "changeable_rules")
     if _matches_market(lowered):
         return SearchDecision(True, None, "market")
@@ -134,7 +218,27 @@ class WebSearchService:
         decision = decide_web_search(query)
         if not decision.should_search:
             return None
-        return self._provider.search(query, site=site or decision.site)
+        response = self._provider.search(query, site=site or decision.site)
+        # Official-source priority is gated to queries that actually match
+        # _CHANGEABLE_RULES_MARKERS (visas, entry rules, borders, fees,
+        # customs, passport/medical entry requirements) - checked directly
+        # here rather than via decision.matched_category, because
+        # matched_category only records whichever category's check ran
+        # FIRST in decide_web_search's if/elif chain (see its docstring:
+        # "Order matters only for matched_category - diagnostic/testing
+        # value"). The real prod query ("Какие СЕЙЧАС изменения правил
+        # ВЪЕЗДА...") matches both freshness ("сейчас") and changeable_rules
+        # ("въезд") - freshness wins the diagnostic label since it is
+        # checked first, but the query is still exactly the high-risk class
+        # this task is about, so gating on the label alone would have
+        # silently skipped reranking for the one query this fix exists for.
+        # A market/company/freshness-only query has no "official" domain
+        # concept, so reordering it would just be arbitrary noise with no
+        # safety benefit - hence still gated, just on the marker match
+        # itself rather than the label.
+        if response is not None and _matches_changeable_rules((query or "").lower()):
+            response = _rank_by_authority(response)
+        return response
 
 
 # ── LLM-ready context formatting ────────────────────────────────────────────
@@ -148,7 +252,27 @@ _RULES = (
     "ответа, если это уместно (например: «официальная форма: https://…»). "
     "Но НЕ добавляй в конце ответа отдельный раздел или список «Источники», "
     "«Sources», «Ссылки» и т.п. - источники уже показываются пользователю "
-    "отдельным блоком интерфейса."
+    "отдельным блоком интерфейса. "
+    # Geographic-scope guard + official-source priority (real prod bug:
+    # Indonesia-wide answer built from a Bali-only tourist-fee source).
+    # Universal instruction, not a geography lookup table - the model is
+    # told to check level-of-government match itself, using whatever scope
+    # the source text already states.
+    "Географический охват: если источник описывает правило для региона, "
+    "провинции, города или конкретного пункта пересечения границы (например, "
+    "Бали), нельзя формулировать это правило как действующее для всей страны "
+    "(например, Индонезии) без отдельного источника, подтверждающего именно "
+    "общегосударственный уровень. Всегда явно указывай географический "
+    "уровень действия правила: страна / регион / город / пункт въезда. "
+    "Денежные обязательные сборы указывай в валюте официального источника "
+    "как есть, без фиксированного пересчёта в USD/EUR по курсу - курс "
+    "меняется, а один зафиксированный в ответе эквивалент вводит в "
+    "заблуждение. Если среди источников нет государственного/официального "
+    "сайта (посольство, консульство, миграционная или таможенная служба), "
+    "прямо скажи, что официальное подтверждение не найдено - не выдавай "
+    "вторичный источник (агрегатор, СМИ, турагентство, страховую компанию) "
+    "за установленный государством факт. При противоречии официального и "
+    "вторичного источника приоритет всегда у официального."
 )
 
 
