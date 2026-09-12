@@ -56,8 +56,9 @@ def _smart_snippets_json(docs: list[dict]) -> str:
 
 
 class _FakeResponse:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, *, status: int = 200) -> None:
         self._body = body
+        self.status = status  # exercised by the parse-failure diagnostics below
 
     def read(self) -> bytes:
         return self._body
@@ -69,9 +70,9 @@ class _FakeResponse:
         return False
 
 
-def _raw_data_response(decoded_text: str) -> _FakeResponse:
+def _raw_data_response(decoded_text: str, *, status: int = 200) -> _FakeResponse:
     payload = {"rawData": base64.b64encode(decoded_text.encode("utf-8")).decode("ascii")}
-    return _FakeResponse(json.dumps(payload).encode("utf-8"))
+    return _FakeResponse(json.dumps(payload).encode("utf-8"), status=status)
 
 
 def _fake_open_returning(decoded_text: str):
@@ -411,3 +412,73 @@ def test_empty_query_returns_none_without_any_network_call(monkeypatch):
 
     monkeypatch.setattr(yp, "_open", fake_open)
     assert YandexSearchProvider(_config()).search("   ") is None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY PRODUCTION DIAGNOSTIC LOGGING - Smart Snippets parse failure.
+#
+# Delete alongside app/services/web_search/yandex_provider.py's matching
+# banner (_log_parse_failure_diagnostics and the two _DIAG_PARSE_* constants)
+# once the live investigation into the SEARCH_TYPE_COM parse failure is done.
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_parse_failure_logs_http_status_and_search_type(monkeypatch, caplog):
+    monkeypatch.setattr(yp, "_open", _fake_open_returning('{"no_docs_key": []}'))
+    with caplog.at_level("WARNING"):
+        result = YandexSearchProvider(_config()).search("query", search_type="SEARCH_TYPE_COM")
+    assert result is None
+    assert "web_search_parse_diag: search_type='SEARCH_TYPE_COM' http_status=200" in caplog.text
+
+
+def test_parse_failure_logs_top_level_keys_and_docs_shape_for_wrong_shape_dict(monkeypatch, caplog):
+    monkeypatch.setattr(
+        yp, "_open", _fake_open_returning(json.dumps({"error": "quota_exceeded", "code": 7})),
+    )
+    with caplog.at_level("WARNING"):
+        YandexSearchProvider(_config()).search("query")
+    text = caplog.text
+    assert "top_level_type=dict" in text
+    assert "'code'" in text and "'error'" in text
+    assert "docs_key_present=False" in text
+
+
+def test_parse_failure_logs_first_doc_keys_when_docs_is_wrong_type(monkeypatch, caplog):
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(json.dumps({"docs": "not-a-list"})))
+    with caplog.at_level("WARNING"):
+        YandexSearchProvider(_config()).search("query")
+    assert "docs_key_present=True docs_type=str" in caplog.text
+
+
+def test_parse_failure_logs_not_valid_json_and_a_capped_snippet(monkeypatch, caplog):
+    # Hypothesis under investigation: SEARCH_TYPE_COM might not honor the
+    # Smart Snippets flag and fall back to the plain (XML) Web Search shape.
+    xml_like_body = "<html><body>not json at all" + ("x" * 1000) + "</body></html>"
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(xml_like_body))
+    with caplog.at_level("WARNING"):
+        result = YandexSearchProvider(_config()).search("query")
+    assert result is None
+    text = caplog.text
+    assert "decoded_text_is_valid_json=False" in text
+    assert f"length={len(xml_like_body)}" in text
+    # Body must be truncated, not dumped in full.
+    assert len(xml_like_body) > yp._DIAG_BODY_SNIPPET_MAX_CHARS
+    assert xml_like_body[:yp._DIAG_BODY_SNIPPET_MAX_CHARS] in text
+    assert "x" * 1000 not in text
+
+
+def test_parse_failure_diagnostics_never_log_api_key(monkeypatch, caplog):
+    monkeypatch.setattr(yp, "_open", _fake_open_returning('{"no_docs_key": []}'))
+    with caplog.at_level("WARNING"):
+        YandexSearchProvider(_config()).search("query")
+    assert FAKE_API_KEY not in caplog.text
+    assert "Authorization" not in caplog.text
+
+
+def test_successful_parse_logs_no_diagnostics(monkeypatch, caplog):
+    monkeypatch.setattr(
+        yp, "_open", _fake_open_returning(_smart_snippets_json([_doc(url="https://example.com/a")])),
+    )
+    with caplog.at_level("WARNING"):
+        result = YandexSearchProvider(_config()).search("query")
+    assert result is not None
+    assert "web_search_parse_diag" not in caplog.text

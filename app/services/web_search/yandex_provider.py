@@ -178,7 +178,7 @@ class YandexSearchProvider(WebSearchProvider):
 
         started = monotonic()
         try:
-            decoded_text = self._call(payload)
+            decoded_text, http_status = self._call(payload)
         except _YandexSearchCallError as exc:
             # Fixed, secret-free reason only - see _YandexSearchCallError.
             log.warning("web_search: yandex request failed (%s)", exc.safe_reason)
@@ -193,6 +193,12 @@ class YandexSearchProvider(WebSearchProvider):
             # Covers both malformed JSON (json.JSONDecodeError, a ValueError
             # subclass) and an unexpected-shape payload (_SmartSnippetShapeError).
             log.warning("web_search: yandex response could not be parsed (bad smart snippets json)")
+            # DIAG: TEMPORARY parse-failure-only diagnostics - see banner
+            # above _log_parse_failure_diagnostics. Never runs on the
+            # success path, so this adds zero log volume when parsing works.
+            _log_parse_failure_diagnostics(
+                decoded_text, http_status=http_status, search_type=search_type or _SEARCH_TYPE,
+            )
             return None
 
         return SearchResponse(
@@ -202,7 +208,12 @@ class YandexSearchProvider(WebSearchProvider):
             elapsed_ms=elapsed_ms,
         )
 
-    def _call(self, payload: dict[str, Any]) -> str:
+    def _call(self, payload: dict[str, Any]) -> tuple[str, int | None]:
+        """Returns ``(decoded_text, http_status)``. ``http_status`` is
+        best-effort (``None`` if the response object exposes no ``.status``,
+        e.g. in older test doubles) and is ONLY ever used for the temporary
+        parse-failure diagnostics in ``search()`` - never for control flow,
+        and never derived from request headers, so it carries no secret."""
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             _ENDPOINT,
@@ -216,6 +227,8 @@ class YandexSearchProvider(WebSearchProvider):
         )
         try:
             with _open(request, timeout=self.config.timeout_seconds) as response:
+                # DIAG: best-effort HTTP status, diagnostic-only - see docstring.
+                http_status = getattr(response, "status", None)
                 raw = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             # Deliberately never call exc.read(): some APIs echo request
@@ -233,7 +246,7 @@ class YandexSearchProvider(WebSearchProvider):
         if not isinstance(raw_data, str) or not raw_data:
             raise _YandexSearchCallError("missing_raw_data")
         try:
-            return base64.b64decode(raw_data).decode("utf-8", errors="replace")
+            return base64.b64decode(raw_data).decode("utf-8", errors="replace"), http_status
         except (binascii.Error, ValueError):
             raise _YandexSearchCallError("malformed_base64") from None
 
@@ -253,6 +266,78 @@ def _clean_site(site: str) -> str:
     if value.lower().startswith("www."):
         value = value[4:]
     return value
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY PRODUCTION DIAGNOSTIC LOGGING - Smart Snippets parse failure.
+#
+# Prod log showed "web_search: yandex response could not be parsed (bad
+# smart snippets json)" specifically for the official-source fallback call
+# (search_type=SEARCH_TYPE_COM), while the default SEARCH_TYPE_RU call
+# parses fine. Purpose is to see the ACTUAL shape of the SEARCH_TYPE_COM
+# response body - previously invisible, since a parse failure just logged
+# one fixed string and returned None. Only ever runs on the parse-failure
+# path (never on a successful parse, so zero added log volume in the
+# working case), and never touches the parser itself - no algorithm change,
+# see search()'s call site above.
+#
+# No secrets: only HTTP status, the JSON shape/keys of the ALREADY-DECODED
+# response body, and a short truncated fragment of that same body are
+# logged. The request (which carries Authorization/the API key) is never
+# read here - only `decoded_text`, which is Yandex's own response content
+# after base64-decoding, and `http_status`, a plain int off the response
+# object. Fragment is capped at _DIAG_BODY_SNIPPET_MAX_CHARS to avoid
+# dumping a large body.
+#
+# DELETE EASILY: everything below lives in _log_parse_failure_diagnostics
+# (name starts with "_log_parse_failure_" - grep for it, plus its one call
+# site in search()) or is one of the two _DIAG_PARSE_* constants.
+_DIAG_PARSE_PREFIX = "web_search_parse_diag"
+_DIAG_BODY_SNIPPET_MAX_CHARS = 500
+
+
+def _log_parse_failure_diagnostics(
+    decoded_text: str, *, http_status: int | None, search_type: str,
+) -> None:
+    log.warning(
+        "%s: search_type=%r http_status=%s", _DIAG_PARSE_PREFIX, search_type, http_status,
+    )
+    snippet = decoded_text[:_DIAG_BODY_SNIPPET_MAX_CHARS]
+
+    try:
+        parsed = json.loads(decoded_text)
+    except ValueError:
+        log.warning(
+            "%s: decoded_text_is_valid_json=False length=%d snippet=%r",
+            _DIAG_PARSE_PREFIX, len(decoded_text), snippet,
+        )
+        return
+
+    if isinstance(parsed, dict):
+        keys = sorted(str(key) for key in parsed.keys())
+        log.warning("%s: top_level_type=dict top_level_keys=%s", _DIAG_PARSE_PREFIX, keys)
+        docs = parsed.get("docs")
+        docs_len = len(docs) if isinstance(docs, (list, str, dict)) else None
+        log.warning(
+            "%s: docs_key_present=%s docs_type=%s docs_len=%s",
+            _DIAG_PARSE_PREFIX, "docs" in parsed, type(docs).__name__, docs_len,
+        )
+        if isinstance(docs, list) and docs and isinstance(docs[0], dict):
+            log.warning(
+                "%s: first_doc_keys=%s", _DIAG_PARSE_PREFIX,
+                sorted(str(key) for key in docs[0].keys()),
+            )
+    elif isinstance(parsed, list):
+        log.warning(
+            "%s: top_level_type=list top_level_len=%d first_item_type=%s",
+            _DIAG_PARSE_PREFIX, len(parsed),
+            type(parsed[0]).__name__ if parsed else "n/a",
+        )
+    else:
+        log.warning("%s: top_level_type=%s", _DIAG_PARSE_PREFIX, type(parsed).__name__)
+
+    log.warning("%s: decoded_text_snippet=%r", _DIAG_PARSE_PREFIX, snippet)
+# ══════════════════ END TEMPORARY PRODUCTION DIAGNOSTIC LOGGING ═══════════
 
 
 def _parse_smart_snippet_results(
