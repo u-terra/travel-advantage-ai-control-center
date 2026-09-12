@@ -10,6 +10,8 @@ the real Yandex adapter.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from app.services.web_search.base import SearchResponse, SearchResult, WebSearchProvider
@@ -614,3 +616,53 @@ def test_fallback_never_passes_a_site_restriction():
     )
     service.maybe_search("Какие сейчас правила въезда в Индонезию?")
     assert calls[1][1] is None  # (query, site, limit, search_type) -> site
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEMPORARY PRODUCTION DIAGNOSTIC LOGGING - delete alongside the "# DIAG:"
+# blocks in app/services/web_search/service.py once the investigation is
+# done (see that file's matching banner comment for context: a live prod
+# report that the fallback still returns zero official domains even after
+# 471a689's worldwide search type + English query fix).
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_diag_logs_original_query_and_first_search_results(caplog):
+    caplog.set_level(logging.INFO, logger="app.services.web_search.service")
+    service = WebSearchService(_FakeProvider(_multi_source_response()), enabled=True)
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    text = caplog.text
+    assert "web_search_fallback_diag: original_query=" in text
+    assert "Какие сейчас правила въезда в Индонезию?" in text
+    assert "first_search_result:" in text
+    assert "domain='imigrasi.go.id'" in text
+
+
+def test_diag_logs_fallback_not_called_when_official_already_present(caplog):
+    caplog.set_level(logging.INFO, logger="app.services.web_search.service")
+    service = WebSearchService(_FakeProvider(_multi_source_response()), enabled=True)
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    assert "web_search_fallback_diag: fallback_called=False" in caplog.text
+
+
+def test_diag_logs_fallback_called_with_query_and_search_type(caplog):
+    caplog.set_level(logging.INFO, logger="app.services.web_search.service")
+    original = _sample_response("q")
+    fallback = _fallback_response(_official_result())
+    service = WebSearchService(_FakeProvider(responses=[original, fallback]), enabled=True)
+    service.maybe_search("Какие правила въезда?")
+    text = caplog.text
+    assert "web_search_fallback_diag: fallback_called=True" in text
+    assert "official government immigration entry requirements" in text
+    assert "SEARCH_TYPE_COM" in text
+    assert "fallback_result:" in text
+    assert "fallback_result_is_official domain='imigrasi.go.id' is_official=True" in text
+    assert "merged_result:" in text
+
+
+def test_diag_logs_official_source_status_and_confirms_it_is_in_context(caplog):
+    caplog.set_level(logging.INFO, logger="app.services.web_search.service")
+    result = _sample_response("Какие правила въезда?")
+    format_search_context(result)
+    text = caplog.text
+    assert "web_search_fallback_diag: official_source_status='OFFICIAL_SOURCE_STATUS: NOT_FOUND'" in text
+    assert "status_line_in_context=True" in text
