@@ -394,6 +394,204 @@ def test_api_key_never_appears_in_any_failure_path(monkeypatch, caplog):
     assert FAKE_API_KEY not in caplog.text
 
 
+# ── XML fallback parser (classic Yandex search XML shape) ─────────────────
+#
+# Production diagnosis: a live SEARCH_TYPE_COM request returned HTTP 200,
+# base64-decoded fine, but the decoded body was the classic Yandex XML
+# search shape ("<?xml version=\"1.0\" ...><yandexsearch ...>") instead of
+# Smart Snippets JSON - and the provider tried to json.loads() it, hit
+# "bad smart snippets json", and returned None. These tests cover the fix:
+# _parse_search_results() tries JSON first (unchanged - see the JSON tests
+# above, all still green) and only falls back to _parse_xml_search_results()
+# when the body is not JSON at all.
+
+
+def _xml_doc(
+    *,
+    url: str | None = "https://example.com/a",
+    domain: str | None = "example.com",
+    title: str | None = "Title",
+    passages: list[str] | None = ("Snippet passage.",),
+) -> str:
+    parts = []
+    if url is not None:
+        parts.append(f"<url>{url}</url>")
+    if domain is not None:
+        parts.append(f"<domain>{domain}</domain>")
+    if title is not None:
+        parts.append(f"<title>{title}</title>")
+    if passages is not None:
+        inner = "".join(f"<passage>{p}</passage>" for p in passages)
+        parts.append(f"<passages>{inner}</passages>")
+    return f"<doc>{''.join(parts)}</doc>"
+
+
+def _xml_response(docs: list[str]) -> str:
+    # Realistic nesting (yandexsearch/response/results/grouping/group/doc) -
+    # matches the classic Yandex search XML shape confirmed in production.
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<yandexsearch version="1.0">\n'
+        "<request><query>test query</query></request>\n"
+        '<response date="20260101T000000">\n'
+        f'<found priority="phrase">{len(docs)}</found>\n'
+        "<results><grouping>"
+        f'<found priority="phrase">{len(docs)}</found>'
+        f"<group>{''.join(docs)}</group>"
+        "</grouping></results>\n"
+        "</response>\n"
+        "</yandexsearch>"
+    )
+
+
+def test_parses_single_xml_doc(monkeypatch):
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(_xml_response([_xml_doc()])))
+    response = YandexSearchProvider(_config()).search("query", search_type="SEARCH_TYPE_COM")
+    assert response is not None
+    assert len(response.results) == 1
+    result = response.results[0]
+    assert result.url == "https://example.com/a"
+    assert result.domain == "example.com"
+    assert result.title == "Title"
+    assert result.snippet == "Snippet passage."
+    assert result.rank == 1
+    assert result.provider == "yandex"
+    assert result.published_at is None
+
+
+def test_parses_multiple_xml_docs_preserving_order(monkeypatch):
+    docs = [
+        _xml_doc(url=f"https://example.com/{i}", title=f"Title {i}", passages=[f"Snippet {i}"])
+        for i in range(3)
+    ]
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(_xml_response(docs)))
+    response = YandexSearchProvider(_config()).search("query")
+    assert response is not None
+    assert [r.url for r in response.results] == [
+        "https://example.com/0", "https://example.com/1", "https://example.com/2",
+    ]
+    assert [r.rank for r in response.results] == [1, 2, 3]
+
+
+def test_xml_doc_missing_snippet_defaults_to_empty(monkeypatch):
+    monkeypatch.setattr(
+        yp, "_open", _fake_open_returning(_xml_response([_xml_doc(passages=None)])),
+    )
+    response = YandexSearchProvider(_config()).search("query")
+    assert response is not None
+    assert response.results[0].snippet == ""
+
+
+def test_xml_doc_missing_title_falls_back_to_url(monkeypatch):
+    monkeypatch.setattr(
+        yp, "_open", _fake_open_returning(_xml_response([_xml_doc(title=None)])),
+    )
+    response = YandexSearchProvider(_config()).search("query")
+    assert response is not None
+    assert response.results[0].title == "https://example.com/a"
+
+
+def test_xml_doc_without_url_is_skipped(monkeypatch):
+    docs = [_xml_doc(url=None), _xml_doc(url="https://example.com/kept")]
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(_xml_response(docs)))
+    response = YandexSearchProvider(_config()).search("query")
+    assert response is not None
+    assert len(response.results) == 1
+    assert response.results[0].url == "https://example.com/kept"
+
+
+def test_xml_domain_derived_from_url_when_domain_tag_missing(monkeypatch):
+    monkeypatch.setattr(
+        yp, "_open", _fake_open_returning(
+            _xml_response([_xml_doc(url="https://sub.example.org/page", domain=None)]),
+        ),
+    )
+    response = YandexSearchProvider(_config()).search("query")
+    assert response is not None
+    assert response.results[0].domain == "sub.example.org"
+
+
+def test_xml_respects_limit_config(monkeypatch):
+    docs = [_xml_doc(url=f"https://example.com/{i}") for i in range(5)]
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(_xml_response(docs)))
+    provider = YandexSearchProvider(_config(max_results=2))
+    response = provider.search("query", limit=10)
+    assert response is not None
+    assert len(response.results) == 2
+
+
+def test_xml_dedupes_identical_url(monkeypatch):
+    docs = [
+        _xml_doc(url="https://example.com/a", title="First"),
+        _xml_doc(url="https://example.com/a", title="Duplicate"),
+        _xml_doc(url="https://example.com/b", title="Second"),
+    ]
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(_xml_response(docs)))
+    response = YandexSearchProvider(_config()).search("query")
+    assert response is not None
+    assert [r.url for r in response.results] == ["https://example.com/a", "https://example.com/b"]
+    assert response.results[0].title == "First"
+
+
+def test_xml_nested_highlight_markup_does_not_crash_and_is_joined(monkeypatch):
+    # Yandex highlights matched query terms with a nested <hlword> tag inside
+    # <title>/<passage> - a naive .text read would stop before it.
+    doc = (
+        "<doc><url>https://example.com/a</url>"
+        "<title>Правила <hlword>въезда</hlword> в Индонезию</title>"
+        "<passages><passage>Актуальные <hlword>правила</hlword> на 2026 год.</passage></passages>"
+        "</doc>"
+    )
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(_xml_response([doc])))
+    response = YandexSearchProvider(_config()).search("query")
+    assert response is not None
+    assert response.results[0].title == "Правила въезда в Индонезию"
+    assert response.results[0].snippet == "Актуальные правила на 2026 год."
+
+
+def test_xml_entities_are_decoded(monkeypatch):
+    doc = (
+        "<doc><url>https://example.com/a?x=1&amp;y=2</url>"
+        "<title>Tom &amp; Jerry &lt;official&gt;</title></doc>"
+    )
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(_xml_response([doc])))
+    response = YandexSearchProvider(_config()).search("query")
+    assert response is not None
+    assert response.results[0].url == "https://example.com/a?x=1&y=2"
+    assert response.results[0].title == "Tom & Jerry <official>"
+
+
+def test_malformed_xml_returns_none(monkeypatch):
+    monkeypatch.setattr(yp, "_open", _fake_open_returning("<doc><url>unclosed"))
+    assert YandexSearchProvider(_config()).search("query") is None
+
+
+def test_xml_without_any_doc_elements_returns_none(monkeypatch):
+    monkeypatch.setattr(yp, "_open", _fake_open_returning(_xml_response([])))
+    assert YandexSearchProvider(_config()).search("query") is None
+
+
+def test_parse_xml_search_results_raises_shape_error_without_doc_elements():
+    with pytest.raises(yp._XmlSearchShapeError):
+        yp._parse_xml_search_results("<yandexsearch></yandexsearch>", provider="yandex", limit=5)
+
+
+def test_parse_search_results_dispatches_to_xml_only_when_json_fails_and_looks_like_xml():
+    xml_text = _xml_response([_xml_doc()])
+    results = yp._parse_search_results(xml_text, provider="yandex", limit=5)
+    assert len(results) == 1
+    assert results[0].url == "https://example.com/a"
+
+
+def test_parse_search_results_prefers_json_when_both_would_be_ambiguous():
+    # Sanity check that the JSON path is tried FIRST and unconditionally -
+    # valid Smart Snippets JSON is never redirected into the XML parser.
+    decoded = _smart_snippets_json([_doc(url="https://example.com/json-wins")])
+    results = yp._parse_search_results(decoded, provider="yandex", limit=5)
+    assert len(results) == 1
+    assert results[0].url == "https://example.com/json-wins"
+
+
 # ── Disabled / unconfigured ────────────────────────────────────────────────
 
 

@@ -45,13 +45,18 @@ With the Smart Snippets flag set, the base64-decoded payload is UTF-8 JSON
 
 ``info_context`` is the actual smart-snippet text (what this integration
 exists to fetch); ``Description`` is the plain search-result blurb and is
-only used as a fallback when a doc has no ``info_context``. There is no XML
-fallback path in this module: Smart Snippets is the only mode this
-integration ever requests (the metadata flag is always sent), so a second,
-unused parser for the old XML shape would be complexity with no live code
-path exercising it - see the task's "Не усложняй код без необходимости".
-If plain Web Search is ever needed again, it should come back as an
-explicit, separately-tested mode, not a silent fallback here.
+only used as a fallback when a doc has no ``info_context``.
+
+UPDATE (production diagnosis): the Smart Snippets metadata flag is always
+sent, but a live SEARCH_TYPE_COM request (the official-source fallback's
+worldwide search, see app.services.web_search.service) still came back as
+the classic Yandex XML search shape (``<?xml version="1.0" ...>
+<yandexsearch>...``) instead of Smart Snippets JSON - apparently the flag
+is not honored for every search_type. Rather than guess at request-side
+fixes, ``_parse_search_results`` below tries the JSON path first (unchanged
+behavior for every case that already worked) and only falls back to
+``_parse_xml_search_results`` when the body is not JSON at all. An unknown
+third shape still fails soft exactly as before.
 
 No page is fetched here - only the snippet/title/url Yandex itself returns
 is used (see the task's explicit "one search call instead of Search + N
@@ -66,6 +71,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
@@ -132,6 +138,11 @@ class _SmartSnippetShapeError(ValueError):
     JSON shape ({"docs": [...]})."""
 
 
+class _XmlSearchShapeError(ValueError):
+    """Decoded payload was well-formed XML but not the expected Yandex
+    search-results shape (no <doc> elements found anywhere in the tree)."""
+
+
 class YandexSearchProvider(WebSearchProvider):
     name = PROVIDER_NAME
 
@@ -186,12 +197,13 @@ class YandexSearchProvider(WebSearchProvider):
         elapsed_ms = int((monotonic() - started) * 1000)
 
         try:
-            results = _parse_smart_snippet_results(
+            results = _parse_search_results(
                 decoded_text, provider=self.name, limit=effective_limit
             )
         except ValueError:
-            # Covers both malformed JSON (json.JSONDecodeError, a ValueError
-            # subclass) and an unexpected-shape payload (_SmartSnippetShapeError).
+            # Covers malformed JSON, an unexpected-shape JSON payload,
+            # malformed XML, and an unexpected-shape XML payload - see
+            # _parse_search_results for which of those actually happened.
             log.warning("web_search: yandex response could not be parsed (bad smart snippets json)")
             # DIAG: TEMPORARY parse-failure-only diagnostics - see banner
             # above _log_parse_failure_diagnostics. Never runs on the
@@ -340,6 +352,33 @@ def _log_parse_failure_diagnostics(
 # ══════════════════ END TEMPORARY PRODUCTION DIAGNOSTIC LOGGING ═══════════
 
 
+def _parse_search_results(
+    decoded_text: str, *, provider: str, limit: int
+) -> list[SearchResult]:
+    """Dual-format dispatcher. Smart Snippets JSON is the primary/expected
+    shape and is tried FIRST, completely unchanged - every query that
+    already parsed successfully takes the exact same code path as before
+    this dispatcher existed. Only when that fails, and only when the body
+    actually looks like XML (starts with ``<``), a second attempt is made
+    with the classic Yandex search XML shape - see the module docstring's
+    "UPDATE (production diagnosis)" note for why that shape can show up
+    despite the Smart Snippets flag always being sent. Anything else
+    (neither valid Smart Snippets JSON nor XML) re-raises the original JSON
+    error, so search()'s existing fail-soft None + warning + diagnostics
+    path is completely unchanged for an unrecognized format.
+    """
+    try:
+        return _parse_smart_snippet_results(decoded_text, provider=provider, limit=limit)
+    except ValueError as json_error:
+        stripped = decoded_text.lstrip("\ufeff \t\r\n")
+        if not stripped.startswith("<"):
+            raise
+        try:
+            return _parse_xml_search_results(decoded_text, provider=provider, limit=limit)
+        except ValueError:
+            raise json_error from None
+
+
 def _parse_smart_snippet_results(
     decoded_text: str, *, provider: str, limit: int
 ) -> list[SearchResult]:
@@ -393,6 +432,87 @@ def _parse_smart_snippet_results(
             published_at=None,
             provider=provider,
             rank=rank,
+        ))
+
+    return results
+
+
+def _xml_text(element: ET.Element | None) -> str:
+    """Full text content of an XML element, including text inside nested
+    child tags (e.g. Yandex's <hlword> highlight markup inside <title>/
+    <passage>) - a plain ``element.text`` would silently stop at the first
+    child tag and drop everything after it. ``itertext()`` walks the whole
+    subtree and ElementTree has already resolved XML entities by this
+    point, so no separate unescaping is needed."""
+    if element is None:
+        return ""
+    return "".join(element.itertext()).strip()
+
+
+def _parse_xml_search_results(
+    decoded_text: str, *, provider: str, limit: int
+) -> list[SearchResult]:
+    """Classic Yandex search XML shape (<yandexsearch><response><results>
+    <grouping><group><doc>...) - see the module docstring's "UPDATE
+    (production diagnosis)" note for why this can show up even though the
+    request always asks for Smart Snippets. Only called by
+    _parse_search_results as a second attempt, after the Smart Snippets
+    JSON parse already failed.
+
+    Deliberately best-effort per Yandex's own documented warning that
+    response fields may be absent: <doc> elements are found via a
+    depth-first search (``.//doc``) rather than a fixed grouping/group
+    path, so this does not depend on exactly how deep the grouping nests
+    them. A <doc> with no usable <url> is skipped, never fatal for the
+    batch; <domain>/<title>/passages are all optional and fall back the
+    same way the JSON parser already does for its own optional fields.
+    """
+    try:
+        root = ET.fromstring(decoded_text)
+    except ET.ParseError as exc:
+        raise _XmlSearchShapeError("not well-formed XML") from exc
+
+    docs = root.findall(".//doc")
+    if not docs:
+        raise _XmlSearchShapeError("no <doc> elements found in XML response")
+
+    results: list[SearchResult] = []
+    seen_urls: set[str] = set()
+
+    for doc in docs:
+        if len(results) >= limit:
+            break
+
+        url = _xml_text(doc.find("url"))
+        if not url:
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+
+        domain = _xml_text(doc.find("domain")) or (urlsplit(url).hostname or "")
+        title = _xml_text(doc.find("title")) or url
+
+        # Snippet: join whatever <passages><passage> text is present - the
+        # task's explicit source for the XML snippet. Docs may have zero,
+        # one, or several passages (Yandex's own docs: up to 4 by default).
+        passage_texts = [_xml_text(passage) for passage in doc.findall("./passages/passage")]
+        snippet = " ".join(text for text in passage_texts if text)
+
+        results.append(SearchResult(
+            title=title,
+            url=url,
+            snippet=snippet,
+            domain=domain,
+            # Classic XML docs carry a <modtime> in some configurations, but
+            # it is not documented as always-present - never invented here,
+            # same policy as the JSON parser's published_at.
+            published_at=None,
+            provider=provider,
+            # Rank is by order of appearance in the XML, per this task -
+            # unlike the JSON parser's docs there is no per-doc ordinal
+            # field (like "Num") documented for this shape to prefer.
+            rank=len(results) + 1,
         ))
 
     return results
