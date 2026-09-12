@@ -104,10 +104,16 @@ def test_a_indonesia_query_is_travel_assistant_and_informational():
 
 
 def test_a_indonesia_query_triggers_web_search():
+    # _sample_response() has no official domain, and _INDONESIA_QUERY
+    # matches the changeable-rules gate ("въезд") - so this also triggers
+    # exactly one official-source fallback search (stage two of
+    # official-source priority; see test_web_search_service.py's dedicated
+    # fallback tests). This test only cares the ORIGINAL query was searched.
     fake_provider = _FakeProvider(_sample_response(_INDONESIA_QUERY))
     service = WebSearchService(fake_provider, enabled=True)
     run_free_text(_INDONESIA_QUERY, web_search_service=service)
-    assert fake_provider.calls == [_INDONESIA_QUERY]
+    assert fake_provider.calls[0] == _INDONESIA_QUERY
+    assert len(fake_provider.calls) == 2
 
 
 def test_a_indonesia_query_uses_informational_heading_not_client_heading():

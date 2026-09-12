@@ -151,7 +151,14 @@ def test_search_enabled_with_results_adds_context_and_sources(api, monkeypatch) 
         "domain": "example.org",
         "provider": "fake_yandex",
     }]
-    assert len(fake_provider.calls) == 1
+    # _search_response()'s only domain ("example.org") is not official, and
+    # this message matches the changeable-rules gate ("въезд") - so stage
+    # two (official-source fallback) also fires exactly one extra search
+    # call here. _FakeSearchProvider returns the same fixed response
+    # regardless of query text, so the fallback finds no official domain
+    # either and the merged results/sources are unchanged - only the call
+    # count reflects the new fallback attempt.
+    assert len(fake_provider.calls) == 2
 
 
 def test_search_not_triggered_for_ordinary_content_request(api, monkeypatch) -> None:

@@ -15,6 +15,7 @@ import pytest
 from app.services.web_search.base import SearchResponse, SearchResult, WebSearchProvider
 from app.services.web_search.service import (
     WebSearchService,
+    _merge_official_fallback,
     decide_web_search,
     format_search_context,
 )
@@ -162,12 +163,27 @@ def test_new_markers_do_not_over_trigger_on_unrelated_text(query):
 class _FakeProvider(WebSearchProvider):
     name = "fake"
 
-    def __init__(self, response: SearchResponse | None = None, *, calls: list | None = None):
+    def __init__(
+        self,
+        response: SearchResponse | None = None,
+        *,
+        calls: list | None = None,
+        responses: list | None = None,
+    ):
+        """``response`` is returned for every call (existing behavior).
+        ``responses``, if given, is a queue popped one-per-call - lets a test
+        give a different answer to the original search vs. the official-
+        source fallback search (see the fallback tests below); once
+        exhausted, further calls return None, same as any real fail-soft
+        provider error."""
         self._response = response
+        self._responses = list(responses) if responses is not None else None
         self._calls = calls if calls is not None else []
 
     def search(self, query, *, site=None, limit=5):
         self._calls.append((query, site, limit))
+        if self._responses is not None:
+            return self._responses.pop(0) if self._responses else None
         return self._response
 
 
@@ -370,3 +386,149 @@ def test_format_search_context_includes_geo_scope_guard():
     assert "usd" in lowered or "eur" in lowered
     assert "официальное подтверждение не найдено" in lowered
     assert "приоритет всегда у официального" in lowered
+
+
+# ── Official-source fallback: stage two of official-source priority ────────
+#
+# Stage one (_rank_by_authority, tested above) can only reorder what a
+# single search call already returned. Live testing showed Yandex can
+# return 5/5 secondary sources with no official domain at all within
+# max_results - these tests cover the targeted one-shot fallback search
+# added to close that gap (WebSearchService.maybe_search ->
+# _ensure_official_source / _merge_official_fallback).
+
+def _official_result(url: str = "https://imigrasi.go.id/fallback", rank: int = 1) -> SearchResult:
+    return SearchResult(
+        title="Imigrasi RI", url=url, snippet="Официальные правила.",
+        domain="imigrasi.go.id", published_at=None, provider="fake", rank=rank,
+    )
+
+
+def _fallback_response(*results: SearchResult, query: str = "q") -> SearchResponse:
+    return SearchResponse(query=query, results=list(results), provider="fake", elapsed_ms=5)
+
+
+def test_official_already_present_does_not_trigger_fallback_search():
+    """Requirement 3: if the first search already has an official domain,
+    the reranked result is used as-is and no second search call is made."""
+    calls: list = []
+    service = WebSearchService(
+        _FakeProvider(_multi_source_response(), calls=calls), enabled=True,
+    )
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    assert len(calls) == 1
+
+
+def test_official_absent_triggers_exactly_one_fallback_search():
+    """Requirement 4: no official domain in the first search's results ->
+    exactly one targeted fallback search, never more than one."""
+    calls: list = []
+    responses = [_sample_response("q"), None]  # 1st: no official; 2nd (fallback): failed/empty
+    service = WebSearchService(
+        _FakeProvider(calls=calls, responses=responses), enabled=True,
+    )
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    assert len(calls) == 2
+
+
+def test_fallback_official_source_is_promoted_first():
+    """Requirement 5/7: an official source found only by the fallback search
+    ends up first in the merged results."""
+    original = _sample_response("Какие правила въезда?")  # example.com, secondary only
+    fallback = _fallback_response(_official_result())
+    service = WebSearchService(
+        _FakeProvider(responses=[original, fallback]), enabled=True,
+    )
+    result = service.maybe_search("Какие правила въезда?")
+    assert result.results[0].domain == "imigrasi.go.id"
+
+
+def test_fallback_merge_keeps_original_secondary_results():
+    """Requirement 5: secondary results from the original search are not
+    dropped when the fallback adds an official source."""
+    original = _sample_response("Какие правила въезда?")
+    fallback = _fallback_response(_official_result())
+    service = WebSearchService(
+        _FakeProvider(responses=[original, fallback]), enabled=True,
+    )
+    result = service.maybe_search("Какие правила въезда?")
+    domains = {item.domain for item in result.results}
+    assert domains == {"imigrasi.go.id", "example.com"}
+
+
+def test_merge_official_fallback_dedupes_by_url():
+    """Requirement 5: a fallback result whose URL already appears among the
+    original results must not be duplicated."""
+    shared_url = "https://travelblog.example/a"
+    original = SearchResponse(
+        query="q",
+        results=[
+            SearchResult(
+                title="Blog", url=shared_url, snippet="", domain="travelblog.example",
+                published_at=None, provider="fake", rank=1,
+            ),
+        ],
+    )
+    fallback = _fallback_response(
+        # Same URL as an original result (dedup must drop this one)...
+        SearchResult(
+            title="Dup", url=shared_url, snippet="", domain="imigrasi.go.id",
+            published_at=None, provider="fake", rank=1,
+        ),
+        # ...but a genuinely new official URL must still be kept.
+        _official_result(url="https://imigrasi.go.id/new", rank=2),
+    )
+    merged = _merge_official_fallback(original, fallback)
+    urls = [item.url for item in merged.results]
+    assert urls.count(shared_url) == 1
+    assert "https://imigrasi.go.id/new" in urls
+
+
+def test_fallback_also_not_found_context_has_explicit_not_found_status():
+    """Requirement 6: when the fallback ALSO fails to find an official
+    source, the LLM-facing context must carry an explicit, literal
+    OFFICIAL_SOURCE_STATUS: NOT_FOUND marker - not just the general prose
+    rule, which live testing showed was not reliably followed on its own."""
+    original = _sample_response("Какие правила въезда?")
+    fallback = _fallback_response(
+        SearchResult(
+            title="Ещё один блог", url="https://otherblog.example/a", snippet="",
+            domain="otherblog.example", published_at=None, provider="fake", rank=1,
+        ),
+    )
+    service = WebSearchService(
+        _FakeProvider(responses=[original, fallback]), enabled=True,
+    )
+    result = service.maybe_search("Какие правила въезда?")
+    text = format_search_context(result)
+    assert "OFFICIAL_SOURCE_STATUS: NOT_FOUND" in text
+
+
+def test_official_found_context_has_explicit_found_status():
+    """Requirement 7: once an official source is present (here, straight
+    from the first search - no fallback needed), the context must carry the
+    explicit FOUND marker and the official source must be first."""
+    result = WebSearchService(
+        _FakeProvider(_multi_source_response()), enabled=True,
+    ).maybe_search("Какие сейчас правила въезда в Индонезию?")
+    text = format_search_context(result)
+    assert "OFFICIAL_SOURCE_STATUS: FOUND" in text
+    assert result.results[0].domain == "imigrasi.go.id"
+
+
+def test_market_query_does_not_get_a_second_fallback_search_call():
+    """Requirement: market/company queries have no "official source"
+    concept - they must never get the extra fallback call."""
+    calls: list = []
+    response = _multi_source_response("Что нового у Travel Advantage?")
+    service = WebSearchService(_FakeProvider(response, calls=calls), enabled=True)
+    service.maybe_search("Что нового у Travel Advantage?")
+    assert len(calls) == 1
+
+
+def test_format_search_context_omits_status_line_for_non_changeable_rules_query():
+    """Requirement 1: the OFFICIAL_SOURCE_STATUS marker only applies to the
+    same high-risk/changeable-rules category the fallback itself is gated
+    on - a market query must not get a (meaningless) status line."""
+    text = format_search_context(_sample_response("Что нового у Travel Advantage?"))
+    assert "OFFICIAL_SOURCE_STATUS" not in text

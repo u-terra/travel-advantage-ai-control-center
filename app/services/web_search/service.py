@@ -134,6 +134,66 @@ def _rank_by_authority(response: SearchResponse) -> SearchResponse:
     return replace(response, results=ranked)
 
 
+# ── Official-source fallback (stage two of official-source priority) ───────
+#
+# Stage one (_rank_by_authority above) can only reorder what the provider
+# already returned in ONE search call - if Yandex's top results for a query
+# are all secondary sources (aggregators/media/agencies), there is nothing
+# to promote. Live testing after stage one shipped confirmed exactly this:
+# Yandex returned 5 secondary sources and no official domain within
+# max_results, so reranking was a no-op.
+#
+# Stage two, for the same changeable-rules gate only: if the first search
+# already has an official domain, do nothing more (no second call - see
+# _ensure_official_source). If it doesn't, run exactly ONE targeted
+# follow-up search biased toward government/embassy/immigration sources,
+# then merge official results from that fallback in ahead of the original
+# secondary results, dedup by URL, and cap the combined list at a sane
+# limit. Nothing heavier than that - no per-country ontology, no second
+# general search.
+_OFFICIAL_FALLBACK_QUERY_SUFFIX = (
+    " официальный сайт правительства посольство консульство миграционная служба"
+)
+_FALLBACK_COMBINED_RESULTS_LIMIT = 5
+
+
+def _official_fallback_query(query: str) -> str:
+    return f"{query.strip()}{_OFFICIAL_FALLBACK_QUERY_SUFFIX}"
+
+
+def _merge_official_fallback(
+    original: SearchResponse, fallback: SearchResponse | None
+) -> SearchResponse:
+    """Puts official results found by the fallback search ahead of the
+    original results, keeps every secondary result from the original search,
+    dedupes by URL, and caps the total. Only ever called when ``original``
+    has no official domain yet - see _ensure_official_source."""
+    if fallback is None or not fallback.results:
+        return original
+    seen_urls = {result.url for result in original.results}
+    official_from_fallback = [
+        result for result in fallback.results
+        if _is_official_domain(result.domain) and result.url not in seen_urls
+    ]
+    if not official_from_fallback:
+        return original
+    combined = [*official_from_fallback, *original.results][:_FALLBACK_COMBINED_RESULTS_LIMIT]
+    return replace(original, results=combined)
+
+
+def _ensure_official_source(
+    response: SearchResponse, provider: WebSearchProvider, *, query: str, site: str | None,
+) -> SearchResponse:
+    """Stage two entry point - called only for changeable-rules queries,
+    after stage-one reranking already ran. A no-op (no second search call)
+    when an official domain is already present; otherwise runs exactly one
+    targeted fallback search and merges it in."""
+    if any(_is_official_domain(result.domain) for result in response.results):
+        return response
+    fallback = provider.search(_official_fallback_query(query), site=site)
+    return _merge_official_fallback(response, fallback)
+
+
 @dataclass(frozen=True)
 class SearchDecision:
     """Result of decide_web_search() - a plain value, kept separate from
@@ -238,6 +298,9 @@ class WebSearchService:
         # itself rather than the label.
         if response is not None and _matches_changeable_rules((query or "").lower()):
             response = _rank_by_authority(response)
+            response = _ensure_official_source(
+                response, self._provider, query=query, site=site or decision.site,
+            )
         return response
 
 
@@ -275,6 +338,24 @@ _RULES = (
     "вторичного источника приоритет всегда у официального."
 )
 
+_OFFICIAL_SOURCE_STATUS_FOUND = "OFFICIAL_SOURCE_STATUS: FOUND"
+_OFFICIAL_SOURCE_STATUS_NOT_FOUND = "OFFICIAL_SOURCE_STATUS: NOT_FOUND"
+# Explicit, machine-checkable status line (not just the prose _RULES rule
+# above) - live testing showed the prose alone was not reliably followed: an
+# answer was generated without mentioning the missing confirmation even
+# though that exact rule already existed. Kept OUT of the always-appended
+# _RULES constant and only added here, alongside the literal status line
+# itself, for the same changeable-rules queries the fallback search
+# (_ensure_official_source) is gated on - a market/freshness/company query
+# has no "official source" concept and must not see this at all.
+_OFFICIAL_SOURCE_STATUS_INSTRUCTION = (
+    "Если строка выше - «OFFICIAL_SOURCE_STATUS: NOT_FOUND», ты ОБЯЗАН явно "
+    "сообщить пользователю в ответе, что официальное государственное "
+    "подтверждение по этому вопросу сейчас не найдено. Если строка выше - "
+    "«OFFICIAL_SOURCE_STATUS: FOUND», официальный источник уже указан первым "
+    "в списке результатов - используй его как основной."
+)
+
 
 def format_search_context(response: SearchResponse | None) -> str:
     """Same "=== HEADER ===" + per-item + rules shape as
@@ -292,6 +373,17 @@ def format_search_context(response: SearchResponse | None) -> str:
         if result.snippet:
             lines.append(result.snippet)
         lines.append(f"Источник: {result.url}")
+        lines.append("")
+    # Only for the same high-risk/changeable-rules category the official-
+    # source fallback (_ensure_official_source) itself is gated on - a
+    # market/freshness/company query has no "official source" concept, so a
+    # status line there would be meaningless noise, not a signal.
+    if _matches_changeable_rules((response.query or "").lower()):
+        has_official = any(_is_official_domain(result.domain) for result in response.results)
+        lines.append(
+            _OFFICIAL_SOURCE_STATUS_FOUND if has_official else _OFFICIAL_SOURCE_STATUS_NOT_FOUND
+        )
+        lines.append(_OFFICIAL_SOURCE_STATUS_INSTRUCTION)
         lines.append("")
     lines.append(_RULES)
     return "\n".join(lines).rstrip()
