@@ -17,6 +17,12 @@ from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 from app.services.web_search.base import SearchResponse, WebSearchProvider
+# Yandex-specific: only the official-source fallback below needs a search
+# scope other than the provider's own default - see _ensure_official_source
+# and yandex_provider.py's SEARCH_TYPE_INTERNATIONAL comment for why. This
+# is the one deliberate, narrow exception to this module otherwise never
+# importing the concrete Yandex adapter.
+from app.services.web_search.yandex_provider import SEARCH_TYPE_INTERNATIONAL
 
 # ── A. Freshness ──────────────────────────────────────────────────────────
 _FRESHNESS_MARKERS: tuple[str, ...] = (
@@ -151,9 +157,22 @@ def _rank_by_authority(response: SearchResponse) -> SearchResponse:
 # secondary results, dedup by URL, and cap the combined list at a sane
 # limit. Nothing heavier than that - no per-country ontology, no second
 # general search.
-_OFFICIAL_FALLBACK_QUERY_SUFFIX = (
-    " официальный сайт правительства посольство консульство миграционная служба"
-)
+#
+# Live testing of the first version of this fallback (a Russian bureaucratic
+# phrase appended under the default SEARCH_TYPE_RU) still returned zero
+# official domains - see the diagnostic write-up. Root cause traced to two
+# things, both fixed below without a country->domain registry: (1) the
+# appended words were generic Russian SEO vocabulary that RU finance/
+# insurance/travel content already ranks for, and (2) SEARCH_TYPE_RU itself
+# is a Russia-market relevance profile, structurally unfavorable to a
+# foreign (non-Russian-language) government domain. The fallback now (a)
+# uses a short English official-intent phrase instead, and (b) requests
+# YandexSearchProvider's SEARCH_TYPE_INTERNATIONAL (SEARCH_TYPE_COM) scope
+# instead of the default - confirmed against the current official docs, see
+# yandex_provider.py's SEARCH_TYPE_INTERNATIONAL comment. The default/normal
+# search above is untouched - it never passes search_type, so it keeps
+# using SEARCH_TYPE_RU exactly as before.
+_OFFICIAL_FALLBACK_QUERY_SUFFIX = " official government immigration entry requirements"
 _FALLBACK_COMBINED_RESULTS_LIMIT = 5
 
 
@@ -182,15 +201,19 @@ def _merge_official_fallback(
 
 
 def _ensure_official_source(
-    response: SearchResponse, provider: WebSearchProvider, *, query: str, site: str | None,
+    response: SearchResponse, provider: WebSearchProvider, *, query: str,
 ) -> SearchResponse:
     """Stage two entry point - called only for changeable-rules queries,
     after stage-one reranking already ran. A no-op (no second search call)
     when an official domain is already present; otherwise runs exactly one
-    targeted fallback search and merges it in."""
+    targeted fallback search (international scope, no site restriction -
+    we never have a known official domain to restrict to, see the query
+    suffix comment above) and merges it in."""
     if any(_is_official_domain(result.domain) for result in response.results):
         return response
-    fallback = provider.search(_official_fallback_query(query), site=site)
+    fallback = provider.search(
+        _official_fallback_query(query), site=None, search_type=SEARCH_TYPE_INTERNATIONAL,
+    )
     return _merge_official_fallback(response, fallback)
 
 
@@ -298,9 +321,7 @@ class WebSearchService:
         # itself rather than the label.
         if response is not None and _matches_changeable_rules((query or "").lower()):
             response = _rank_by_authority(response)
-            response = _ensure_official_source(
-                response, self._provider, query=query, site=site or decision.site,
-            )
+            response = _ensure_official_source(response, self._provider, query=query)
         return response
 
 

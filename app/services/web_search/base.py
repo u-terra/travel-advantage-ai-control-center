@@ -58,9 +58,19 @@ class WebSearchProvider(ABC):
 
     @abstractmethod
     def search(
-        self, query: str, *, site: str | None = None, limit: int = 5
+        self,
+        query: str,
+        *,
+        site: str | None = None,
+        limit: int = 5,
+        search_type: str | None = None,
     ) -> SearchResponse | None:
         """Run one search call. ``site`` restricts results to one domain when
         the concrete provider supports it (best-effort - a provider that
         cannot restrict by site should just ignore the argument, not fail).
-        Returns ``None`` on any error - see module docstring."""
+        ``search_type`` optionally overrides the provider's default search
+        scope/locale (e.g. Yandex's RU-only default) - same best-effort
+        contract as ``site``, only used today by the official-source
+        fallback (app.services.web_search.service._ensure_official_source)
+        to search a wider scope when the default one found no official
+        domain. Returns ``None`` on any error - see module docstring."""

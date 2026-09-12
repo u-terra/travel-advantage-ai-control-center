@@ -50,7 +50,7 @@ class _FakeProvider(WebSearchProvider):
         self._response = response
         self.calls: list[str] = []
 
-    def search(self, query, *, site=None, limit=5):
+    def search(self, query, *, site=None, limit=5, search_type=None):
         self.calls.append(query)
         return self._response
 

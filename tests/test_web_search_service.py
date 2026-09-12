@@ -16,9 +16,11 @@ from app.services.web_search.base import SearchResponse, SearchResult, WebSearch
 from app.services.web_search.service import (
     WebSearchService,
     _merge_official_fallback,
+    _official_fallback_query,
     decide_web_search,
     format_search_context,
 )
+from app.services.web_search.yandex_provider import SEARCH_TYPE_INTERNATIONAL
 
 
 # ── B. Decision rules — SEARCH cases from the ORCHESTRAVEL task ─────────────
@@ -180,8 +182,8 @@ class _FakeProvider(WebSearchProvider):
         self._responses = list(responses) if responses is not None else None
         self._calls = calls if calls is not None else []
 
-    def search(self, query, *, site=None, limit=5):
-        self._calls.append((query, site, limit))
+    def search(self, query, *, site=None, limit=5, search_type=None):
+        self._calls.append((query, site, limit, search_type))
         if self._responses is not None:
             return self._responses.pop(0) if self._responses else None
         return self._response
@@ -532,3 +534,83 @@ def test_format_search_context_omits_status_line_for_non_changeable_rules_query(
     on - a market query must not get a (meaningless) status line."""
     text = format_search_context(_sample_response("Что нового у Travel Advantage?"))
     assert "OFFICIAL_SOURCE_STATUS" not in text
+
+
+# ── Fallback search scope / query wording fix ───────────────────────────────
+#
+# Live prod re-test of the fallback above showed it still returned zero
+# official domains - diagnosed to two things: the appended Russian
+# bureaucratic phrase matched the very RU SEO content it was trying to
+# outrank, and the default SEARCH_TYPE_RU scope is itself a Russia-market
+# relevance profile, structurally unfavorable to a foreign (non-Russian)
+# government domain. These tests cover the fix: the DEFAULT/normal search
+# call keeps using the provider's default scope (search_type=None, i.e.
+# SEARCH_TYPE_RU inside YandexSearchProvider) unchanged, while ONLY the
+# fallback call requests SEARCH_TYPE_INTERNATIONAL (SEARCH_TYPE_COM,
+# confirmed against the current official Yandex/AI Studio docs) and a short
+# English official-intent phrase instead of the Russian one.
+
+def test_default_search_uses_no_explicit_search_type():
+    """The normal/default search call must keep behaving exactly as before -
+    no search_type override, so YandexSearchProvider falls back to its own
+    default (SEARCH_TYPE_RU)."""
+    calls: list = []
+    service = WebSearchService(
+        _FakeProvider(_multi_source_response(), calls=calls), enabled=True,
+    )
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    assert calls[0][3] is None  # (query, site, limit, search_type)
+
+
+def test_fallback_search_uses_international_search_type():
+    """The fallback call - and only the fallback call - must request the
+    international/worldwide scope, not the default RU-only one."""
+    calls: list = []
+    responses = [_sample_response("q"), None]  # no official in either call
+    service = WebSearchService(
+        _FakeProvider(calls=calls, responses=responses), enabled=True,
+    )
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    assert len(calls) == 2
+    assert calls[0][3] is None
+    assert calls[1][3] == SEARCH_TYPE_INTERNATIONAL == "SEARCH_TYPE_COM"
+
+
+def test_fallback_query_uses_english_official_intent_not_russian_phrase():
+    """The fallback query text must carry a short English official-intent
+    phrase, not the old long Russian bureaucratic phrase that matched the
+    very secondary/SEO sites it was meant to outrank."""
+    query = "Какие сейчас правила въезда в Индонезию?"
+    fallback_query = _official_fallback_query(query)
+    assert query in fallback_query
+    lowered = fallback_query.lower()
+    assert "official" in lowered and "government" in lowered
+    assert "консульство" not in lowered and "миграционная служба" not in lowered
+
+
+def test_fallback_call_receives_the_english_official_intent_query():
+    """End to end: the actual second provider.search() call gets the
+    English-intent query, not a Russian one."""
+    calls: list = []
+    responses = [_sample_response("q"), None]
+    service = WebSearchService(
+        _FakeProvider(calls=calls, responses=responses), enabled=True,
+    )
+    query = "Какие сейчас правила въезда в Индонезию?"
+    service.maybe_search(query)
+    fallback_call_query = calls[1][0]
+    assert fallback_call_query == _official_fallback_query(query)
+    assert "official" in fallback_call_query.lower()
+
+
+def test_fallback_never_passes_a_site_restriction():
+    """Requirement 4: never use site= for the fallback - there is no known
+    official domain to restrict to, and guessing one would mean building the
+    country->domain registry this task explicitly avoids."""
+    calls: list = []
+    responses = [_sample_response("q"), None]
+    service = WebSearchService(
+        _FakeProvider(calls=calls, responses=responses), enabled=True,
+    )
+    service.maybe_search("Какие сейчас правила въезда в Индонезию?")
+    assert calls[1][1] is None  # (query, site, limit, search_type) -> site

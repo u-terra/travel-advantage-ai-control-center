@@ -80,11 +80,24 @@ PROVIDER_NAME = "yandex"
 _ENDPOINT = "https://searchapi.api.cloud.yandex.net/v2/web/search"
 _MAX_QUERY_TEXT_CHARS = 400
 
-# RU-only for this MVP: the product and its audience are Russian-language
-# travel content (see the rest of this codebase's instructions/copy). Not
-# exposed as a config knob - there is no real scenario for another value yet,
-# and adding one is a one-line change here plus one new env var when needed.
+# RU-only for this MVP (the default/normal search): the product and its
+# audience are Russian-language travel content (see the rest of this
+# codebase's instructions/copy). Not exposed as a config knob - there is no
+# real scenario for another default value yet, and adding one is a one-line
+# change here plus one new env var when needed.
 _SEARCH_TYPE = "SEARCH_TYPE_RU"
+
+# Full documented searchType enum, confirmed against the current official
+# docs (both https://aistudio.yandex.ru/docs/en/search-api/concepts/
+# web-search.html and https://aistudio.yandex.ru/docs/en/ai-studio/sdk-ref/
+# types/search_api.html list the same six values): SEARCH_TYPE_RU (Russian),
+# SEARCH_TYPE_TR (Turkish), SEARCH_TYPE_COM (international/worldwide -
+# yandex.com), SEARCH_TYPE_KK (Kazakh), SEARCH_TYPE_BE (Belarusian),
+# SEARCH_TYPE_UZ (Uzbek). SEARCH_TYPE_COM is the one public, non-guessed
+# value for "worldwide" search - used only by the official-source fallback
+# in app.services.web_search.service (see SEARCH_TYPE_INTERNATIONAL below),
+# never by the default/normal search above.
+SEARCH_TYPE_INTERNATIONAL = "SEARCH_TYPE_COM"
 
 # Selects Smart Snippets instead of plain Web Search - see module docstring
 # for the verbatim official example this is copied from.
@@ -126,8 +139,17 @@ class YandexSearchProvider(WebSearchProvider):
         self.config = config
 
     def search(
-        self, query: str, *, site: str | None = None, limit: int = 5
+        self,
+        query: str,
+        *,
+        site: str | None = None,
+        limit: int = 5,
+        search_type: str | None = None,
     ) -> SearchResponse | None:
+        """``search_type`` optionally overrides the default SEARCH_TYPE_RU
+        request scope (e.g. SEARCH_TYPE_INTERNATIONAL for a worldwide
+        search) - every existing caller that omits it keeps today's exact
+        RU-only behavior unchanged."""
         if not self.config.is_configured:
             return None
         query_text = (query or "").strip()
@@ -143,7 +165,7 @@ class YandexSearchProvider(WebSearchProvider):
 
         payload: dict[str, Any] = {
             "query": {
-                "searchType": _SEARCH_TYPE,
+                "searchType": search_type or _SEARCH_TYPE,
                 "queryText": query_text_for_api[:_MAX_QUERY_TEXT_CHARS],
             },
             "folderId": self.config.folder_id,
