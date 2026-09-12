@@ -12,54 +12,17 @@ without mocking an LLM.
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
-from app.services.web_search.base import SearchResponse, SearchResult, WebSearchProvider
+from app.services.web_search.base import SearchResponse, WebSearchProvider
 # Yandex-specific: only the official-source fallback below needs a search
 # scope other than the provider's own default - see _ensure_official_source
 # and yandex_provider.py's SEARCH_TYPE_INTERNATIONAL comment for why. This
 # is the one deliberate, narrow exception to this module otherwise never
 # importing the concrete Yandex adapter.
 from app.services.web_search.yandex_provider import SEARCH_TYPE_INTERNATIONAL
-
-log = logging.getLogger(__name__)
-
-# ══════════════════════════════════════════════════════════════════════════
-# TEMPORARY PRODUCTION DIAGNOSTIC LOGGING - official-source fallback.
-#
-# Added to investigate a live prod report: after 471a689 (worldwide search
-# type + English fallback query), the fallback STILL surfaced zero official
-# domains for "Какие сейчас изменения правил въезда в Индонезию для
-# россиян?" - same 5 secondary sources as before. Purpose is to see exactly
-# what Yandex returns for the fallback call itself (previously invisible -
-# only the final merged/unchanged result was observable). No algorithm,
-# routing, ranking, or prompt-rule change - only logging calls, every one
-# marked below. Log level is INFO and gated to the same changeable-rules
-# queries the fallback itself is gated on, so volume stays bounded. No
-# secrets: only query text, result domain/url/title/rank, and the fixed
-# SEARCH_TYPE_INTERNATIONAL constant are logged - never API keys,
-# Authorization headers, cookies, or any user-account data.
-#
-# DELETE EASILY: every line/block below is tagged "# DIAG:" or lives in a
-# function whose name starts with "_diag_" - grep for either to find and
-# remove all of it in one pass once the investigation is done.
-_DIAG_PREFIX = "web_search_fallback_diag"
-
-
-def _diag_result_line(result: SearchResult) -> str:
-    return f"domain={result.domain!r} url={result.url!r} title={result.title!r} rank={result.rank}"
-
-
-def _diag_log_results(label: str, results: list[SearchResult]) -> None:
-    if not results:
-        log.info("%s: %s: <no results>", _DIAG_PREFIX, label)
-        return
-    for result in results:
-        log.info("%s: %s: %s", _DIAG_PREFIX, label, _diag_result_line(result))
-# ══════════════════ END TEMPORARY PRODUCTION DIAGNOSTIC LOGGING ═══════════
 
 # ── A. Freshness ──────────────────────────────────────────────────────────
 _FRESHNESS_MARKERS: tuple[str, ...] = (
@@ -260,36 +223,13 @@ def _ensure_official_source(
     we never have a known official domain to restrict to, see the query
     suffix comment above) and merges it in."""
     if any(_is_official_domain(result.domain) for result in response.results):
-        # DIAG: point 2 - fallback not called, official already present.
-        log.info(
-            "%s: fallback_called=False (official domain already present in first search)",
-            _DIAG_PREFIX,
-        )
         return response
     fallback_query = _official_fallback_query(query)
-    # DIAG: points 2/3/4 - fallback called, exact query/search_type/limit used.
-    log.info(
-        "%s: fallback_called=True fallback_query=%r search_type=%r limit=%d",
-        _DIAG_PREFIX, fallback_query, SEARCH_TYPE_INTERNATIONAL, _OFFICIAL_FALLBACK_SEARCH_LIMIT,
-    )
     fallback = provider.search(
         fallback_query, site=None, search_type=SEARCH_TYPE_INTERNATIONAL,
         limit=_OFFICIAL_FALLBACK_SEARCH_LIMIT, allow_exceeding_configured_max=True,
     )
-    # DIAG: points 6/7 - raw fallback results and _is_official_domain() per result.
-    if fallback is None:
-        log.info("%s: fallback_result=<none - provider returned None>", _DIAG_PREFIX)
-    else:
-        _diag_log_results("fallback_result", fallback.results)
-        for result in fallback.results:
-            log.info(
-                "%s: fallback_result_is_official domain=%r is_official=%s",
-                _DIAG_PREFIX, result.domain, _is_official_domain(result.domain),
-            )
-    merged = _merge_official_fallback(response, fallback)
-    # DIAG: point 8 - final merged list actually returned to the caller.
-    _diag_log_results("merged_result", merged.results)
-    return merged
+    return _merge_official_fallback(response, fallback)
 
 
 @dataclass(frozen=True)
@@ -378,15 +318,6 @@ class WebSearchService:
             return None
         response = self._provider.search(query, site=site or decision.site)
         is_high_risk_query = _matches_changeable_rules((query or "").lower())
-        if is_high_risk_query:
-            # DIAG: points 1/5 - original query and raw first-search results
-            # (logged before any reranking, so this is exactly what the
-            # provider returned).
-            log.info("%s: original_query=%r", _DIAG_PREFIX, query)
-            if response is None:
-                log.info("%s: first_search_result=<none - provider returned None>", _DIAG_PREFIX)
-            else:
-                _diag_log_results("first_search_result", response.results)
         # Official-source priority is gated to queries that actually match
         # _CHANGEABLE_RULES_MARKERS (visas, entry rules, borders, fees,
         # customs, passport/medical entry requirements) - checked directly
@@ -513,9 +444,7 @@ def format_search_context(response: SearchResponse | None) -> str:
     # source fallback (_ensure_official_source) itself is gated on - a
     # market/freshness/company query has no "official source" concept, so a
     # status line there would be meaningless noise, not a signal.
-    is_high_risk_query = _matches_changeable_rules((response.query or "").lower())
-    status_line = None
-    if is_high_risk_query:
+    if _matches_changeable_rules((response.query or "").lower()):
         # Reuses official_source_missing() rather than recomputing the same
         # check separately, so this status line and the deterministic
         # OFFICIAL_SOURCE_MISSING_USER_NOTICE caveat can never drift apart.
@@ -527,14 +456,4 @@ def format_search_context(response: SearchResponse | None) -> str:
         lines.append(_OFFICIAL_SOURCE_STATUS_INSTRUCTION)
         lines.append("")
     lines.append(_RULES)
-    text = "\n".join(lines).rstrip()
-
-    if is_high_risk_query:
-        # DIAG: points 9/10 - the status this call computed, and confirmation
-        # it actually made it into the text handed to generation.
-        log.info(
-            "%s: official_source_status=%r status_line_in_context=%s",
-            _DIAG_PREFIX, status_line, status_line in text,
-        )
-
-    return text
+    return "\n".join(lines).rstrip()
