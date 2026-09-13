@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.domain.sources import WorkspaceSource
 from app.services.web_search.base import SearchResponse, SearchResult
-from app.services.web_source_discovery import discover_candidate_urls, normalize_article_url
+from app.services.web_source_discovery import (
+    discover_candidate_urls,
+    discovery_query,
+    mentions_stale_year,
+    normalize_article_url,
+    page_looks_like_non_content,
+)
 
 
 def source(source_id="trip_com", url="https://www.trip.com/travel-guide/") -> WorkspaceSource:
@@ -109,3 +117,101 @@ def test_discover_respects_limit():
     ])
     candidates = discover_candidate_urls(provider, source(), limit=2)
     assert len(candidates) == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage 3.1 Quality Gate
+# ═══════════════════════════════════════════════════════════════════════════
+
+# --- pre-fetch URL heuristic (requirement 1) ---
+
+def test_discover_rejects_not_found_url():
+    provider = FakeProvider(results=[
+        result("https://www.aviasales.ru/about/vacancies/backend/not-found", rank=1),
+        result("https://www.aviasales.ru/psgr/best-cities", rank=2),
+    ])
+    candidates = discover_candidate_urls(provider, source(source_id="aviasales_psgr", url="https://www.aviasales.ru/psgr/"))
+    assert candidates == ["https://www.aviasales.ru/psgr/best-cities"]
+
+
+def test_discover_rejects_vacancy_and_career_urls():
+    provider = FakeProvider(results=[
+        result("https://example.com/careers/backend-engineer", rank=1),
+        result("https://example.com/about/vacancies/", rank=2),
+        result("https://example.com/support/faq", rank=3),
+        result("https://example.com/login", rank=4),
+        result("https://example.com/guide/real-article", rank=5),
+    ])
+    candidates = discover_candidate_urls(provider, source(url="https://example.com/"))
+    assert candidates == ["https://example.com/guide/real-article"]
+
+
+def test_discover_url_heuristic_is_generic_not_aviasales_specific():
+    """The same rejection markers apply to ANY source's domain - nothing in
+    the implementation reads source.id, so this cannot be an
+    Aviasales-only special case."""
+    for domain, path in [
+        ("tutu.ru", "/vacancies/moscow"), ("trip.com", "/careers/apply"),
+        ("t-j.ru", "/support/contact"), ("onetwotrip.com", "/about/team"),
+    ]:
+        provider = FakeProvider(results=[result(f"https://{domain}{path}")])
+        candidates = discover_candidate_urls(provider, source(url=f"https://{domain}/"))
+        assert candidates == [], f"{domain}{path} should have been rejected"
+
+
+# --- post-fetch content validation (requirement 2) ---
+
+def test_page_looks_like_non_content_detects_404_body():
+    assert page_looks_like_non_content(
+        "Страница не найдена", "Извините, запрашиваемая страница не найдена",
+    ) is not None
+    assert page_looks_like_non_content("404", "Error 404: Page Not Found") is not None
+
+
+def test_page_looks_like_non_content_detects_vacancy_body_bilingual():
+    assert page_looks_like_non_content("Careers", "We are hiring! Join our team today.") is not None
+    assert page_looks_like_non_content("Вакансии в компании", "Открытые вакансии: бэкенд-разработчик") is not None
+
+
+def test_page_looks_like_non_content_accepts_real_article():
+    assert page_looks_like_non_content(
+        "Гид по Италии", "Полезная статья про путешествия и достопримечательности",
+    ) is None
+
+
+# --- freshness (requirement 3) ---
+
+def test_mentions_stale_year_flags_old_year():
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    assert mentions_stale_year("Подборка отелей за 2024 год", now=now) is True
+
+
+def test_mentions_stale_year_false_when_current_year_also_present():
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    assert mentions_stale_year("Основан в 2015, обновлено в 2026 году", now=now) is False
+
+
+def test_mentions_stale_year_false_with_no_year():
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    assert mentions_stale_year("Гид по лучшим пляжам", now=now) is False
+
+
+def test_discovery_query_includes_current_year_and_month():
+    now = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    query = discovery_query(now=now)
+    assert "2026" in query
+    assert "сентября" in query
+
+
+# --- URL normalization (requirement 4) ---
+
+def test_normalize_strips_cdwuid_attempt_tracking_param():
+    normalized = normalize_article_url(
+        "https://t-j.ru/flows/travel/some-article?cdwuid_attempt=1"
+    )
+    assert normalized == "https://t-j.ru/flows/travel/some-article"
+
+
+def test_normalize_strips_source_param_but_keeps_meaningful_query():
+    normalized = normalize_article_url("https://example.com/article?source=telegram&id=7")
+    assert normalized == "https://example.com/article?id=7"

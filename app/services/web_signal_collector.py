@@ -55,7 +55,12 @@ from app.repositories.web_signal_repository import WebSignalRecord, WebSignalRep
 from app.services.llm.base import LLMProvider
 from app.services.usage_recorder import record_llm_call
 from app.services.web_search.base import WebSearchProvider
-from app.services.web_source_discovery import discover_candidate_urls, normalize_article_url
+from app.services.web_source_discovery import (
+    discover_candidate_urls,
+    mentions_stale_year,
+    normalize_article_url,
+    page_looks_like_non_content,
+)
 
 log = logging.getLogger(__name__)
 
@@ -236,6 +241,20 @@ class WebSignalCollector:
             )
             return None
 
+        # Stage 3.1 Quality Gate, requirement 2: catches what the pre-fetch
+        # URL heuristic (app.services.web_source_discovery.
+        # _rejected_by_url_heuristic) cannot - a 404/vacancy/support page
+        # that returns HTTP 200 with an ordinary-looking URL. Checked before
+        # the LLM call, not after: no point paying for an analysis of a page
+        # we are about to discard anyway.
+        rejected_marker = page_looks_like_non_content(page.title, page.text)
+        if rejected_marker is not None:
+            log.info(
+                "web_signal_collector: content rejected for '%s' (%s) - matched '%s'",
+                source.id, url, rejected_marker,
+            )
+            return None
+
         analysis = await asyncio.to_thread(
             self._provider.analyze_source, source_text=page.text[:_ANALYSIS_TEXT_CHARS],
         )
@@ -266,6 +285,11 @@ class WebSignalCollector:
             # None (unknown) stays honest; see the repository schema comment.
             published_at=None,
             is_fallback=is_fallback,
+            # Stage 3.1, requirement 3: a ranking signal only, never a
+            # substitute for published_at - checked against our OWN
+            # title/summary (not the raw page, which routinely has
+            # copyright-footer years unrelated to the article's content).
+            is_stale_dated=mentions_stale_year(f"{title} {summary}"),
         )
 
 

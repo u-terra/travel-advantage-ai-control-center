@@ -456,3 +456,107 @@ def test_tenant_isolation_holds_with_discovery_enabled(tmp_path: Path) -> None:
 
     assert len(run(signals.list_for_workspace(owner))) == 1
     assert run(signals.list_for_workspace(other)) == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage 3.1 Quality Gate - pipeline integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_content_level_404_rejection_falls_back_to_landing_page(tmp_path: Path) -> None:
+    """A candidate whose URL looks fine but whose FETCHED content is a 404/
+    vacancy page must be rejected post-fetch, and - if it was the only
+    candidate discovered - the source falls back to its landing page
+    (requirement 2 + 5)."""
+    _, owner, catalog, signals = build(tmp_path, [web_source("aviasales_psgr", url="https://www.aviasales.ru/psgr/")])
+    search_provider = FakeProvider(results=[result("https://www.aviasales.ru/psgr/some-page")])
+    fetcher = make_fetcher({
+        "https://www.aviasales.ru/psgr/some-page": page(
+            "https://www.aviasales.ru/psgr/some-page",
+            title="Страница не найдена", text="Извините, запрашиваемая страница не найдена",
+        ),
+        "https://www.aviasales.ru/psgr/": page("https://www.aviasales.ru/psgr/", title="Aviasales ПСЖР"),
+    })
+    llm_provider = FakeLLMProvider(analysis=analysis())
+    collector = WebSignalCollector(catalog, signals, llm_provider, fetcher=fetcher, web_search_provider=search_provider)
+
+    outcome = run(collector.collect_for_workspace(owner))
+
+    stored = run(signals.list_for_workspace(owner))
+    assert len(stored) == 1
+    assert stored[0].is_fallback is True
+    assert stored[0].item_url == "https://www.aviasales.ru/psgr/"
+
+
+def test_stale_dated_article_ranks_below_fresh_article(tmp_path: Path) -> None:
+    """Requirement 3: a discovered article whose content names an old year
+    must rank below one that does not, even though both are real
+    (non-fallback) articles."""
+    sources = [
+        web_source("stale_src", url="https://a.example.com/hub"),
+        web_source("fresh_src", url="https://b.example.com/hub"),
+    ]
+    _, owner, catalog, signals = build(tmp_path, sources)
+    fetcher = make_fetcher({
+        "https://a.example.com/hub/old": page("https://a.example.com/hub/old", title="Подборка за 2024 год"),
+        "https://b.example.com/hub/new": page("https://b.example.com/hub/new", title="Гид по Италии"),
+    })
+
+    class PerSourceLLM:
+        name = "fake"
+        is_configured = True
+
+        def analyze_source(self, *, source_text):
+            if "2024" in source_text or "Подборка" in source_text:
+                return analysis(summary="Подборка отелей за 2024 год")
+            return analysis(summary="Актуальный гид по направлениям")
+
+        def generate_draft(self, **kw): return None
+        def check_text(self, **kw): return None
+        def propose_content_topics(self, **kw): return None
+
+    def discover(provider, source, *, limit):
+        if source.id == "stale_src":
+            return ["https://a.example.com/hub/old"]
+        return ["https://b.example.com/hub/new"]
+
+    collector = WebSignalCollector(
+        catalog, signals, PerSourceLLM(), fetcher=fetcher, web_search_provider=FakeProvider(),
+    )
+    collector._discover = discover
+
+    run(collector.collect_for_workspace(owner))
+
+    stored = run(signals.list_for_workspace(owner))
+    assert [r.source_id for r in stored] == ["fresh_src", "stale_src"]
+    assert stored[0].is_stale_dated is False
+    assert stored[1].is_stale_dated is True
+
+
+def test_landing_fallback_only_when_all_candidates_rejected(tmp_path: Path) -> None:
+    """Discovery finds candidates, but every one of them is quality-rejected
+    (fetch failure, content rejection) - the source must still fall back to
+    its landing page rather than contributing nothing (requirement 5)."""
+    _, owner, catalog, signals = build(tmp_path, [web_source("onetwotrip_blog", url="https://www.onetwotrip.com/ru/blog/")])
+    search_provider = FakeProvider(results=[
+        result("https://www.onetwotrip.com/ru/blog/broken-link"),
+        result("https://www.onetwotrip.com/ru/blog/404-page"),
+    ])
+    fetcher = make_fetcher({
+        "https://www.onetwotrip.com/ru/blog/404-page": page(
+            "https://www.onetwotrip.com/ru/blog/404-page",
+            title="404", text="Error 404: Page Not Found",
+        ),
+        "https://www.onetwotrip.com/ru/blog/": page(
+            "https://www.onetwotrip.com/ru/blog/", title="OneTwoTrip Blog",
+        ),
+        # "broken-link" deliberately NOT stubbed -> PublicSourceFetchError
+    })
+    llm_provider = FakeLLMProvider(analysis=analysis())
+    collector = WebSignalCollector(catalog, signals, llm_provider, fetcher=fetcher, web_search_provider=search_provider)
+
+    run(collector.collect_for_workspace(owner))
+
+    stored = run(signals.list_for_workspace(owner))
+    assert len(stored) == 1
+    assert stored[0].is_fallback is True
+    assert stored[0].item_url == "https://www.onetwotrip.com/ru/blog/"
