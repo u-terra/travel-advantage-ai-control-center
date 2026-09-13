@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 
 from app.domain.sources import (
     PLATFORM_TELEGRAM,
+    PLATFORM_WEB,
     Source,
     normalize_telegram_username,
     telegram_url,
@@ -70,10 +71,19 @@ SUPPORTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
 _COLLECTOR_SINCE_VERSION = 2
 
 # Платформы, для которых в ЭТОМ репозитории есть код сбора.
-# Пусто осознанно: Control Center сейчас ничего не собирает сам — он читает
-# уже готовые сигналы Lead Radar. Наличие источника в реестре означает
-# «за этим наблюдаем по замыслу», а не «это уже физически мониторится».
-IMPLEMENTED_COLLECTOR_PLATFORMS: frozenset[str] = frozenset()
+#
+# ORCHESTRAVEL Stage 2: "web" стал первой платформой с реальным сборщиком в
+# этом репозитории — app.services.web_signal_collector.WebSignalCollector
+# читает включённые workspace-подписки source_catalog с platform="web",
+# фетчит страницу (fetch_public_source_sync) и разбирает её через LLM
+# (analyze_source), результат хранится в WebSignalRepository (Journal DB, не
+# leads.db). Сбор on-demand (по нажатию «Найти сигналы»), не по расписанию —
+# фоновый воркер остаётся отдельным следующим этапом.
+#
+# telegram/vk/rss сюда сознательно НЕ добавлены: их физически читает
+# отдельный проект Travel Lead Radar по своему собственному sources.json,
+# а не код этого репозитория — регистрация здесь этого не меняет.
+IMPLEMENTED_COLLECTOR_PLATFORMS: frozenset[str] = frozenset({PLATFORM_WEB})
 
 _REQUIRED_FIELDS = ("id", "name", "platform", "source_type", "purpose")
 
@@ -395,11 +405,16 @@ def collection_targets(
 ) -> tuple[Source, ...]:
     """Активные источники, которые сбор ДОЛЖЕН обрабатывать.
 
-    Это «список намерения», а не факт мониторинга. Функция отвечает на вопрос
-    «за чем мы хотим наблюдать», а не «что уже собирается»: кода сбора в этом
-    репозитории нет (см. `IMPLEMENTED_COLLECTOR_PLATFORMS`), сбор живёт в
-    отдельном проекте Travel Lead Radar. Возврат источника отсюда НЕ означает,
-    что он уже физически читается.
+    Это «список намерения», а не факт мониторинга — и именно для ЭТОЙ
+    функции: она читает файловый реестр (`config/sources.json` /
+    `data/sources.json`), а не `source_catalog`, и сама ничего не собирает.
+    Для telegram/vk/rss сбор по-прежнему живёт в отдельном проекте Travel
+    Lead Radar. Для `platform="web"` с ORCHESTRAVEL Stage 2 сборщик в этом
+    репозитории есть (см. `IMPLEMENTED_COLLECTOR_PLATFORMS` и
+    `app.services.web_signal_collector`), но он читает workspace-подписки
+    из `source_catalog` через `SourceCatalogRepository.list_for_workspace`,
+    а не через эту функцию. Возврат источника отсюда НЕ означает, что он уже
+    физически читается.
 
     Конкретные каналы нигде в бизнес-логике не перечислены — это единственный
     способ их узнать. Источники с `enabled: false` в выборку не попадают

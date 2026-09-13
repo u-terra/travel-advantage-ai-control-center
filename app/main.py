@@ -29,6 +29,7 @@ from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.telegram_bind_token_repository import TelegramBindTokenRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
+from app.repositories.web_signal_repository import WebSignalRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.chat_serialization import ChatSerializationMiddleware
@@ -71,6 +72,7 @@ def _build_dispatcher(
     subscription_repository: SubscriptionRepository | None = None,
     telegram_bind_token_repository: TelegramBindTokenRepository | None = None,
     web_search_service: WebSearchService | None = None,
+    web_signal_repository: WebSignalRepository | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -152,6 +154,10 @@ def _build_dispatcher(
     # app.web_api); defaults to None like every other optional dependency
     # here, so existing callers/tests are unaffected.
     dp["web_search_service"] = web_search_service
+    # ORCHESTRAVEL Stage 2 - see app.services.web_signal_collector. Optional/
+    # default-None like every other dependency here, so existing callers/
+    # tests are unaffected.
+    dp["web_signal_repository"] = web_signal_repository
     return dp
 
 
@@ -199,6 +205,13 @@ async def _async_main() -> None:
         owner_membership.workspace_id if owner_membership is not None else None
     )
     await workspace_signal_repository.sync_eligible()
+
+    # ORCHESTRAVEL Stage 2 - platform="web" source_catalog subscriptions now
+    # have a real (on-demand) collection path, see
+    # app.services.web_signal_collector. Own table in the same Journal DB;
+    # never touches leads.db - see app/repositories/web_signal_repository.py.
+    web_signal_repository = WebSignalRepository(settings.journal_db_path)
+    await web_signal_repository.init()
 
     competitor_repository = CompetitorRepository(settings.journal_db_path)
     await competitor_repository.init()
@@ -309,6 +322,7 @@ async def _async_main() -> None:
         subscription_repository=subscription_repository,
         telegram_bind_token_repository=telegram_bind_token_repository,
         web_search_service=web_search_service,
+        web_signal_repository=web_signal_repository,
     )
 
     await dp.start_polling(bot)

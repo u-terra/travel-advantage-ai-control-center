@@ -9,6 +9,7 @@ import pytest
 
 from app.domain.sources import (
     KNOWN_PLATFORMS,
+    PLATFORM_WEB,
     Source,
     is_valid_telegram_username,
     normalize_telegram_username,
@@ -215,12 +216,16 @@ def test_unknown_platform_loads_without_code_changes(tmp_path):
 
 def test_registry_membership_does_not_imply_an_implemented_collector():
     # Реестр отвечает на вопрос «за чем наблюдаем», а не «что уже собирается».
-    # В этом репозитории сборщиков нет вообще — сбор живёт в Lead Radar.
-    assert IMPLEMENTED_COLLECTOR_PLATFORMS == frozenset()
+    # ORCHESTRAVEL Stage 2: "web" — единственная платформа с реальным
+    # сборщиком в этом репозитории (app.services.web_signal_collector).
+    # telegram/vk/rss по-прежнему физически читает только внешний Lead Radar,
+    # по своему собственному sources.json — регистрация здесь это не меняет.
+    assert IMPLEMENTED_COLLECTOR_PLATFORMS == frozenset({PLATFORM_WEB})
 
     registry = load_registry()
-    assert len(registry.enabled()) > 0
-    for source in registry.enabled():
+    non_web_enabled = [s for s in registry.enabled() if s.platform != PLATFORM_WEB]
+    assert non_web_enabled  # sanity: legacy telegram/vk/rss sources still present
+    for source in non_web_enabled:
         assert source.platform not in IMPLEMENTED_COLLECTOR_PLATFORMS
 
 

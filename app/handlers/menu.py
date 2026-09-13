@@ -66,6 +66,9 @@ from app.repositories.conversation_state_repository import (
     ConversationStateRepository,
 )
 from app.repositories.partner_repository import PartnerRepository
+from app.repositories.source_catalog_repository import SourceCatalogRepository
+from app.repositories.usage_ledger_repository import UsageLedgerRepository
+from app.repositories.web_signal_repository import WebSignalRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.conversation_state_service import ConversationStateService
 from app.services.draft_sanitizer import sanitize_draft_text
@@ -73,6 +76,7 @@ from app.services.generation_request_builder import build_provider_generation_re
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.user_style import UserStyleService
+from app.services.web_signal_collector import WebSignalCollector, format_web_signals_block
 from app.storage import Journal
 
 router = Router(name="menu")
@@ -550,6 +554,10 @@ async def on_find_signals(
     workspace_context: WorkspaceContext | None,
     v2_menu_enabled: bool = False,
     conversation_state_repository: ConversationStateRepository | None = None,
+    source_catalog_repository: SourceCatalogRepository | None = None,
+    web_signal_repository: WebSignalRepository | None = None,
+    llm_provider: LLMProvider | None = None,
+    usage_ledger_repository: UsageLedgerRepository | None = None,
 ) -> None:
     await state.clear()
     if workspace_context is None:
@@ -569,6 +577,34 @@ async def on_find_signals(
         return
 
     await message.answer(build_summary(signals), disable_web_page_preview=True)
+
+    # ORCHESTRAVEL Stage 2: workspace's own enabled platform="web"
+    # source_catalog subscriptions, collected on-demand right here (same
+    # user action, no scheduler yet - see app.services.web_signal_collector).
+    # Purely additive: every param above is optional/default-None, so a
+    # dev/test wiring that predates Stage 2 behaves exactly as before.
+    if (
+        source_catalog_repository is not None
+        and web_signal_repository is not None
+        and llm_provider is not None
+    ):
+        try:
+            await WebSignalCollector(
+                source_catalog_repository, web_signal_repository, llm_provider,
+                usage_ledger_repository=usage_ledger_repository,
+            ).collect_for_workspace(workspace_context.workspace_id)
+        except Exception:
+            log.warning("on_find_signals: web signal collection failed", exc_info=True)
+        try:
+            web_records = await web_signal_repository.list_for_workspace(
+                workspace_context.workspace_id, limit=DISPLAY_LIMIT,
+            )
+        except Exception:
+            log.warning("on_find_signals: web signal listing failed", exc_info=True)
+            web_records = []
+        web_block = format_web_signals_block(web_records)
+        if web_block:
+            await message.answer(web_block, disable_web_page_preview=True)
 
     ideas = _radar_content_ideas(signals)
     if not ideas:

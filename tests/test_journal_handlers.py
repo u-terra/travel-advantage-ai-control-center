@@ -914,6 +914,80 @@ def test_find_signals_without_conversation_repository_is_unaffected() -> None:
     assert any("Выберите идею" in text for text, _ in message.answers)
 
 
+def web_signal(
+    *, title="Заголовок web-сигнала", summary="Краткое обоснование",
+    url="https://example.com/article", source_name="Trip.com Travel Guide",
+):
+    return SimpleNamespace(
+        title=title, summary=summary, item_url=url, source_url=url,
+        source_name=source_name,
+    )
+
+
+def test_find_signals_includes_web_signals_block_when_wired() -> None:
+    """ORCHESTRAVEL Stage 2: when the new optional deps ARE wired (as in
+    app.main._build_dispatcher/app/main.py from Stage 2 onward), "Найти
+    сигналы" delivers both the legacy Radar block AND a second message
+    built from the workspace's own collected web signals."""
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(),
+        list_for_workspace=AsyncMock(return_value=[radar_record()]),
+    )
+    web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[web_signal()]))
+    message = Message()
+    with _recommender_patch(), patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+        collector_cls.return_value.collect_for_workspace = AsyncMock()
+        run(on_find_signals(
+            message, State(), radar_config(), signal_repo, context(42, 100),
+            source_catalog_repository=SimpleNamespace(),
+            web_signal_repository=web_repo,
+            llm_provider=SimpleNamespace(),
+        ))
+    collector_cls.return_value.collect_for_workspace.assert_awaited_once_with(42)
+    web_repo.list_for_workspace.assert_awaited_once()
+    assert any("Заголовок web-сигнала" in text for text, _ in message.answers)
+    assert any("Trip.com Travel Guide" in text for text, _ in message.answers)
+
+
+def test_find_signals_without_web_deps_is_unaffected() -> None:
+    """Requirement: the legacy Radar path must keep working unmodified when
+    the new Stage 2 dependencies are not passed at all (e.g. a dev/test
+    wiring that predates Stage 2) - same as every other optional dependency
+    in this handler."""
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(),
+        list_for_workspace=AsyncMock(return_value=[radar_record()]),
+    )
+    message = Message()
+    with _recommender_patch(), patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+        run(on_find_signals(message, State(), radar_config(), signal_repo, context(42, 100)))
+    collector_cls.assert_not_called()
+    assert any("Выберите идею" in text for text, _ in message.answers)
+
+
+def test_find_signals_web_collection_failure_does_not_break_radar_block() -> None:
+    """Requirement 9 applied at the handler boundary too: a web-signal
+    collection failure (DB error, unexpected exception) must never prevent
+    the already-working legacy Radar summary from being sent."""
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(),
+        list_for_workspace=AsyncMock(return_value=[radar_record()]),
+    )
+    web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
+    message = Message()
+    with _recommender_patch(), patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+        collector_cls.return_value.collect_for_workspace = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        run(on_find_signals(
+            message, State(), radar_config(), signal_repo, context(42, 100),
+            source_catalog_repository=SimpleNamespace(),
+            web_signal_repository=web_repo,
+            llm_provider=SimpleNamespace(),
+        ))
+    assert any("Тема" in text for text, _ in message.answers)
+
+
 def test_radar_content_selected_records_current_artifact_id(tmp_path) -> None:
     """B/C: a successful Radar draft records current_artifact_id into
     Working State; ArtifactRepository (not conversation_state) remains the

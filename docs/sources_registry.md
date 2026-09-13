@@ -37,8 +37,10 @@ Travel Lead Radar в будущем станет только исполните
 |---|---|---|---|
 | **Зарегистрирован** | Источник описан в активном реестре | `load_registry().all()` | 24 источника в стартовом наборе |
 | **Активен** (`enabled`) | **Разрешение** использовать источник | `registry.enabled()`, `collection_targets()` | 18 из 24 |
-| **Есть сборщик** | Реализовано чтение этой платформы | `IMPLEMENTED_COLLECTOR_PLATFORMS` | в этом репозитории **пусто** |
-| **Реально мониторится** | Источник физически читается | Travel Lead Radar, по своему файлу | 16 (через файл Radar, не через этот реестр) |
+| **Есть сборщик** | Реализовано чтение этой платформы | `IMPLEMENTED_COLLECTOR_PLATFORMS` | с ORCHESTRAVEL Stage 2 — только `web` (см. ниже); `telegram`/`vk`/`rss` по-прежнему пусто в этом репозитории |
+| **Реально мониторится** | Источник физически читается | Travel Lead Radar (`telegram`/`vk`/`rss`), по своему файлу; `web` — этим репозиторием, по подпискам `source_catalog` | 16 через Radar + включённые `platform="web"` подписки каждого workspace |
+
+> **ORCHESTRAVEL Stage 2 (`web`):** сборщик — `app.services.web_signal_collector.WebSignalCollector`. Важно: он читает `source_catalog`/`workspace_source_subscriptions` (per-workspace БД из Stage 1), а **не** этот файловый реестр (`config/sources.json`/`data/sources.json`) и не вызывает `collection_targets()` ниже. Сбор on-demand — по нажатию «Найти сигналы» в Telegram, без планировщика. Результат хранится в отдельной таблице `web_source_signals` (та же Journal DB), `leads.db` Travel Lead Radar не затрагивается.
 
 Ключевое различие: `enabled` — это **разрешение**, а не факт. Активный источник
 на платформе без сборщика просто не будет собираться. Реальный мониторинг
