@@ -988,6 +988,111 @@ def test_find_signals_web_collection_failure_does_not_break_radar_block() -> Non
     assert any("Тема" in text for text, _ in message.answers)
 
 
+def _recommender_unavailable_patch():
+    """Simulates build_workspace_signals() returning None - the exact
+    condition that used to make on_find_signals return early and skip the
+    web block entirely (the defect this fix addresses)."""
+    return patch(
+        "app.services.lead_radar._load_recommender",
+        side_effect=FileNotFoundError("recommender not found"),
+    )
+
+
+def test_find_signals_shows_web_when_radar_unavailable() -> None:
+    """ORCHESTRAVEL Stage 2 fix, requirement 2 ('Radar недоступен → всё
+    равно запустить и показать web'): build_workspace_signals() returning
+    None must not prevent the web collector from running and its results
+    from being shown - the two contours are independent."""
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(),
+        list_for_workspace=AsyncMock(return_value=[radar_record()]),
+    )
+    web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[web_signal()]))
+    message = Message()
+    with _recommender_unavailable_patch(), patch(
+        "app.handlers.menu.WebSignalCollector"
+    ) as collector_cls:
+        collector_cls.return_value.collect_for_workspace = AsyncMock()
+        run(on_find_signals(
+            message, State(), radar_config(), signal_repo, context(42, 100),
+            source_catalog_repository=SimpleNamespace(),
+            web_signal_repository=web_repo,
+            llm_provider=SimpleNamespace(),
+        ))
+    collector_cls.return_value.collect_for_workspace.assert_awaited_once_with(42)
+    assert any("Заголовок web-сигнала" in text for text, _ in message.answers)
+
+
+def test_find_signals_radar_exception_does_not_block_web() -> None:
+    """ORCHESTRAVEL Stage 2 fix: an exception raised by the Radar repository
+    itself (not just an empty/None result) must be caught and must not
+    prevent the web collector from running - independent failure of the
+    Radar contour."""
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(side_effect=RuntimeError("radar db unavailable")),
+        list_for_workspace=AsyncMock(),
+    )
+    web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[web_signal()]))
+    message = Message()
+    with patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+        collector_cls.return_value.collect_for_workspace = AsyncMock()
+        run(on_find_signals(
+            message, State(), radar_config(), signal_repo, context(42, 100),
+            source_catalog_repository=SimpleNamespace(),
+            web_signal_repository=web_repo,
+            llm_provider=SimpleNamespace(),
+        ))
+    collector_cls.return_value.collect_for_workspace.assert_awaited_once_with(42)
+    signal_repo.list_for_workspace.assert_not_awaited()
+    assert any("Заголовок web-сигнала" in text for text, _ in message.answers)
+
+
+def test_find_signals_shows_combined_message_when_both_contours_empty() -> None:
+    """ORCHESTRAVEL Stage 2 fix, requirement 2 ('оба ничего не дали →
+    понятное сообщение'): when Radar has no signals AND the web collector
+    found nothing, the user gets exactly one clear combined message instead
+    of silence or two separate technical-sounding notices."""
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(),
+        list_for_workspace=AsyncMock(return_value=[]),
+    )
+    web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
+    message = Message()
+    with _recommender_patch(), patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+        collector_cls.return_value.collect_for_workspace = AsyncMock()
+        run(on_find_signals(
+            message, State(), radar_config(), signal_repo, context(42, 100),
+            source_catalog_repository=SimpleNamespace(),
+            web_signal_repository=web_repo,
+            llm_provider=SimpleNamespace(),
+        ))
+    assert any("нет ни сигналов Radar" in text for text, _ in message.answers)
+
+
+def test_find_signals_combined_message_survives_both_contours_failing() -> None:
+    """Both contours can fail via exception (not just empty result) at the
+    same time and the handler must still degrade to the one clear combined
+    message, never crash."""
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(side_effect=RuntimeError("radar down")),
+        list_for_workspace=AsyncMock(),
+    )
+    web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
+    message = Message()
+    with patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+        collector_cls.return_value.collect_for_workspace = AsyncMock(
+            side_effect=RuntimeError("web down")
+        )
+        run(on_find_signals(
+            message, State(), radar_config(), signal_repo, context(42, 100),
+            source_catalog_repository=SimpleNamespace(),
+            web_signal_repository=web_repo,
+            llm_provider=SimpleNamespace(),
+        ))
+    web_repo.list_for_workspace.assert_awaited_once()
+    assert any("нет ни сигналов Radar" in text for text, _ in message.answers)
+
+
 def test_radar_content_selected_records_current_artifact_id(tmp_path) -> None:
     """B/C: a successful Radar draft records current_artifact_id into
     Working State; ArtifactRepository (not conversation_state) remains the

@@ -58,7 +58,6 @@ from app.services.lead_radar import (
     build_summary,
     build_workspace_signals,
     route_card,
-    unavailable_summary,
 )
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.conversation_state_repository import (
@@ -84,6 +83,15 @@ log = logging.getLogger(__name__)
 
 _RADAR_CONTENT_PREFIX = "radar_content:"
 _RADAR_CONTENT_LIMIT = 3
+# ORCHESTRAVEL Stage 2 fix: shown once, only when NEITHER contour (legacy
+# Radar, web-source collector) produced anything to show - each contour's
+# own success/failure is otherwise silent by design (no per-contour
+# "unavailable"/"empty" text), so this is the one place the user learns
+# nothing came back at all.
+_NO_SIGNALS_ANYWHERE = (
+    "Сейчас нет ни сигналов Radar, ни материалов из ваших web-источников.\n"
+    "Ничего не было отправлено и не запускалось автоматически."
+)
 # F2A: TTL for the persisted PendingOffer/PendingQuestion mirrors of these
 # buttons - generous enough to outlive a realistic "user steps away", short
 # enough that a stale offer/question does not linger indefinitely.
@@ -567,22 +575,34 @@ async def on_find_signals(
         )
         return
     await message.answer(route_card(), reply_markup=active_main_menu(v2_menu_enabled))
-    await workspace_signal_repository.sync_eligible()
-    records = await workspace_signal_repository.list_for_workspace(
-        workspace_context.workspace_id, limit=200
-    )
-    signals = build_workspace_signals(lead_radar_config, records, limit=DISPLAY_LIMIT)
-    if signals is None:
-        await message.answer(unavailable_summary())
-        return
 
-    await message.answer(build_summary(signals), disable_web_page_preview=True)
+    # ORCHESTRAVEL Stage 2 fix: Radar and the web-source collector are two
+    # independent contours - a failure or empty result in one must never
+    # suppress the other. Each is wrapped in its own try/except and each
+    # only sends a message when it actually has something to show; the two
+    # blocks below do not early-return into one another.
+    signals: list | None = None
+    try:
+        await workspace_signal_repository.sync_eligible()
+        records = await workspace_signal_repository.list_for_workspace(
+            workspace_context.workspace_id, limit=200
+        )
+        signals = build_workspace_signals(lead_radar_config, records, limit=DISPLAY_LIMIT)
+    except Exception:
+        log.warning("on_find_signals: radar signal collection failed", exc_info=True)
+        signals = None
+
+    sent_any_block = False
+    if signals:
+        await message.answer(build_summary(signals), disable_web_page_preview=True)
+        sent_any_block = True
 
     # ORCHESTRAVEL Stage 2: workspace's own enabled platform="web"
     # source_catalog subscriptions, collected on-demand right here (same
     # user action, no scheduler yet - see app.services.web_signal_collector).
     # Purely additive: every param above is optional/default-None, so a
     # dev/test wiring that predates Stage 2 behaves exactly as before.
+    web_records: list = []
     if (
         source_catalog_repository is not None
         and web_signal_repository is not None
@@ -605,8 +625,12 @@ async def on_find_signals(
         web_block = format_web_signals_block(web_records)
         if web_block:
             await message.answer(web_block, disable_web_page_preview=True)
+            sent_any_block = True
 
-    ideas = _radar_content_ideas(signals)
+    if not sent_any_block:
+        await message.answer(_NO_SIGNALS_ANYWHERE)
+
+    ideas = _radar_content_ideas(signals or [])
     if not ideas:
         return
 
