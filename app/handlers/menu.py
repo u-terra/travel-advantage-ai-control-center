@@ -75,6 +75,7 @@ from app.services.generation_request_builder import build_provider_generation_re
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.user_style import UserStyleService
+from app.services.web_search.service import WebSearchService
 from app.services.web_signal_collector import WebSignalCollector, format_web_signals_block
 from app.storage import Journal
 
@@ -566,6 +567,7 @@ async def on_find_signals(
     web_signal_repository: WebSignalRepository | None = None,
     llm_provider: LLMProvider | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
+    web_search_service: WebSearchService | None = None,
 ) -> None:
     await state.clear()
     if workspace_context is None:
@@ -612,6 +614,9 @@ async def on_find_signals(
             await WebSignalCollector(
                 source_catalog_repository, web_signal_repository, llm_provider,
                 usage_ledger_repository=usage_ledger_repository,
+                web_search_provider=(
+                    web_search_service.provider if web_search_service is not None else None
+                ),
             ).collect_for_workspace(workspace_context.workspace_id)
         except Exception:
             log.warning("on_find_signals: web signal collection failed", exc_info=True)

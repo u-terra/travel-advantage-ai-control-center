@@ -304,6 +304,15 @@ class WebSearchService:
         self._provider = provider
         self._enabled = enabled
 
+    @property
+    def provider(self) -> WebSearchProvider | None:
+        """Raw provider access for callers that need to search unconditionally
+        (e.g. app.services.web_source_discovery, which searches every enabled
+        platform="web" source on every run - decide_web_search()'s "does this
+        chat message need a search" policy below does not apply there). None
+        when search is disabled/unconfigured, same as maybe_search()."""
+        return self._provider if self._enabled else None
+
     def maybe_search(
         self, query: str, *, site: str | None = None
     ) -> SearchResponse | None:
