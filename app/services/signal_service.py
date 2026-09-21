@@ -139,6 +139,54 @@ async def collect_web_signals(
         log.warning("collect_web_signals: web signal collection failed", exc_info=True)
 
 
+# Freshness guard for triggering the external collector on a read (GET
+# /api/signals): a collection run does real HTTP fetches + an LLM analyze
+# call per source, so it must not fire on every page open/refresh. One hour
+# is comfortably inside the ">= daily" cadence these sources actually change
+# at, while still being far shorter than the old "only when Telegram happens
+# to run" regime - no scheduler/infra added, just a cheap read before the
+# expensive call.
+_WEB_COLLECTION_GUARD_HOURS = 1.0
+
+
+async def sync_web_signals_if_stale(
+    workspace_id: int,
+    *,
+    source_catalog_repository: SourceCatalogRepository,
+    web_signal_repository: WebSignalRepository,
+    llm_provider: LLMProvider,
+    usage_ledger_repository: Optional[UsageLedgerRepository] = None,
+    web_search_provider: Optional[WebSearchProvider] = None,
+    max_age_hours: float = _WEB_COLLECTION_GUARD_HOURS,
+) -> None:
+    """Cheap freshness guard in front of ``collect_web_signals()``.
+
+    ``GET /api/signals`` used to call ``collect_web_signals()``
+    unconditionally on every load, which meant every page open/refresh
+    re-ran the real collector (HTTP fetch + LLM analyze per web source) -
+    expensive and unnecessary when nothing has changed since the last run a
+    minute ago. This reads ``WebSignalRepository.latest_fetched_at()``
+    (a single ``MAX(fetched_at)`` lookup, no join, not the collector itself)
+    and only triggers a real collection run when that timestamp is missing
+    or older than ``max_age_hours`` - already-fresh data is read as-is, no
+    second collection fires. No new scheduler/queue/table: the existing
+    ``fetched_at`` column already written by ``WebSignalCollector`` is the
+    only piece of metadata this needs.
+    """
+    latest = await web_signal_repository.latest_fetched_at(workspace_id)
+    age_hours = _freshness_hours(latest)
+    if age_hours is not None and age_hours <= max_age_hours:
+        return
+    await collect_web_signals(
+        workspace_id,
+        source_catalog_repository=source_catalog_repository,
+        web_signal_repository=web_signal_repository,
+        llm_provider=llm_provider,
+        usage_ledger_repository=usage_ledger_repository,
+        web_search_provider=web_search_provider,
+    )
+
+
 def _freshness_hours(timestamp: str | None) -> Optional[float]:
     raw = (timestamp or "").strip()
     if not raw:

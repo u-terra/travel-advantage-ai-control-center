@@ -502,12 +502,14 @@ def test_signal_json_exposes_recommended_action_and_content_hint(api) -> None:
     assert signals["radar:2"]["action_reason"]
 
 
-def _web_signal_record(workspace_id: int, source_id: str, *, title: str = "Trip статья") -> WebSignalRecord:
+def _web_signal_record(
+    workspace_id: int, source_id: str, *, title: str = "Trip статья", hours_ago: float = 1.0,
+) -> WebSignalRecord:
     return WebSignalRecord(
         workspace_id=workspace_id, source_id=source_id, source_name=source_id,
         source_url=f"https://{source_id}.example", item_url=f"https://{source_id}.example/1",
-        title=title, summary="summary", fetched_at=_now_iso(1.0),
-        published_at=_now_iso(1.0),
+        title=title, summary="summary", fetched_at=_now_iso(hours_ago),
+        published_at=_now_iso(hours_ago),
     )
 
 
@@ -587,22 +589,66 @@ def test_web_source_signals_respect_tenant_isolation(api) -> None:
 
 def test_get_signals_triggers_the_shared_web_signal_collector(api) -> None:
     """Web-only gap fix: GET /api/signals must be able to collect fresh
-    Stage 2/3 web-source signals itself (through the same shared
-    app.services.signal_service.collect_web_signals -> WebSignalCollector
-    Telegram uses), instead of only ever reading whatever Telegram already
-    collected earlier."""
+    Stage 2/3 web-source signals itself (through the shared
+    app.services.signal_service.sync_web_signals_if_stale ->
+    collect_web_signals -> WebSignalCollector Telegram uses), instead of
+    only ever reading whatever Telegram already collected earlier. This
+    workspace has no prior web_source_signals rows, so the freshness guard
+    must consider it stale/missing and trigger a real collection."""
     client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [])
 
     with patch(
-        "app.web_api.collect_web_signals", new_callable=AsyncMock,
-    ) as collect_mock, patch(
+        "app.web_api.sync_web_signals_if_stale", new_callable=AsyncMock,
+    ) as sync_mock, patch(
         "app.services.lead_radar._load_recommender", return_value=_fake_recommender()
     ):
         response = client.get("/api/signals")
 
     assert response.status_code == 200
-    collect_mock.assert_awaited_once()
-    _, kwargs = collect_mock.call_args
-    assert collect_mock.call_args.args[0] == workspace_id
-    assert kwargs["web_signal_repository"] is web_api.web_signal_repository
+    sync_mock.assert_awaited_once()
+    assert sync_mock.call_args.args[0] == workspace_id
+
+
+def test_two_sequential_gets_with_fresh_data_collect_only_once(api) -> None:
+    """Freshness guard (deploy-blocking fix): the real WebSignalCollector
+    must not run on every GET /api/signals. First GET has no prior
+    web_source_signals rows for this workspace, so the freshness guard
+    considers it stale/missing and the collector runs once (and, exactly
+    like the real collector, leaves a fresh row behind). The immediate
+    second GET/refresh must see that fresh row and skip collection - the
+    collector is awaited exactly once across both requests, not once per
+    request."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _create_radar_db(radar_db_path, [])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="trip", source_name="Trip.com",
+    )
+
+    async def _fake_collect_for_workspace(_workspace_id):
+        # Mirrors what the real collector does: writes a row with a
+        # current fetched_at - this is what the guard's next
+        # latest_fetched_at() check should see as "fresh".
+        # hours_ago=0.0: the real collector writes fetched_at as "now" at
+        # collection time, not some already-stale fixed timestamp - using
+        # anything close to the guard boundary here would make the test
+        # flaky depending on how long the request takes.
+        await web_api.web_signal_repository.save_many(
+            [_web_signal_record(workspace_id, "trip", hours_ago=0.0)]
+        )
+
+    with patch(
+        "app.services.signal_service.WebSignalCollector"
+    ) as collector_cls, patch(
+        "app.services.lead_radar._load_recommender", return_value=_fake_recommender()
+    ):
+        collector_cls.return_value.collect_for_workspace = AsyncMock(
+            side_effect=_fake_collect_for_workspace
+        )
+
+        first = client.get("/api/signals")
+        second = client.get("/api/signals")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    collector_cls.return_value.collect_for_workspace.assert_awaited_once()

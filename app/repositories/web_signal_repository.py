@@ -214,6 +214,22 @@ class WebSignalRepository:
             )).fetchall()
         return [_record(row) for row in rows]
 
+    async def latest_fetched_at(self, workspace_id: int) -> str | None:
+        """Cheapest possible freshness probe: ``MAX(fetched_at)`` across all
+        of this workspace's stored web-source rows, no join. Used to decide
+        whether a collection run is even worth triggering (see
+        app.services.signal_service.sync_web_signals_if_stale) - a plain
+        indexed lookup on ``idx_web_source_signals_workspace``, not the
+        actual fetch/discover/LLM-analyze work. Returns ``None`` when the
+        workspace has never collected anything yet.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            row = await (await db.execute(
+                "SELECT MAX(fetched_at) FROM web_source_signals WHERE workspace_id = ?",
+                (workspace_id,),
+            )).fetchone()
+        return row[0] if row else None
+
     async def get_for_workspace(
         self, workspace_id: int, signal_id: int
     ) -> WebSignalRecord | None:

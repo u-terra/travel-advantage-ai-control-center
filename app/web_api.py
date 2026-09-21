@@ -119,8 +119,8 @@ from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
 from app.services.rate_limit import signup_rate_limiter
 from app.services.signal_service import (
     build_unified_feed,
-    collect_web_signals,
     sync_and_list_radar_signals,
+    sync_web_signals_if_stale,
 )
 from app.services.robokassa import RoboKassaConfig
 from app.services.source_registry import SEED_REGISTRY_PATH
@@ -1656,11 +1656,15 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
     вызывать его на каждое чтение безопасно и держит оба интерфейса на одном
     пути вместо двух, которые могут разойтись.
 
-    Web-source часть теперь тоже собирается самим Web-эндпоинтом через тот
-    же WebSignalCollector, что и Telegram (общая точка входа -
-    app.services.signal_service.collect_web_signals, без второго
+    Web-source часть теперь тоже может собираться самим Web-эндпоинтом
+    через тот же WebSignalCollector, что и Telegram (общая точка входа -
+    app.services.signal_service.sync_web_signals_if_stale, без второго
     коллектора) - Web больше не зависит от того, что кто-то до этого нажал
-    "Найти сигналы" в Telegram.
+    "Найти сигналы" в Telegram. Дешёвый freshness guard: реальный сбор
+    (HTTP fetch + LLM analyze на источник) запускается только если данные
+    этого workspace старше часа или их ещё не было; иначе - просто чтение
+    уже сохранённых строк, без повторного внешнего сбора на каждый
+    открытие/refresh страницы.
     """
     try:
         signals, records = await sync_and_list_radar_signals(
@@ -1676,12 +1680,16 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
         # Web-only gap fix: previously this endpoint only READ
         # web_source_signals rows that Telegram's on_find_signals happened
         # to have collected earlier - a workspace that never opened
-        # Telegram never saw its own web sources refresh. Now Web triggers
-        # the same WebSignalCollector Telegram uses (via the shared
-        # app.services.signal_service.collect_web_signals - no second
-        # collector) before reading, so it can get fresh web-source signals
-        # on its own.
-        await collect_web_signals(
+        # Telegram never saw its own web sources refresh. Now Web can
+        # trigger the same WebSignalCollector Telegram uses (via the shared
+        # app.services.signal_service.sync_web_signals_if_stale - no second
+        # collector) before reading - but guarded by freshness: if this
+        # workspace's web-source rows were collected within the last hour,
+        # this is a plain read and the real collector (HTTP fetch + LLM
+        # analyze per source) does NOT run again. Repeated page opens/
+        # refreshes while data is still fresh only cost one cheap
+        # MAX(fetched_at) lookup, not a second external collection.
+        await sync_web_signals_if_stale(
             principal.workspace_id,
             source_catalog_repository=source_catalog_repository,
             web_signal_repository=web_signal_repository,

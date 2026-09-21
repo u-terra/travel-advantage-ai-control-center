@@ -10,7 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 from app.repositories.web_signal_repository import WebSignalRecord
 from app.services.lead_radar import LeadSignal
-from app.services.signal_service import build_unified_feed, collect_web_signals
+from app.services.signal_service import (
+    build_unified_feed,
+    collect_web_signals,
+    sync_web_signals_if_stale,
+)
 
 
 def _iso(hours_ago: float) -> str:
@@ -133,3 +137,48 @@ def test_collect_web_signals_swallows_collector_failure() -> None:
             web_signal_repository=object(),
             llm_provider=object(),
         ))  # must not raise
+
+
+class _FakeWebSignalRepository:
+    """Bare-bones stand-in with only what sync_web_signals_if_stale reads."""
+
+    def __init__(self, latest: str | None) -> None:
+        self._latest = latest
+
+    async def latest_fetched_at(self, workspace_id: int) -> str | None:
+        return self._latest
+
+
+def test_sync_web_signals_if_stale_skips_collection_when_recently_collected() -> None:
+    repo = _FakeWebSignalRepository(_iso(0.1))  # 6 minutes ago - well inside guard
+    with patch("app.services.signal_service.WebSignalCollector") as collector_cls:
+        instance = collector_cls.return_value
+        instance.collect_for_workspace = AsyncMock()
+
+        asyncio.run(sync_web_signals_if_stale(
+            42,
+            source_catalog_repository=object(),
+            web_signal_repository=repo,
+            llm_provider=object(),
+        ))
+
+        instance.collect_for_workspace.assert_not_awaited()
+
+
+def test_sync_web_signals_if_stale_collects_when_missing_or_older_than_guard() -> None:
+    for repo in (
+        _FakeWebSignalRepository(None),  # never collected
+        _FakeWebSignalRepository(_iso(5.0)),  # older than the 1h guard window
+    ):
+        with patch("app.services.signal_service.WebSignalCollector") as collector_cls:
+            instance = collector_cls.return_value
+            instance.collect_for_workspace = AsyncMock()
+
+            asyncio.run(sync_web_signals_if_stale(
+                42,
+                source_catalog_repository=object(),
+                web_signal_repository=repo,
+                llm_provider=object(),
+            ))
+
+            instance.collect_for_workspace.assert_awaited_once_with(42)
