@@ -406,11 +406,27 @@ def generate_draft_sync(
     try:
         with urllib.request.urlopen(req, timeout=config.timeout_seconds) as resp:
             raw = resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError):
-        log.warning("content_factory: request failed")
+    except urllib.error.HTTPError as exc:
+        # Diagnosability fix (production radar:22378/22379): this branch
+        # used to log a bare "content_factory: request failed" with no
+        # detail, so a real cause (e.g. Content Factory's own HTTP 400
+        # "Исходный текст слишком длинный" when source_text exceeds its
+        # 6000-char hard cap - see generate_draft's caller for the actual
+        # fix) was indistinguishable from a network outage or any other
+        # failure. The response BODY here is Content Factory's own error
+        # message (never our request/token), safe to log. Truncated - this
+        # is a log line, not meant to carry the full payload.
+        try:
+            body = exc.read()[:300].decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        log.warning("content_factory: request failed (HTTP %s): %s", exc.code, body)
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        log.warning("content_factory: request failed (%s: %s)", type(exc).__name__, exc)
         return None
     except Exception:
-        log.warning("content_factory: unexpected request failure")
+        log.exception("content_factory: unexpected request failure")
         return None
 
     try:

@@ -98,8 +98,34 @@ def _transliterate_latin_to_cyrillic(text: str) -> str:
     return "".join(_LATIN_TO_CYRILLIC_PHONETIC.get(ch, ch) for ch in text.lower())
 
 
+# Bug fix (live signal 22378): production stores source_name with the
+# ingestion channel prepended to the brand ("Telegram Tripster", not just
+# "Tripster") - _mentions_source_name transliterated "telegram tripster" as
+# one word/phrase, which never matches the brand-only mention "Трипстере"
+# in the summary, so the promo paragraph was never dropped and the gate
+# wrongly returned True. Strip a known transport/channel prefix (the
+# platform the signal was collected FROM, never part of the brand's own
+# name) before running the existing brand/promo check - source-agnostic,
+# same list a source_type/origin_type field in this codebase would use,
+# not tied to Tripster specifically.
+_TRANSPORT_PREFIXES = (
+    "telegram", "вк", "vk", "vkontakte", "вконтакте", "rss", "instagram",
+    "инстаграм", "whatsapp", "youtube", "дзен", "zen",
+)
+_TRANSPORT_PREFIX_RE = re.compile(
+    r"^(" + "|".join(re.escape(p) for p in _TRANSPORT_PREFIXES) + r")[\s:]+(.+)$",
+    re.IGNORECASE,
+)
+
+
+def _strip_transport_prefix(source_name: str) -> str:
+    stripped = (source_name or "").strip()
+    match = _TRANSPORT_PREFIX_RE.match(stripped)
+    return match.group(2).strip() if match else stripped
+
+
 def _mentions_source_name(paragraph: str, source_name: str) -> bool:
-    name = (source_name or "").strip().lower()
+    name = _strip_transport_prefix(source_name).lower()
     if not name:
         return False
     lowered = paragraph.lower()

@@ -389,6 +389,26 @@ def test_source_content_is_sufficient_rejects_the_live_tripster_signal():
     assert source_content_is_sufficient(title, summary, "Tripster") is False
 
 
+def test_source_content_is_sufficient_rejects_live_signal_22378_with_channel_prefixed_source_name():
+    """Bug fix: production stores source_name as "Telegram Tripster" (the
+    ingestion channel prepended to the brand), not bare "Tripster" - live
+    signal 22378 wrongly returned True because the un-stripped "telegram
+    tripster" phrase never matched the brand-only mention "Трипстере" in
+    the summary. Same title/summary as the test above, but with the real
+    production source_name."""
+    title = (
+        "Пока одни достают осенние свитера и куртки, другие достают "
+        "загранпаспорт..."
+    )
+    summary = (
+        "Пока одни достают осенние свитера и куртки, другие достают "
+        "загранпаспорт. У каждого свой способ справляться с окончанием "
+        "лета.\n\nГлавное, что и те, и другие, всегда могут найти местного "
+        "гида на Трипстере. В соседнем районе или в другой стране \U0001F438"
+    )
+    assert source_content_is_sufficient(title, summary, "Telegram Tripster") is False
+
+
 def test_source_content_is_sufficient_a_long_title_cannot_rescue_a_thin_summary():
     """Bug fix #1: a long Tripster-style title must not pad a thin/empty
     summary past the threshold - the gate must judge the summary's own

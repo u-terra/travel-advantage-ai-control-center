@@ -177,6 +177,34 @@ def test_transport_failure_is_hidden_behind_none() -> None:
         ) is None
 
 
+def test_http_error_failure_is_diagnosable_and_never_leaks_the_token(caplog) -> None:
+    """Bug fix (production radar:22378/22379, "content_factory: request
+    failed" with no detail): an HTTP 400 from Content Factory (e.g. its own
+    "Исходный текст слишком длинный" rejection) used to be swallowed into a
+    bare "content_factory: request failed" log line, indistinguishable from
+    a network outage. The response body/status must now be logged - it's
+    Content Factory's own error message, never our request/token."""
+    import io
+    import logging
+    import urllib.error
+
+    error = urllib.error.HTTPError(
+        url="http://factory/internal/generate", code=400, msg="Bad Request",
+        hdrs=None, fp=io.BytesIO(b'{"ok": false, "error": "source_text too long"}'),
+    )
+    provider = create_llm_provider("openai", content_factory_config=CONFIG)
+    with caplog.at_level(logging.WARNING):
+        with patch("urllib.request.urlopen", side_effect=error):
+            result = provider.generate_draft(
+                source_text="x", material_type="market_offer",
+                output_format="telegram", mode="ai",
+            )
+    assert result is None
+    assert any("400" in record.message for record in caplog.records)
+    assert any("source_text too long" in record.message for record in caplog.records)
+    assert "secret-token" not in caplog.text
+
+
 # --- Usage Cost & Subscription Foundation: Content Factory does not send
 # usage today (confirmed on production - see the Cost Visibility report),
 # but this parses it the moment it's added, without a code change here.

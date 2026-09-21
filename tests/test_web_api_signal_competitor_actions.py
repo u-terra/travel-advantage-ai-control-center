@@ -545,6 +545,40 @@ def test_signal_action_applies_saved_personal_style(api, monkeypatch) -> None:
     assert "[PERSONAL STYLE - DATA]" in captured["source_text"]
 
 
+def test_signal_action_caps_generate_draft_source_text_at_content_factory_limit(
+    api, monkeypatch,
+) -> None:
+    """Bug fix (production radar:22378/22379, "content_factory: request
+    failed"): generate_draft's source_text must never exceed Content
+    Factory's own hard cap (6000 chars, HTTP 400 above that - see
+    generation_request_builder.SOURCE_ANALYSIS_REQUEST_LIMIT's docstring)
+    - this call used build_provider_generation_request's unsafe default
+    (11_000) instead of the 6000 the sibling competitor-signal branch
+    already used. A large voice_sample inflates the spec's prefix well
+    past 6000 to prove the cap actually applies here."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+    _run(web_api.partner_repository.set_user_voice_sample(
+        workspace_id, OWNER_ID, ("Пример стиля. " * 500)[:5999],
+    ))
+
+    captured = {}
+
+    def fake_generate_draft(**kwargs):
+        captured.update(kwargs)
+        return _fake_draft()
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", fake_generate_draft)
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    assert len(captured["source_text"]) <= 6000
+
+
 def test_signal_action_facts_override_style(api, monkeypatch) -> None:
     """Task's главное правило: SOURCE FACTS take priority over personal
     style, and the style sample is never a source of facts - the constraint
