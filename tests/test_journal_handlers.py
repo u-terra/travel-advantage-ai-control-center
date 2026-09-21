@@ -935,7 +935,7 @@ def test_find_signals_includes_web_signals_block_when_wired() -> None:
     )
     web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[web_signal()]))
     message = Message()
-    with _recommender_patch(), patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+    with _recommender_patch(), patch("app.services.signal_service.WebSignalCollector") as collector_cls:
         collector_cls.return_value.collect_for_workspace = AsyncMock()
         run(on_find_signals(
             message, State(), radar_config(), signal_repo, context(42, 100),
@@ -959,7 +959,7 @@ def test_find_signals_without_web_deps_is_unaffected() -> None:
         list_for_workspace=AsyncMock(return_value=[radar_record()]),
     )
     message = Message()
-    with _recommender_patch(), patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+    with _recommender_patch(), patch("app.services.signal_service.WebSignalCollector") as collector_cls:
         run(on_find_signals(message, State(), radar_config(), signal_repo, context(42, 100)))
     collector_cls.assert_not_called()
     assert any("Выберите идею" in text for text, _ in message.answers)
@@ -975,7 +975,7 @@ def test_find_signals_web_collection_failure_does_not_break_radar_block() -> Non
     )
     web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
     message = Message()
-    with _recommender_patch(), patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+    with _recommender_patch(), patch("app.services.signal_service.WebSignalCollector") as collector_cls:
         collector_cls.return_value.collect_for_workspace = AsyncMock(
             side_effect=RuntimeError("boom")
         )
@@ -1010,7 +1010,7 @@ def test_find_signals_shows_web_when_radar_unavailable() -> None:
     web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[web_signal()]))
     message = Message()
     with _recommender_unavailable_patch(), patch(
-        "app.handlers.menu.WebSignalCollector"
+        "app.services.signal_service.WebSignalCollector"
     ) as collector_cls:
         collector_cls.return_value.collect_for_workspace = AsyncMock()
         run(on_find_signals(
@@ -1034,7 +1034,7 @@ def test_find_signals_radar_exception_does_not_block_web() -> None:
     )
     web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[web_signal()]))
     message = Message()
-    with patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+    with patch("app.services.signal_service.WebSignalCollector") as collector_cls:
         collector_cls.return_value.collect_for_workspace = AsyncMock()
         run(on_find_signals(
             message, State(), radar_config(), signal_repo, context(42, 100),
@@ -1058,7 +1058,7 @@ def test_find_signals_shows_combined_message_when_both_contours_empty() -> None:
     )
     web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
     message = Message()
-    with _recommender_patch(), patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+    with _recommender_patch(), patch("app.services.signal_service.WebSignalCollector") as collector_cls:
         collector_cls.return_value.collect_for_workspace = AsyncMock()
         run(on_find_signals(
             message, State(), radar_config(), signal_repo, context(42, 100),
@@ -1079,7 +1079,7 @@ def test_find_signals_combined_message_survives_both_contours_failing() -> None:
     )
     web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[]))
     message = Message()
-    with patch("app.handlers.menu.WebSignalCollector") as collector_cls:
+    with patch("app.services.signal_service.WebSignalCollector") as collector_cls:
         collector_cls.return_value.collect_for_workspace = AsyncMock(
             side_effect=RuntimeError("web down")
         )

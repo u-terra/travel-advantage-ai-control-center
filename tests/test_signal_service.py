@@ -4,11 +4,13 @@ both Telegram's on_find_signals() and Web's GET /api/signals (bugs 1/2/5).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 from app.repositories.web_signal_repository import WebSignalRecord
 from app.services.lead_radar import LeadSignal
-from app.services.signal_service import build_unified_feed
+from app.services.signal_service import build_unified_feed, collect_web_signals
 
 
 def _iso(hours_ago: float) -> str:
@@ -96,3 +98,38 @@ def test_dedupes_same_url_keeping_the_freshest_copy() -> None:
 
     assert len(unified) == 1
     assert unified[0].title == "Newer copy"
+
+
+def test_collect_web_signals_calls_the_shared_collector() -> None:
+    # Both Telegram's on_find_signals() and Web's GET /api/signals now call
+    # this one function instead of each constructing its own
+    # WebSignalCollector - assert it actually drives the real collector
+    # (collect_for_workspace) rather than silently doing nothing.
+    with patch("app.services.signal_service.WebSignalCollector") as collector_cls:
+        instance = collector_cls.return_value
+        instance.collect_for_workspace = AsyncMock(return_value=None)
+
+        asyncio.run(collect_web_signals(
+            42,
+            source_catalog_repository=object(),
+            web_signal_repository=object(),
+            llm_provider=object(),
+        ))
+
+        instance.collect_for_workspace.assert_awaited_once_with(42)
+
+
+def test_collect_web_signals_swallows_collector_failure() -> None:
+    # Same best-effort contract Telegram's try/except already had: one
+    # source (or the whole collector) failing must not raise out of the
+    # shared function and blank the rest of the "Сигналы и идеи" feed.
+    with patch("app.services.signal_service.WebSignalCollector") as collector_cls:
+        instance = collector_cls.return_value
+        instance.collect_for_workspace = AsyncMock(side_effect=RuntimeError("boom"))
+
+        asyncio.run(collect_web_signals(
+            42,
+            source_catalog_repository=object(),
+            web_signal_repository=object(),
+            llm_provider=object(),
+        ))  # must not raise

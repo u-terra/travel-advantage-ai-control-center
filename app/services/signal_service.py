@@ -29,17 +29,25 @@ ranked, deduplicated list - see ``build_unified_feed()`` - so Web's
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.repositories.source_catalog_repository import SourceCatalogRepository
+from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.web_signal_repository import WebSignalRecord, WebSignalRepository
 from app.repositories.workspace_signal_repository import (
     WorkspaceSignalRecord,
     WorkspaceSignalRepository,
 )
 from app.services.lead_radar import LeadRadarConfig, LeadSignal, build_workspace_signals
+from app.services.llm.base import LLMProvider
+from app.services.web_search.base import WebSearchProvider
+from app.services.web_signal_collector import WebSignalCollector
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_LIMIT = 5
 # Freshness gate (bug 1): rank strictly-fresher material ahead of older
@@ -98,6 +106,37 @@ async def sync_and_list_radar_signals(
     )
     signals = build_workspace_signals(lead_radar_config, records, limit=limit)
     return signals, records
+
+
+async def collect_web_signals(
+    workspace_id: int,
+    *,
+    source_catalog_repository: SourceCatalogRepository,
+    web_signal_repository: WebSignalRepository,
+    llm_provider: LLMProvider,
+    usage_ledger_repository: Optional[UsageLedgerRepository] = None,
+    web_search_provider: Optional[WebSearchProvider] = None,
+) -> None:
+    """Shared Stage 2/3 web-source collection trigger.
+
+    Before this existed, only Telegram's ``on_find_signals`` (app/handlers/
+    menu.py) constructed a ``WebSignalCollector`` and ran it - Web's
+    ``GET /api/signals`` only ever READ whatever ``web_source_signals`` rows
+    Telegram happened to have collected earlier, so a workspace that never
+    opened Telegram never saw its own web sources refresh. This wraps the
+    exact same ``WebSignalCollector.collect_for_workspace`` both callers now
+    use - no second/duplicated collector, same fetch/discover/analyze logic,
+    same best-effort "log and keep going" contract Telegram already had (one
+    source failing to fetch must not blank out an otherwise-working feed).
+    """
+    try:
+        await WebSignalCollector(
+            source_catalog_repository, web_signal_repository, llm_provider,
+            usage_ledger_repository=usage_ledger_repository,
+            web_search_provider=web_search_provider,
+        ).collect_for_workspace(workspace_id)
+    except Exception:
+        log.warning("collect_web_signals: web signal collection failed", exc_info=True)
 
 
 def _freshness_hours(timestamp: str | None) -> Optional[float]:

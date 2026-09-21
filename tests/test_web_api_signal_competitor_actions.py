@@ -219,6 +219,57 @@ def test_signal_action_creates_a_real_material(api, monkeypatch) -> None:
     assert materials[0].id == body["material"]["id"]
 
 
+def test_web_source_signal_action_uses_the_same_shared_material_service(api, monkeypatch) -> None:
+    """Stage 2/3 web-source signal ("web:<id>") must go through the exact
+    same MaterialOrchestrationService.build_radar_generation_spec +
+    competitor_llm_provider pipeline as a Radar signal - no second
+    generator, and it must actually succeed instead of the old hardcoded
+    'Подготовка поста по сигналам с сайта пока недоступна.'"""
+    from app.repositories.web_signal_repository import WebSignalRecord
+
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _create_radar_db(radar_db_path, [])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="trip", source_name="Trip.com",
+    )
+    _run(web_api.web_signal_repository.save_many([
+        WebSignalRecord(
+            workspace_id=workspace_id, source_id="trip", source_name="Trip.com",
+            source_url="https://trip.example", item_url="https://trip.example/article-1",
+            title="Дешёвые билеты в Стамбул", summary="Акция до конца месяца.",
+            fetched_at=_now_iso(1.0), published_at=_now_iso(1.0),
+        ),
+    ]))
+    [record] = _run(web_api.web_signal_repository.list_for_workspace(workspace_id))
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", lambda **kw: _fake_draft())
+
+    response = client.post(f"/api/signals/web:{record.id}/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" not in body
+    assert body["material"]["artifact_type"] == "post"
+    assert body["version"]["content"] == "Готовый черновик поста."
+    assert body["origin"]["source_name"] == "Trip.com"
+
+    materials = _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10))
+    assert len(materials) == 1
+
+
+def test_web_source_signal_action_unknown_id_is_rejected(api) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _create_radar_db(radar_db_path, [])
+
+    response = client.post("/api/signals/web:999/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    assert response.json() == {"error": "Сигнал недоступен.", "material": None}
+
+
 def test_signal_action_uses_the_correct_workspace_signal(api, monkeypatch) -> None:
     """The generated source_text must carry THIS signal's real title/summary
     (via SOURCE FACTS), not a fabricated or generic one - no re-typing the

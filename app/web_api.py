@@ -117,7 +117,11 @@ from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
 from app.services.rate_limit import signup_rate_limiter
-from app.services.signal_service import build_unified_feed, sync_and_list_radar_signals
+from app.services.signal_service import (
+    build_unified_feed,
+    collect_web_signals,
+    sync_and_list_radar_signals,
+)
 from app.services.robokassa import RoboKassaConfig
 from app.services.source_registry import SEED_REGISTRY_PATH
 from app.services.telemetry import record_event
@@ -1652,10 +1656,11 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
     вызывать его на каждое чтение безопасно и держит оба интерфейса на одном
     пути вместо двух, которые могут разойтись.
 
-    Web-source часть - те же уже собранные и сохранённые
-    WebSignalRepository-записи (собирает их WebSignalCollector по нажатию
-    "Найти сигналы" в Telegram, см. app/handlers/menu.py); здесь они только
-    читаются, без нового LLM-вызова.
+    Web-source часть теперь тоже собирается самим Web-эндпоинтом через тот
+    же WebSignalCollector, что и Telegram (общая точка входа -
+    app.services.signal_service.collect_web_signals, без второго
+    коллектора) - Web больше не зависит от того, что кто-то до этого нажал
+    "Найти сигналы" в Telegram.
     """
     try:
         signals, records = await sync_and_list_radar_signals(
@@ -1668,6 +1673,24 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
         if signals is None:
             return {"error": "Радар сигналов сейчас недоступен.", "signals": []}
 
+        # Web-only gap fix: previously this endpoint only READ
+        # web_source_signals rows that Telegram's on_find_signals happened
+        # to have collected earlier - a workspace that never opened
+        # Telegram never saw its own web sources refresh. Now Web triggers
+        # the same WebSignalCollector Telegram uses (via the shared
+        # app.services.signal_service.collect_web_signals - no second
+        # collector) before reading, so it can get fresh web-source signals
+        # on its own.
+        await collect_web_signals(
+            principal.workspace_id,
+            source_catalog_repository=source_catalog_repository,
+            web_signal_repository=web_signal_repository,
+            llm_provider=competitor_llm_provider,
+            usage_ledger_repository=usage_ledger_repository,
+            web_search_provider=(
+                web_search_service.provider if web_search_service is not None else None
+            ),
+        )
         try:
             web_records = await web_signal_repository.list_for_workspace(
                 principal.workspace_id, limit=DISPLAY_LIMIT,
@@ -1724,6 +1747,145 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
         return {"error": "Не удалось загрузить сигналы.", "signals": []}
 
 
+async def _create_material_from_web_signal(
+    raw_id: str,
+    request: "MaterialActionRequest",
+    principal: WebPrincipal,
+):
+    """"Подготовить пост" for a Stage 2/3 web-source signal (``web:<id>``).
+
+    Deliberately mirrors ``create_material_from_signal``'s Radar branch
+    step-for-step - same ``competitor_llm_provider.analyze_source`` Source
+    Analysis Quality Gate (fail closed if analysis is unavailable), same
+    ``material_orchestration_service.build_radar_generation_spec`` +
+    ``build_provider_generation_request`` + ``generate_draft`` +
+    ``sanitize_draft_text`` + ``artifact_repository`` save. No second/
+    duplicate generator - only the source of title/summary/url differs
+    (``WebSignalRepository`` instead of ``workspace_signal_repository``).
+    """
+    if request.action not in _SIGNAL_OR_COMPETITOR_MATERIAL_ACTIONS:
+        return {"error": "Неизвестное действие.", "material": None}
+    try:
+        signal_id = int(raw_id)
+    except ValueError:
+        return {"error": "Сигнал недоступен.", "material": None}
+
+    try:
+        record = await web_signal_repository.get_for_workspace(
+            principal.workspace_id, signal_id,
+        )
+        if record is None:
+            return {"error": "Сигнал недоступен.", "material": None}
+
+        await record_event(
+            operational_event_repository, module="signals", event_type="action_selected",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={"signal_id": f"web:{signal_id}", "action": request.action},
+        )
+
+        profile = await partner_repository.get_business_profile(principal.workspace_id)
+        user_preferences = await partner_repository.get_user_preferences(
+            principal.workspace_id, principal.telegram_user_id,
+        )
+
+        web_source_text = "\n".join(
+            value for value in (record.title, record.summary) if value
+        )
+        analysis = await asyncio.to_thread(
+            competitor_llm_provider.analyze_source, source_text=web_source_text,
+        )
+        if analysis is None:
+            await record_event(
+                operational_event_repository, module="materials",
+                event_type="material_created_from_signal",
+                success=False, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                error_code="analysis_unavailable",
+                metadata={"signal_id": f"web:{signal_id}", "action": request.action},
+            )
+            return {
+                "error": "Не удалось подготовить материал: анализ источника недоступен.",
+                "material": None,
+            }
+
+        spec = material_orchestration_service.build_radar_generation_spec(
+            principal.workspace_id, profile,
+            title=record.title, summary=record.summary,
+            source_type="web", origin_type="web_source",
+            url=record.item_url, category="",
+            reason=f"Материал с сайта-источника: {record.source_name}",
+            analysis=analysis, user_preferences=user_preferences,
+            artifact_type=request.action,
+        )
+        provider_request = build_provider_generation_request(spec)
+
+        draft = await asyncio.to_thread(
+            competitor_llm_provider.generate_draft,
+            source_text=provider_request.source_text,
+            material_type=provider_request.material_type,
+            output_format=provider_request.output_format,
+            mode="ai",
+        )
+        if draft is None:
+            await record_event(
+                operational_event_repository, module="materials",
+                event_type="material_created_from_signal",
+                success=False, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                error_code="draft_unavailable",
+                metadata={"signal_id": f"web:{signal_id}", "action": request.action},
+            )
+            return {
+                "error": "Не удалось подготовить материал. Попробуйте ещё раз.",
+                "material": None,
+            }
+
+        sanitized = sanitize_draft_text(draft.text, disputed_claims=analysis.disputed_claims)
+        artifact, version = await artifact_repository.create_artifact_with_initial_version(
+            principal.workspace_id,
+            artifact_type=spec.artifact_type,
+            title=record.title or "Материал по сигналу",
+            content=sanitized,
+            generation_note=f"Сигнал web-источника: id={signal_id}",
+        )
+
+        await record_event(
+            operational_event_repository, module="materials",
+            event_type="material_created_from_signal",
+            success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            metadata={
+                "signal_id": f"web:{signal_id}", "action": request.action,
+                "artifact_id": artifact.id,
+            },
+        )
+
+        return {
+            "material": _material_payload(artifact),
+            "version": _version_payload(version),
+            "origin": {
+                "kind": "signal",
+                "title": record.title or "",
+                "source_name": record.source_name or "",
+                "created_at": record.created_at,
+            },
+        }
+
+    except Exception:
+        log.exception(
+            "_create_material_from_web_signal: unhandled exception for signal_id=web:%s "
+            "action=%s", raw_id, request.action,
+        )
+        await record_event(
+            operational_event_repository, module="materials",
+            event_type="material_created_from_signal",
+            success=False, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+            error_code="unhandled_exception",
+            metadata={"signal_id": f"web:{raw_id}", "action": request.action},
+        )
+        return {"error": "Не удалось подготовить материал.", "material": None}
+
+
 @app.post("/api/signals/{signal_id}/actions")
 async def create_material_from_signal(
     signal_id: str,
@@ -1745,15 +1907,14 @@ async def create_material_from_signal(
     # signals, "web:<id>" for Stage 2/3 web-source signals, see
     # app.services.signal_service.build_unified_feed) alongside bare
     # integer ids for backward compatibility with any already-open client.
-    # Web-source signals do not have generation support yet (their content
-    # comes from web_signal_repository, not workspace_signal_repository) -
-    # this returns an honest, distinct error instead of a 422 or a silent
-    # "unhandled_exception" from feeding a non-numeric id into the Radar path.
+    # Web-source signals route through _create_material_from_web_signal
+    # below - same MaterialOrchestrationService.build_radar_generation_spec
+    # + same competitor_llm_provider (Content Factory) as the Radar branch,
+    # no second generator.
     if signal_id.startswith("web:"):
-        return {
-            "error": "Подготовка поста по сигналам с сайта пока недоступна.",
-            "material": None,
-        }
+        return await _create_material_from_web_signal(
+            signal_id[len("web:"):], request, principal,
+        )
     raw_id = signal_id[len("radar:"):] if signal_id.startswith("radar:") else signal_id
     try:
         interpretation_id = int(raw_id)

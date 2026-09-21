@@ -24,7 +24,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -583,3 +583,26 @@ def test_web_source_signals_respect_tenant_isolation(api) -> None:
         response = client.get("/api/signals")
 
     assert response.json()["signals"] == []
+
+
+def test_get_signals_triggers_the_shared_web_signal_collector(api) -> None:
+    """Web-only gap fix: GET /api/signals must be able to collect fresh
+    Stage 2/3 web-source signals itself (through the same shared
+    app.services.signal_service.collect_web_signals -> WebSignalCollector
+    Telegram uses), instead of only ever reading whatever Telegram already
+    collected earlier."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _create_radar_db(radar_db_path, [])
+
+    with patch(
+        "app.web_api.collect_web_signals", new_callable=AsyncMock,
+    ) as collect_mock, patch(
+        "app.services.lead_radar._load_recommender", return_value=_fake_recommender()
+    ):
+        response = client.get("/api/signals")
+
+    assert response.status_code == 200
+    collect_mock.assert_awaited_once()
+    _, kwargs = collect_mock.call_args
+    assert collect_mock.call_args.args[0] == workspace_id
+    assert kwargs["web_signal_repository"] is web_api.web_signal_repository

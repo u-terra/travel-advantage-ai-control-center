@@ -59,7 +59,7 @@ from app.services.lead_radar import (
     build_workspace_signals,
     route_card,
 )
-from app.services.signal_service import sync_and_list_radar_signals
+from app.services.signal_service import collect_web_signals, sync_and_list_radar_signals
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.conversation_state_repository import (
     ConversationStateConflictError,
@@ -77,7 +77,7 @@ from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.user_style import UserStyleService
 from app.services.web_search.service import WebSearchService
-from app.services.web_signal_collector import WebSignalCollector, format_web_signals_block
+from app.services.web_signal_collector import format_web_signals_block
 from app.storage import Journal
 
 router = Router(name="menu")
@@ -616,16 +616,20 @@ async def on_find_signals(
         and web_signal_repository is not None
         and llm_provider is not None
     ):
-        try:
-            await WebSignalCollector(
-                source_catalog_repository, web_signal_repository, llm_provider,
-                usage_ledger_repository=usage_ledger_repository,
-                web_search_provider=(
-                    web_search_service.provider if web_search_service is not None else None
-                ),
-            ).collect_for_workspace(workspace_context.workspace_id)
-        except Exception:
-            log.warning("on_find_signals: web signal collection failed", exc_info=True)
+        # Shared with Web's GET /api/signals - see
+        # app.services.signal_service.collect_web_signals - so both
+        # interfaces trigger the exact same WebSignalCollector instead of
+        # each constructing/wrapping their own copy.
+        await collect_web_signals(
+            workspace_context.workspace_id,
+            source_catalog_repository=source_catalog_repository,
+            web_signal_repository=web_signal_repository,
+            llm_provider=llm_provider,
+            usage_ledger_repository=usage_ledger_repository,
+            web_search_provider=(
+                web_search_service.provider if web_search_service is not None else None
+            ),
+        )
         try:
             web_records = await web_signal_repository.list_for_workspace(
                 workspace_context.workspace_id, limit=DISPLAY_LIMIT,

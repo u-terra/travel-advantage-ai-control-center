@@ -214,6 +214,27 @@ class WebSignalRepository:
             )).fetchall()
         return [_record(row) for row in rows]
 
+    async def get_for_workspace(
+        self, workspace_id: int, signal_id: int
+    ) -> WebSignalRecord | None:
+        """Single row, same visibility rule as ``list_for_workspace()``
+        (source must currently be active/enabled) - used by the "Подготовить
+        пост" action so a web-source signal is authorized the same way a
+        Radar signal already is in ``/api/signals/{id}/actions``.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(
+                "SELECT w.* FROM web_source_signals w "
+                "JOIN source_catalog c ON c.id = w.source_id "
+                "JOIN workspace_source_subscriptions s "
+                "ON s.source_id = c.id AND s.workspace_id = w.workspace_id "
+                "WHERE w.workspace_id = ? AND w.id = ? "
+                "AND c.status = 'active' AND s.enabled = 1",
+                (workspace_id, signal_id),
+            )).fetchone()
+        return _record(row) if row is not None else None
+
 
 def _record(row: aiosqlite.Row) -> WebSignalRecord:
     return WebSignalRecord(
