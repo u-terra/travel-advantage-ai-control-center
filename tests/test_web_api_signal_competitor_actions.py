@@ -312,6 +312,76 @@ def test_signal_action_fails_closed_when_analysis_unavailable(api, monkeypatch) 
     assert _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10)) == []
 
 
+def test_signal_action_generate_draft_returning_none_is_diagnosable(api, monkeypatch) -> None:
+    """Bug 5/3: generate_draft returning None (the LLM producing nothing
+    usable) must be distinguishable from analysis_unavailable via
+    error_code, and must not silently vanish into the same generic
+    message/telemetry as every other failure."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", lambda **kw: None)
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    assert "error" in response.json()
+    assert _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10)) == []
+
+    events = _run(web_api.operational_event_repository.list_recent_events(limit=200))
+    matching = [
+        e for e in events
+        if e.event_type == "material_created_from_signal" and not e.success
+    ]
+    assert matching
+    assert matching[0].error_code == "draft_unavailable"
+
+
+def test_signal_action_unhandled_exception_gets_a_distinct_error_code_and_log(
+    api, monkeypatch, caplog,
+) -> None:
+    """Bug 3 (production id 21879): an exception raised INSIDE the pipeline
+    (not just analyze_source/generate_draft returning None) must not be
+    silently swallowed - it must produce a distinct, diagnosable error_code
+    and a logged traceback, not the exact same generic outcome as every
+    other failure mode."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    def boom(**kw):
+        raise RuntimeError("forced failure for test_signal_action_unhandled_exception")
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", boom)
+
+    import logging
+    with caplog.at_level(logging.ERROR, logger="app.web_api"):
+        with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+            response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    assert "error" in response.json()
+    assert _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10)) == []
+
+    events = _run(web_api.operational_event_repository.list_recent_events(limit=200))
+    matching = [
+        e for e in events
+        if e.event_type == "material_created_from_signal" and not e.success
+    ]
+    assert matching
+    assert matching[0].error_code == "unhandled_exception"
+    # The real traceback must be diagnosable from the server log, not just
+    # "something failed".
+    assert any(
+        "forced failure for test_signal_action_unhandled_exception" in record.getMessage()
+        or (record.exc_text and "RuntimeError" in record.exc_text)
+        for record in caplog.records
+    )
+
+
 def test_signal_action_applies_saved_personal_style(api, monkeypatch) -> None:
     client, web_api, db_path, radar_db_path, workspace_id = api
     _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))

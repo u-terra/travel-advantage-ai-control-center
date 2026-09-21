@@ -69,6 +69,7 @@ from app.repositories.web_conversation_repository import (
     derive_conversation_title,
 )
 from app.repositories.workspace_memory_repository import WorkspaceMemoryRepository
+from app.repositories.web_signal_repository import WebSignalRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.attachment_storage import AttachmentStorage
 from app.services.attachment_validation import (
@@ -116,6 +117,7 @@ from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
 from app.services.rate_limit import signup_rate_limiter
+from app.services.signal_service import build_unified_feed, sync_and_list_radar_signals
 from app.services.robokassa import RoboKassaConfig
 from app.services.source_registry import SEED_REGISTRY_PATH
 from app.services.telemetry import record_event
@@ -236,6 +238,10 @@ workspace_signal_repository = WorkspaceSignalRepository(
     settings.journal_db_path, settings.lead_radar_db_path
 )
 lead_radar_config = LeadRadarConfig(db_path=settings.lead_radar_db_path)
+# Stage 2/3 web-source signals (Trip/Aviasales/Т-Ж/OneTwoTrip etc) - same
+# shared-DB instance convention as workspace_signal_repository above, so
+# GET /api/signals can merge both feeds through app.services.signal_service.
+web_signal_repository = WebSignalRepository(settings.journal_db_path)
 
 # Верхняя граница объёма workspace memory, передаваемого в промпт.
 MAX_WORKSPACE_MEMORY_CHARS = 6000
@@ -1068,6 +1074,7 @@ async def startup() -> None:
     # journal DB - this just ensures the schema exists, it never re-runs
     # that backfill from the web process.
     await workspace_signal_repository.init(None)
+    await web_signal_repository.init()
     # Same reasoning as workspace_signal_repository above - the one-time
     # legacy Source Registry migration is already owned by app/main.py's
     # bot process against the same shared journal DB; this call only
@@ -1260,6 +1267,47 @@ async def _requested_competitor(workspace_id: int, message: str):
             return competitor
 
     return None
+
+
+# Bug 4: keyword markers for "what's important on the market / give me
+# ideas from my sources" style questions. Same convention as
+# _requested_competitor above - a cheap, explainable keyword gate, not an
+# LLM call, so it costs nothing to check on every message.
+_SIGNAL_INTENT_MARKERS = (
+    "рыночные сигнал", "рыночный сигнал", "сигнал", "сигналы",
+    "что сейчас важно", "что важно на рынке", "идеи из моих источник",
+    "идеи для контента", "мои источники", "актуальные темы",
+)
+
+
+def _is_signal_intent(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _SIGNAL_INTENT_MARKERS)
+
+
+def _signal_intent_context(unified) -> str:
+    """Formats the workspace's own connected-source signals for the LLM
+    prompt, clearly separated from generic Web Search (see the
+    "=== WEB SEARCH RESULTS ===" section built by format_search_context()
+    just below in /api/chat) so the model - and the user reading its answer
+    - never mistakes one for the other."""
+    if not unified:
+        return ""
+    lines = [
+        "=== СИГНАЛЫ ИЗ ПОДКЛЮЧЁННЫХ ИСТОЧНИКОВ WORKSPACE ===",
+        "Ниже - реальные свежие сигналы из источников, подключённых в этом "
+        "workspace (раздел «Сигналы и идеи»). Это НЕ результаты общего "
+        "веб-поиска - используй их в первую очередь для вопросов о том, "
+        "что сейчас важно на рынке или какие есть идеи для контента.",
+    ]
+    for item in unified:
+        parts = [f"- {item.title}"]
+        if item.source_name:
+            parts.append(f"(источник: {item.source_name})")
+        if item.action_reason:
+            parts.append(f"— {item.action_reason}")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
 
 
 def _competitor_context(intelligence) -> str:
@@ -1586,40 +1634,64 @@ async def create_material_from_competitor_opportunity(
 
 @app.get("/api/signals")
 async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
-    """Read-only: свежие сигналы Radar для текущего workspace.
+    """Свежие сигналы для текущего workspace: Radar (legacy TG/VK/RSS) +
+    Stage 2/3 web-source signals (Trip/Aviasales/Т-Ж/OneTwoTrip etc),
+    объединённые в один ранжированный, дедуплицированный feed.
 
-    Использует ровно тот же путь чтения, что и Telegram-хэндлер
-    on_find_signals() (app/handlers/menu.py) - list_for_workspace() затем
-    build_workspace_signals() с теми же лимитами (200 -> 5). В отличие от
-    Telegram-хэндлера здесь намеренно НЕ вызывается sync_eligible(): это
-    write-операция (материализация новых interpretation-строк), а этот
-    эндпоинт должен оставаться строго read-only. Синхронизация уже
-    выполняется процессом бота (app/main.py, при старте и при каждом
-    /find_signals) в ту же общую БД. Никакого нового LLM-вызова - и
-    list_for_workspace(), и build_workspace_signals() только читают и
-    фильтруют уже сохранённые данные.
+    Radar-часть читается через тот же общий сервис
+    (app.services.signal_service.sync_and_list_radar_signals), что и
+    Telegram-хэндлер on_find_signals() (app/handlers/menu.py) - включая
+    sync_eligible() перед чтением. Раньше этот эндпоинт намеренно пропускал
+    sync_eligible() (считая его write-операцией, несовместимой с "строго
+    read-only" GET) и полагался на то, что процесс бота уже вызвал его при
+    старте/на каждый /find_signals в ту же общую БД - из-за чего Web
+    показывал устаревшие карточки всякий раз, когда никто не открывал
+    Telegram. sync_eligible() - дешёвый идемпотентный upsert
+    (ON CONFLICT ... DO NOTHING) по уже открытой локальной Journal-БД, а не
+    дорогая часть пайплайна (это сам сбор Radar/web-источников), так что
+    вызывать его на каждое чтение безопасно и держит оба интерфейса на одном
+    пути вместо двух, которые могут разойтись.
+
+    Web-source часть - те же уже собранные и сохранённые
+    WebSignalRepository-записи (собирает их WebSignalCollector по нажатию
+    "Найти сигналы" в Telegram, см. app/handlers/menu.py); здесь они только
+    читаются, без нового LLM-вызова.
     """
     try:
-        records = await workspace_signal_repository.list_for_workspace(
-            principal.workspace_id, limit=200,
+        signals, records = await sync_and_list_radar_signals(
+            principal.workspace_id,
+            lead_radar_config=lead_radar_config,
+            workspace_signal_repository=workspace_signal_repository,
+            limit=DISPLAY_LIMIT,
         )
-        signals = build_workspace_signals(lead_radar_config, records, limit=DISPLAY_LIMIT)
 
         if signals is None:
             return {"error": "Радар сигналов сейчас недоступен.", "signals": []}
 
-        source_names = {
-            record.interpretation_id: record.source_name for record in records
-        }
+        try:
+            web_records = await web_signal_repository.list_for_workspace(
+                principal.workspace_id, limit=DISPLAY_LIMIT,
+            )
+        except Exception:
+            log.warning("list_signals: web signal listing failed", exc_info=True)
+            web_records = []
+
+        unified = build_unified_feed(
+            signals, records, web_records,
+            limit=DISPLAY_LIMIT,
+            category_label=category_label,
+            why_text=why_text,
+            content_angle_hint=content_angle_hint,
+        )
 
         await record_event(
             operational_event_repository, module="signals", event_type="read",
             success=True, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
-            metadata={"count": len(signals)},
+            metadata={"count": len(unified)},
         )
-        # Те же данные, что уже видит Telegram (app/handlers/menu.py:
+        # Те же формулировки, что уже видит Telegram (app/handlers/menu.py:
         # build_summary → _format_signal_block): why_text()/content_angle_hint()
-        # - единственный источник этих формулировок для обоих интерфейсов, а
+        # - единственный источник этого текста для обоих интерфейсов, а
         # не отдельный текст для Web. recommended_action едет наружу, чтобы
         # веб-клиент показывал контекстные действия по типу сигнала, а не
         # одинаковый набор кнопок для всех карточек. score остаётся в ответе
@@ -1628,32 +1700,33 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
         return {
             "signals": [
                 {
-                    "id": signal.id,
-                    "title": signal.title or "(без заголовка)",
-                    "category": signal.category,
-                    "category_label": category_label(signal.category),
-                    "recommended_action": signal.recommended_action,
-                    "source_type": signal.source_type,
-                    "source_name": source_names.get(signal.id) or "",
-                    "created_at": signal.created_at,
-                    "score": signal.score,
-                    "url": signal.url,
-                    "action_reason": why_text(signal),
-                    "content_hint": (
-                        content_angle_hint() if signal.recommended_action == "content" else None
-                    ),
+                    "id": item.id,
+                    "kind": item.kind,
+                    "title": item.title,
+                    "summary": item.summary,
+                    "category": item.category,
+                    "category_label": item.category_label,
+                    "recommended_action": item.recommended_action,
+                    "source_type": item.source_type,
+                    "source_name": item.source_name,
+                    "created_at": item.created_at,
+                    "score": item.score,
+                    "url": item.url,
+                    "action_reason": item.action_reason,
+                    "content_hint": item.content_hint,
                 }
-                for signal in signals
+                for item in unified
             ]
         }
 
     except Exception:
+        log.exception("list_signals: failed to build signal feed")
         return {"error": "Не удалось загрузить сигналы.", "signals": []}
 
 
-@app.post("/api/signals/{interpretation_id}/actions")
+@app.post("/api/signals/{signal_id}/actions")
 async def create_material_from_signal(
-    interpretation_id: int,
+    signal_id: str,
     request: MaterialActionRequest,
     principal: WebPrincipal = Depends(require_csrf_and_subscription),
 ):
@@ -1667,6 +1740,25 @@ async def create_material_from_signal(
     Никакого второго генератора и никакого нового LLM provider."""
     if request.action not in _SIGNAL_OR_COMPETITOR_MATERIAL_ACTIONS:
         return {"error": "Неизвестное действие.", "material": None}
+
+    # /api/signals now returns merged ids ("radar:<id>" for legacy Radar
+    # signals, "web:<id>" for Stage 2/3 web-source signals, see
+    # app.services.signal_service.build_unified_feed) alongside bare
+    # integer ids for backward compatibility with any already-open client.
+    # Web-source signals do not have generation support yet (their content
+    # comes from web_signal_repository, not workspace_signal_repository) -
+    # this returns an honest, distinct error instead of a 422 or a silent
+    # "unhandled_exception" from feeding a non-numeric id into the Radar path.
+    if signal_id.startswith("web:"):
+        return {
+            "error": "Подготовка поста по сигналам с сайта пока недоступна.",
+            "material": None,
+        }
+    raw_id = signal_id[len("radar:"):] if signal_id.startswith("radar:") else signal_id
+    try:
+        interpretation_id = int(raw_id)
+    except ValueError:
+        return {"error": "Сигнал недоступен.", "material": None}
 
     try:
         record = await workspace_signal_repository.get_for_workspace(
@@ -1777,6 +1869,21 @@ async def create_material_from_signal(
         }
 
     except Exception:
+        # Bug 3 (production id 21879): the previous version of this handler
+        # swallowed every unexpected exception into the same generic
+        # message/error_code with no traceback logged anywhere, so a real
+        # failure (e.g. an exception raised inside analyze_source/
+        # generate_draft itself, before reaching their own None-return
+        # branches above) was indistinguishable from "LLM returned nothing"
+        # and left no way to diagnose it after the fact. log.exception here
+        # writes the real traceback to the server log against this
+        # signal_id/action so a specific failing signal can actually be
+        # traced, while the HTTP response stays the same honest generic
+        # message (no internal detail leaked to the client).
+        log.exception(
+            "create_material_from_signal: unhandled exception for signal_id=%s action=%s",
+            signal_id, request.action,
+        )
         await record_event(
             operational_event_repository, module="materials",
             event_type="material_created_from_signal",
@@ -2959,6 +3066,47 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                     web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
                     error_code="unavailable", safe_message="no fresh source or matching signal",
                 )
+
+        # Bug 4: "какие сейчас самые важные рыночные сигналы и идеи для
+        # контента?" / "что сейчас важно на рынке" / "дай идеи из моих
+        # источников" used to fall straight through to generic Web
+        # Search/LLM knowledge, never consulting the workspace's own
+        # connected-source signals - even though that is exactly what the
+        # "Сигналы и идеи" section (this same GET /api/signals - see
+        # sync_and_list_radar_signals/build_unified_feed above) already
+        # computes. When the message looks signal-shaped, the same shared
+        # Signal Service feed is fetched and injected as its own clearly
+        # labelled context block, ahead of - and separate from - Web Search.
+        if _is_signal_intent(message):
+            try:
+                intent_signals, intent_records = await sync_and_list_radar_signals(
+                    principal.workspace_id,
+                    lead_radar_config=lead_radar_config,
+                    workspace_signal_repository=workspace_signal_repository,
+                    limit=DISPLAY_LIMIT,
+                )
+                intent_web_records = []
+                if intent_signals is not None:
+                    try:
+                        intent_web_records = await web_signal_repository.list_for_workspace(
+                            principal.workspace_id, limit=DISPLAY_LIMIT,
+                        )
+                    except Exception:
+                        intent_web_records = []
+                    intent_unified = build_unified_feed(
+                        intent_signals, intent_records, intent_web_records,
+                        limit=DISPLAY_LIMIT,
+                        category_label=category_label,
+                        why_text=why_text,
+                        content_angle_hint=content_angle_hint,
+                    )
+                    signal_context = _signal_intent_context(intent_unified)
+                    if signal_context:
+                        knowledge_context = "\n\n".join(
+                            part for part in (knowledge_context, signal_context) if part
+                        )
+            except Exception:
+                log.warning("chat: signal-intent context lookup failed", exc_info=True)
 
         # Web search MVP (see app.services.web_search) - OFF by default
         # (WEB_SEARCH_ENABLED=false), and even when enabled maybe_search()

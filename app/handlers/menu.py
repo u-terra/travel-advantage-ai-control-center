@@ -59,6 +59,7 @@ from app.services.lead_radar import (
     build_workspace_signals,
     route_card,
 )
+from app.services.signal_service import sync_and_list_radar_signals
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.conversation_state_repository import (
     ConversationStateConflictError,
@@ -585,11 +586,16 @@ async def on_find_signals(
     # blocks below do not early-return into one another.
     signals: list | None = None
     try:
-        await workspace_signal_repository.sync_eligible()
-        records = await workspace_signal_repository.list_for_workspace(
-            workspace_context.workspace_id, limit=200
+        # Shared with Web's GET /api/signals - see
+        # app.services.signal_service.sync_and_list_radar_signals - so both
+        # interfaces sync/read/rank Radar signals through the exact same
+        # path instead of two copies that can drift.
+        signals, _records = await sync_and_list_radar_signals(
+            workspace_context.workspace_id,
+            lead_radar_config=lead_radar_config,
+            workspace_signal_repository=workspace_signal_repository,
+            limit=DISPLAY_LIMIT,
         )
-        signals = build_workspace_signals(lead_radar_config, records, limit=DISPLAY_LIMIT)
     except Exception:
         log.warning("on_find_signals: radar signal collection failed", exc_info=True)
         signals = None

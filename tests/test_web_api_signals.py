@@ -1,14 +1,14 @@
-"""GET /api/signals - read-only Radar signals listing for the web shell.
+"""GET /api/signals - merged, always-fresh signals listing for the web shell.
 
-Reuses the exact same data path as the Telegram on_find_signals() handler
-(app/handlers/menu.py): WorkspaceSignalRepository.list_for_workspace() then
-build_workspace_signals() from app/services/lead_radar.py - no parallel
-Radar model, no new filtering/scoring logic. The only deliberate difference
-is that this endpoint does NOT call sync_eligible(): that's a write step
-(materializes new interpretation rows) owned by the bot process, and this
-endpoint must stay strictly read-only. Tests below simulate "the bot
-already synced this data" by calling sync_eligible() directly on the
-repository during setup, exactly like app/main.py does at bot startup.
+Goes through the shared app.services.signal_service functions
+(sync_and_list_radar_signals / build_unified_feed) - the exact same Radar
+sync+read path the Telegram on_find_signals() handler (app/handlers/menu.py)
+uses, merged with Stage 2/3 web_source_signals. Bug 1 fix: unlike the
+original version of this endpoint, it now calls sync_eligible() itself on
+every read, so a Radar row that was never touched by a Telegram interaction
+still shows up here. ``_sync()`` below is kept only for tests that want to
+simulate "already synced by someone else" as a precondition, not because
+the endpoint still depends on it externally.
 
 Requires the web-only dependencies (requirements-web.txt: fastapi,
 uvicorn, markdown) that app/web_api.py imports at module level. Skips
@@ -34,6 +34,7 @@ pytest.importorskip("markdown")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from tests._web_auth_test_helpers import login_as  # noqa: E402
+from app.repositories.web_signal_repository import WebSignalRecord  # noqa: E402
 from app.services.lead_radar import DISPLAY_LIMIT  # noqa: E402
 
 OWNER_ID = 586249067
@@ -341,10 +342,14 @@ def test_only_current_web_workspace_signals_are_returned(api) -> None:
     assert titles == ["Заголовок 1"]
 
 
-def test_endpoint_does_not_write_new_interpretation_rows_itself(api) -> None:
-    """Read-only requirement: GET /api/signals must not materialize new
-    interpretations on its own - only what sync_eligible() (owned by the bot
-    process) already synced should ever be visible."""
+def test_endpoint_syncs_new_eligible_rows_on_read(api) -> None:
+    """Bug 1 fix (staleness): GET /api/signals now goes through the same
+    shared app.services.signal_service.sync_and_list_radar_signals() path
+    Telegram's on_find_signals() uses, which calls sync_eligible() before
+    reading. A signal that only exists in Radar's raw leads.db (never
+    materialized into workspace_signal_interpretations by anyone) must
+    become visible on a plain GET, with no separate Telegram interaction
+    required - this is exactly the staleness bug from production."""
     client, web_api, db_path, radar_db_path, workspace_id = api
     _create_radar_db(radar_db_path, [
         _radar_row(1, source_id="src-1", category="market_signal"),
@@ -353,17 +358,20 @@ def test_endpoint_does_not_write_new_interpretation_rows_itself(api) -> None:
         db_path, workspace_id=workspace_id,
         source_id="src-1", source_name="VK: Путешествия",
     )
-    # Deliberately NOT calling sync_eligible() here.
+    # Deliberately NOT calling sync_eligible() here - the endpoint must do
+    # it itself now.
 
     with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
         response = client.get("/api/signals")
 
-    assert response.json() == {"signals": []}
+    signals = response.json()["signals"]
+    assert len(signals) == 1
+    assert signals[0]["id"] == "radar:1"
     with sqlite3.connect(db_path) as db:
         count = db.execute(
             "SELECT COUNT(*) FROM workspace_signal_interpretations"
         ).fetchone()[0]
-    assert count == 0
+    assert count == 1
 
 
 def test_noise_and_stale_signals_are_excluded_same_as_telegram(api) -> None:
@@ -485,10 +493,93 @@ def test_signal_json_exposes_recommended_action_and_content_hint(api) -> None:
         response = client.get("/api/signals")
 
     signals = {s["id"]: s for s in response.json()["signals"]}
-    assert signals[1]["recommended_action"] == "observe"
-    assert signals[1]["content_hint"] is None
-    assert signals[2]["recommended_action"] == "content"
-    assert signals[2]["content_hint"]  # непустая подсказка "Как можно подать"
+    assert signals["radar:1"]["recommended_action"] == "observe"
+    assert signals["radar:1"]["content_hint"] is None
+    assert signals["radar:2"]["recommended_action"] == "content"
+    assert signals["radar:2"]["content_hint"]  # непустая подсказка "Как можно подать"
     # action_reason всегда непустой - тот же why_text()/fallback, что и у Telegram.
-    assert signals[1]["action_reason"]
-    assert signals[2]["action_reason"]
+    assert signals["radar:1"]["action_reason"]
+    assert signals["radar:2"]["action_reason"]
+
+
+def _web_signal_record(workspace_id: int, source_id: str, *, title: str = "Trip статья") -> WebSignalRecord:
+    return WebSignalRecord(
+        workspace_id=workspace_id, source_id=source_id, source_name=source_id,
+        source_url=f"https://{source_id}.example", item_url=f"https://{source_id}.example/1",
+        title=title, summary="summary", fetched_at=_now_iso(1.0),
+        published_at=_now_iso(1.0),
+    )
+
+
+def test_merged_feed_includes_both_radar_and_web_source_signals(api) -> None:
+    """Bug 2: Stage 2/3 web_source_signals (Trip/Aviasales/etc) must show up
+    in the same /api/signals feed as legacy Radar signals, not be absent."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _create_radar_db(radar_db_path, [
+        _radar_row(1, source_id="src-radar", category="market_signal"),
+    ])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="src-radar", source_name="Радар",
+    )
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="trip", source_name="Trip.com",
+    )
+    _run(web_api.web_signal_repository.save_many(
+        [_web_signal_record(workspace_id, "trip")]
+    ))
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.get("/api/signals")
+
+    signals = response.json()["signals"]
+    kinds = {item["kind"] for item in signals}
+    assert kinds == {"radar", "web"}
+
+
+def test_disabling_web_source_removes_its_signals_from_merged_feed(api) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _create_radar_db(radar_db_path, [])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="trip", source_name="Trip.com",
+    )
+    _run(web_api.web_signal_repository.save_many(
+        [_web_signal_record(workspace_id, "trip")]
+    ))
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        before = client.get("/api/signals").json()["signals"]
+    assert any(item["kind"] == "web" for item in before)
+
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            "UPDATE workspace_source_subscriptions SET enabled = 0 "
+            "WHERE workspace_id = ? AND source_id = 'trip'",
+            (workspace_id,),
+        )
+        db.commit()
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        after = client.get("/api/signals").json()["signals"]
+    assert not any(item["kind"] == "web" for item in after)
+
+
+def test_web_source_signals_respect_tenant_isolation(api) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _create_radar_db(radar_db_path, [])
+    other = _run(web_api.partner_repository.provision_partner(
+        222333777, "Other Agency 2", "other-agency-signals-2",
+        business_name="Other Agency 2", business_type="independent_agent",
+        short_description="Другое рабочее пространство.",
+        context={},
+    ))
+    _add_active_source_subscription(
+        db_path, workspace_id=other.workspace.id, source_id="trip", source_name="Trip.com",
+    )
+    _run(web_api.web_signal_repository.save_many(
+        [_web_signal_record(other.workspace.id, "trip")]
+    ))
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.get("/api/signals")
+
+    assert response.json()["signals"] == []
