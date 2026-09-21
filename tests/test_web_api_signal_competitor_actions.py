@@ -219,6 +219,42 @@ def test_signal_action_creates_a_real_material(api, monkeypatch) -> None:
     assert materials[0].id == body["material"]["id"]
 
 
+def test_signal_action_does_not_use_a_truncated_title_as_material_title(api, monkeypatch) -> None:
+    """Quality fix: a forwarded-post signal title cut off by the original
+    author ("...осенние свитера и куртки, другие достают загранпаспорт...")
+    must not become the Artifact/Material's own title verbatim - no LLM
+    call to invent a replacement, just a neutral fallback."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    truncated_title = (
+        "Пока одни достают осенние свитера и куртки, другие достают "
+        "загранпаспорт..."
+    )
+    _create_radar_db(radar_db_path, [
+        _radar_row(
+            1, source_id="src-1", category="market_signal",
+            item_title=truncated_title,
+            item_summary="Спрос на туры в Грузию вырос на 30% за последний месяц.",
+        ),
+    ])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="src-1", source_name="Tripster",
+    )
+    _sync(web_api)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", lambda **kw: _fake_draft())
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" not in body
+    assert body["material"]["title"] != truncated_title
+    assert not body["material"]["title"].endswith("...")
+
+
 def test_web_source_signal_action_uses_the_same_shared_material_service(api, monkeypatch) -> None:
     """Stage 2/3 web-source signal ("web:<id>") must go through the exact
     same MaterialOrchestrationService.build_radar_generation_spec +

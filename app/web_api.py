@@ -96,6 +96,7 @@ from app.services.content_factory import ContentFactoryConfig
 from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import (
     build_provider_generation_request,
+    safe_material_title,
     source_content_is_sufficient,
 )
 from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
@@ -1802,7 +1803,7 @@ async def _create_material_from_web_signal(
         web_source_text = "\n".join(
             value for value in (record.title, record.summary) if value
         )
-        if not source_content_is_sufficient(web_source_text):
+        if not source_content_is_sufficient(record.summary):
             await record_event(
                 operational_event_repository, module="materials",
                 event_type="material_created_from_signal",
@@ -1868,7 +1869,7 @@ async def _create_material_from_web_signal(
         artifact, version = await artifact_repository.create_artifact_with_initial_version(
             principal.workspace_id,
             artifact_type=spec.artifact_type,
-            title=record.title or "Материал по сигналу",
+            title=safe_material_title(record.title, fallback="Материал по сигналу"),
             content=sanitized,
             generation_note=f"Сигнал web-источника: id={signal_id}",
         )
@@ -1974,7 +1975,7 @@ async def create_material_from_signal(
         radar_source_text = "\n".join(
             value for value in (record.item_title, record.item_summary) if value
         )
-        if not source_content_is_sufficient(radar_source_text):
+        if not source_content_is_sufficient(record.item_summary):
             await record_event(
                 operational_event_repository, module="materials",
                 event_type="material_created_from_signal",
@@ -2040,7 +2041,7 @@ async def create_material_from_signal(
         artifact, version = await artifact_repository.create_artifact_with_initial_version(
             principal.workspace_id,
             artifact_type=spec.artifact_type,
-            title=signal.title or "Материал по сигналу",
+            title=safe_material_title(signal.title, fallback="Материал по сигналу"),
             content=sanitized,
             generation_note=f"Сигнал Radar: interpretation_id={interpretation_id}",
         )
