@@ -40,6 +40,28 @@ def test_meta_process_phrase_sentence_is_removed():
     assert "Планируйте бюджет заранее." in result
 
 
+# --- signal/post quality fix: draft discussing the signal instead of being
+# the post ("в этом сигнале цепляет...") ---
+
+def test_discusses_the_signal_phrase_is_removed():
+    text = (
+        "Осень — время собирать чемоданы, а не свитера. "
+        "В этом сигнале цепляет контраст между сезонами. "
+        "Уже сейчас можно забронировать перелёт по низкой цене."
+    )
+    result = sanitize_draft_text(text)
+    assert "в этом сигнале" not in result.lower()
+    assert "Осень — время собирать чемоданы, а не свитера." in result
+    assert "Уже сейчас можно забронировать перелёт по низкой цене." in result
+
+
+def test_source_reports_phrase_is_removed():
+    text = "Источник сообщает о росте спроса на зимние туры. Билеты стоит бронировать заранее."
+    result = sanitize_draft_text(text)
+    assert "источник сообщает" not in result.lower()
+    assert "Билеты стоит бронировать заранее." in result
+
+
 def test_meta_process_phrase_by_source_post_is_removed():
     text = "Новый маршрут открылся в этом сезоне. По исходному посту это ещё не подтверждено официально."
     result = sanitize_draft_text(text)

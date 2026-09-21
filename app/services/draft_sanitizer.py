@@ -77,6 +77,17 @@ _META_PROCESS_MARKERS: tuple[str, ...] = (
     "на них лучше",
     "личная оценка",
     "не удалось подтвердить",
+    # Quality fix (signal -> post): production showed a draft that
+    # DISCUSSES the signal instead of BEING the post ("Пока одни достают
+    # осенние свитера... в этом сигнале цепляет..."). Distinct from the
+    # source-reliability meta-phrases above - this is the model narrating
+    # the existence of the signal/source to the reader rather than writing
+    # from its own voice using the source's facts.
+    "в этом сигнале",
+    "источник сообщает",
+    "в тексте упоминается",
+    "как видно из этого сообщения",
+    "автор пишет, что",
 )
 
 # Доля слов disputed claim, которая должна встретиться в предложении черновика,

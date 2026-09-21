@@ -363,6 +363,47 @@ def test_signal_action_fails_closed_when_analysis_unavailable(api, monkeypatch) 
     assert _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10)) == []
 
 
+def test_signal_action_fails_closed_when_source_content_is_too_thin(api, monkeypatch) -> None:
+    """Quality fix: title+summary is the only source content this pipeline
+    persists for a Radar signal - when it's too thin to write a concrete
+    post from, fail closed with a clear status BEFORE calling
+    analyze_source/generate_draft, instead of shipping a knowingly-weak
+    draft (production example: "Пока одни достают осенние свитера...")."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _create_radar_db(radar_db_path, [
+        _radar_row(
+            1, source_id="src-1", category="market_signal",
+            item_title="Коротко", item_summary="",
+        ),
+    ])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="src-1", source_name="VK: Путешествия",
+    )
+    _sync(web_api)
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("analyze_source/generate_draft must not be called for thin source content")
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", fail_if_called)
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", fail_if_called)
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    assert response.json()["error"] == "Недостаточно данных источника для качественного поста."
+    assert _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10)) == []
+
+    events = _run(web_api.operational_event_repository.list_recent_events(limit=200))
+    matching = [
+        e for e in events
+        if e.event_type == "material_created_from_signal" and not e.success
+    ]
+    assert matching
+    assert matching[0].error_code == "insufficient_source_content"
+
+
 def test_signal_action_generate_draft_returning_none_is_diagnosable(api, monkeypatch) -> None:
     """Bug 5/3: generate_draft returning None (the LLM producing nothing
     usable) must be distinguishable from analysis_unavailable via

@@ -838,6 +838,30 @@ def test_radar_spec_constraints_give_example_posts_stronger_priority():
     assert "example_posts" in joined and "более сильный ориентир" in joined
 
 
+# --- Quality fix: draft must read as a ready post, not discuss the signal,
+# not copy a truncated title, and not name the source without a reason ---
+
+def test_radar_spec_constraints_forbid_discussing_the_signal_itself():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "в этом сигнале цепляет" in joined
+    assert "источник сообщает" in joined
+
+
+def test_radar_spec_constraints_forbid_verbatim_truncated_title_as_headline():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "дословно" in joined and "заголовок" in joined
+    assert "многоточ" in joined
+
+
+def test_radar_spec_constraints_forbid_unnecessary_source_name_mention():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "source_name" in joined
+    assert "не упоминай" in joined
+
+
 def test_radar_provider_request_includes_personal_style_avoid_phrases_and_examples():
     from app.services.generation_request_builder import build_provider_generation_request
 

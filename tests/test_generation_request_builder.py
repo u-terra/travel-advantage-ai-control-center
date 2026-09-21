@@ -6,10 +6,12 @@ import pytest
 
 from app.domain.orchestration import GenerationAction, GenerationSpec, OutputFormat
 from app.services.generation_request_builder import (
+    MIN_SOURCE_CONTENT_LENGTH,
     SOURCE_ANALYSIS_REQUEST_LIMIT,
     SourceAnalysisRequestTooLargeError,
     build_provider_generation_request,
     build_source_analysis_provider_request,
+    source_content_is_sufficient,
 )
 
 
@@ -341,3 +343,27 @@ def test_real_antalya_production_case_stays_under_content_factory_limit():
     assert "универсальное обещание" in text
     # Trusted context присутствует (пусть и пустой/ограниченный для этого workspace).
     assert "TRUSTED BUSINESS CONTEXT - DATA" in text
+
+
+# --- signal -> post fail-closed gate (requirement 7: title+summary too thin
+# for a concrete post, and no fuller source content exists in this pipeline
+# to fall back to) ---
+
+def test_source_content_is_sufficient_rejects_empty_and_near_empty_text():
+    assert source_content_is_sufficient("") is False
+    assert source_content_is_sufficient("   ") is False
+    assert source_content_is_sufficient("Коротко") is False
+
+
+def test_source_content_is_sufficient_rejects_just_under_the_threshold():
+    text = "x" * (MIN_SOURCE_CONTENT_LENGTH - 1)
+    assert source_content_is_sufficient(text) is False
+
+
+def test_source_content_is_sufficient_accepts_a_real_title_and_summary():
+    text = (
+        "Пока одни достают осенние свитера и куртки, другие достают "
+        "загранпаспорт\nВ Тбилиси спрос на туры вырос на 30% за последний "
+        "месяц, путешественники бронируют туры на ноябрьские праздники."
+    )
+    assert source_content_is_sufficient(text) is True
