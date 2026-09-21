@@ -1803,7 +1803,7 @@ async def _create_material_from_web_signal(
         web_source_text = "\n".join(
             value for value in (record.title, record.summary) if value
         )
-        if not source_content_is_sufficient(record.summary):
+        if not source_content_is_sufficient(record.title, record.summary, record.source_name):
             await record_event(
                 operational_event_repository, module="materials",
                 event_type="material_created_from_signal",
@@ -1975,7 +1975,7 @@ async def create_material_from_signal(
         radar_source_text = "\n".join(
             value for value in (record.item_title, record.item_summary) if value
         )
-        if not source_content_is_sufficient(record.item_summary):
+        if not source_content_is_sufficient(record.item_title, record.item_summary, record.source_name):
             await record_event(
                 operational_event_repository, module="materials",
                 event_type="material_created_from_signal",

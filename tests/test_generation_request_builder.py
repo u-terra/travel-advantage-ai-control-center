@@ -6,7 +6,7 @@ import pytest
 
 from app.domain.orchestration import GenerationAction, GenerationSpec, OutputFormat
 from app.services.generation_request_builder import (
-    MIN_SOURCE_SUMMARY_LENGTH,
+    MIN_USEFUL_SUMMARY_LENGTH,
     SOURCE_ANALYSIS_REQUEST_LIMIT,
     SourceAnalysisRequestTooLargeError,
     build_provider_generation_request,
@@ -346,19 +346,19 @@ def test_real_antalya_production_case_stays_under_content_factory_limit():
     assert "TRUSTED BUSINESS CONTEXT - DATA" in text
 
 
-# --- signal -> post fail-closed gate (requirement 7: the SUMMARY must be
-# substantive - a long title must not be able to pad a thin/empty summary
-# into passing) ---
+# --- signal -> post fail-closed gate (requirement 7: the summary must
+# carry NEW, non-promotional information - long raw length alone, whether
+# from a padded title or a promotional summary, must not be enough) ---
 
 def test_source_content_is_sufficient_rejects_empty_and_near_empty_summary():
-    assert source_content_is_sufficient("") is False
-    assert source_content_is_sufficient("   ") is False
-    assert source_content_is_sufficient("Коротко") is False
+    assert source_content_is_sufficient("Заголовок", "") is False
+    assert source_content_is_sufficient("Заголовок", "   ") is False
+    assert source_content_is_sufficient("Заголовок", "Коротко") is False
 
 
 def test_source_content_is_sufficient_rejects_just_under_the_threshold():
-    summary = "x" * (MIN_SOURCE_SUMMARY_LENGTH - 1)
-    assert source_content_is_sufficient(summary) is False
+    summary = "x" * (MIN_USEFUL_SUMMARY_LENGTH - 1)
+    assert source_content_is_sufficient("Заголовок", summary) is False
 
 
 def test_source_content_is_sufficient_accepts_a_real_summary():
@@ -366,20 +366,40 @@ def test_source_content_is_sufficient_accepts_a_real_summary():
         "В Тбилиси спрос на туры вырос на 30% за последний месяц, "
         "путешественники бронируют туры на ноябрьские праздники."
     )
-    assert source_content_is_sufficient(summary) is True
+    assert source_content_is_sufficient("Спрос на туры в Грузию", summary) is True
+
+
+def test_source_content_is_sufficient_rejects_the_live_tripster_signal():
+    """Live production example: 243-character summary that formally clears
+    any plain length threshold, but is actually just the title repeated
+    plus a promo CTA for the source's own brand ("Трипстере" - Cyrillic
+    transliteration of "Tripster") - no concrete fact for a standalone
+    post survives removing both."""
+    title = (
+        "Пока одни достают осенние свитера и куртки, другие достают "
+        "загранпаспорт..."
+    )
+    summary = (
+        "Пока одни достают осенние свитера и куртки, другие достают "
+        "загранпаспорт. У каждого свой способ справляться с окончанием "
+        "лета.\n\nГлавное, что и те, и другие, всегда могут найти местного "
+        "гида на Трипстере. В соседнем районе или в другой стране \U0001F438"
+    )
+    assert len(summary) == 243
+    assert source_content_is_sufficient(title, summary, "Tripster") is False
 
 
 def test_source_content_is_sufficient_a_long_title_cannot_rescue_a_thin_summary():
-    """Live bug: a long Tripster-style title padded len(title + summary)
-    past the old combined threshold even though the summary itself carried
-    no real content - the gate must judge the summary alone."""
+    """Bug fix #1: a long Tripster-style title must not pad a thin/empty
+    summary past the threshold - the gate must judge the summary's own
+    (non-title-repeat, non-promotional) content."""
     long_title = (
         "Пока одни достают осенние свитера и куртки, другие достают "
         "загранпаспорт..."
     )
-    assert len(long_title) >= MIN_SOURCE_SUMMARY_LENGTH
-    assert source_content_is_sufficient("") is False
-    assert source_content_is_sufficient("Скидки.") is False
+    assert len(long_title) >= MIN_USEFUL_SUMMARY_LENGTH
+    assert source_content_is_sufficient(long_title, "") is False
+    assert source_content_is_sufficient(long_title, "Скидки.") is False
 
 
 # --- signal -> post: Artifact title must never be a raw, possibly-truncated

@@ -76,7 +76,11 @@ def _radar_row(row_id: int, *, source_id: str, category: str, hours_ago: float =
         id=row_id, source_id=source_id, source_name=f"Источник {source_id}",
         created_at=_now_iso(hours_ago), source_type="rss", origin_type="publisher_post",
         item_url=f"https://example.org/item/{row_id}", item_title=f"Раннее бронирование Турции {row_id}",
-        item_summary="Цена от 45000 рублей до конца месяца.", ai_score=64.0, ai_category=category,
+        item_summary=(
+            "Цена от 45000 рублей до конца месяца, доступны прямые рейсы из "
+            "Москвы и Санкт-Петербурга каждую субботу."
+        ),
+        ai_score=64.0, ai_category=category,
         ai_reason=f"Причина {row_id}",
     )
     base.update(overrides)
@@ -234,7 +238,10 @@ def test_signal_action_does_not_use_a_truncated_title_as_material_title(api, mon
         _radar_row(
             1, source_id="src-1", category="market_signal",
             item_title=truncated_title,
-            item_summary="Спрос на туры в Грузию вырос на 30% за последний месяц.",
+            item_summary=(
+                "Спрос на туры в Грузию вырос на 30% за последний месяц, "
+                "путешественники бронируют туры на ноябрьские праздники."
+            ),
         ),
     ])
     _add_active_source_subscription(
@@ -273,7 +280,11 @@ def test_web_source_signal_action_uses_the_same_shared_material_service(api, mon
         WebSignalRecord(
             workspace_id=workspace_id, source_id="trip", source_name="Trip.com",
             source_url="https://trip.example", item_url="https://trip.example/article-1",
-            title="Дешёвые билеты в Стамбул", summary="Акция до конца месяца.",
+            title="Дешёвые билеты в Стамбул",
+            summary=(
+                "Билеты Москва-Стамбул подешевели до 8000 рублей туда-обратно, "
+                "акция действует до конца месяца."
+            ),
             fetched_at=_now_iso(1.0), published_at=_now_iso(1.0),
         ),
     ]))
