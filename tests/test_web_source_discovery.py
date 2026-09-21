@@ -159,6 +159,36 @@ def test_discover_url_heuristic_is_generic_not_aviasales_specific():
         assert candidates == [], f"{domain}{path} should have been rejected"
 
 
+# --- OneTwoTrip-style live bug: homepage/section-listing pages, and dedupe ---
+
+def test_discover_rejects_bare_domain_root_as_homepage():
+    provider = FakeProvider(results=[
+        result("https://www.onetwotrip.com/"),
+        result("https://www.onetwotrip.com/blog/kak-sobrat-chemodan-v-otpusk"),
+    ])
+    candidates = discover_candidate_urls(provider, source(url="https://www.onetwotrip.com/"))
+    assert candidates == ["https://www.onetwotrip.com/blog/kak-sobrat-chemodan-v-otpusk"]
+
+
+def test_discover_rejects_section_listing_page_not_a_specific_article():
+    """Live bug: OneTwoTrip Blog's own homepage/index (e.g. '/blog') showing
+    up as a 'signal' instead of one specific article inside it."""
+    provider = FakeProvider(results=[
+        result("https://www.onetwotrip.com/blog/"),
+        result("https://www.onetwotrip.com/blog/kak-sobrat-chemodan-v-otpusk"),
+    ])
+    candidates = discover_candidate_urls(provider, source(url="https://www.onetwotrip.com/"))
+    assert candidates == ["https://www.onetwotrip.com/blog/kak-sobrat-chemodan-v-otpusk"]
+
+
+def test_discover_accepts_a_normal_specific_article_url():
+    provider = FakeProvider(results=[
+        result("https://www.onetwotrip.com/blog/kak-sobrat-chemodan-v-otpusk"),
+    ])
+    candidates = discover_candidate_urls(provider, source(url="https://www.onetwotrip.com/"))
+    assert candidates == ["https://www.onetwotrip.com/blog/kak-sobrat-chemodan-v-otpusk"]
+
+
 # --- post-fetch content validation (requirement 2) ---
 
 def test_page_looks_like_non_content_detects_404_body():

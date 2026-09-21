@@ -58,6 +58,7 @@ from app.services.web_search.base import WebSearchProvider
 from app.services.web_source_discovery import (
     discover_candidate_urls,
     mentions_stale_year,
+    normalize_article_title,
     normalize_article_url,
     page_looks_like_non_content,
 )
@@ -151,12 +152,22 @@ class WebSignalCollector:
         # discovery is already domain-restricted per source, so two
         # different sources cannot plausibly discover the same article.
         landing_page_cache: dict[str, WebSignalRecord | None] = {}
+        # Live bug: dedup across the whole run, not just within one source -
+        # two different sources' domain-restricted searches can independently
+        # surface the same underlying story (e.g. a syndicated piece), and a
+        # single source's own discovery can return the same article twice
+        # under two URLs that both survive normalize_article_url (e.g. one
+        # via a redirect). Deliberately title-only here (see
+        # normalize_article_title) - URL-level dedup within one source's own
+        # candidate list already happens earlier, in
+        # discover_candidate_urls's own `seen` set.
+        seen_titles: set[str] = set()
         records: list[WebSignalRecord] = []
         failed: list[str] = []
         for source in targets:
             try:
                 source_records = await self._collect_source(
-                    workspace_id, source, landing_page_cache,
+                    workspace_id, source, landing_page_cache, seen_titles,
                 )
             except Exception:
                 log.warning(
@@ -182,14 +193,17 @@ class WebSignalCollector:
         workspace_id: int,
         source: WorkspaceSource,
         landing_page_cache: dict[str, WebSignalRecord | None],
+        seen_titles: set[str],
     ) -> list[WebSignalRecord]:
         """One source, isolated: discovers up to _MAX_ARTICLES_PER_SOURCE
         specific article signals; if none survive (discovery unavailable/
-        empty, or every discovered candidate failed to fetch/analyze), falls
-        back to a single landing-page signal, same as Stage 2. Requirement 8
-        (Trip): this is the ONLY code path for every platform="web" source,
-        trip_com included - nothing here reads source.id, so no source can
-        be special-cased or force-included by this method.
+        empty, every discovered candidate failed to fetch/analyze, or every
+        surviving candidate turned out to be a duplicate title already
+        collected this run - see ``seen_titles``), falls back to a single
+        landing-page signal, same as Stage 2. Requirement 8 (Trip): this is
+        the ONLY code path for every platform="web" source, trip_com
+        included - nothing here reads source.id, so no source can be
+        special-cased or force-included by this method.
         """
         candidate_urls: list[str] = []
         if self._web_search_provider is not None:
@@ -206,12 +220,24 @@ class WebSignalCollector:
                 candidate_urls = []
 
         records: list[WebSignalRecord] = []
-        for url in candidate_urls[:_MAX_ARTICLES_PER_SOURCE]:
+        for url in candidate_urls:
+            if len(records) >= _MAX_ARTICLES_PER_SOURCE:
+                break
             record = await self._fetch_and_analyze(
                 workspace_id, source, url, is_fallback=False,
             )
-            if record is not None:
-                records.append(record)
+            if record is None:
+                continue
+            title_key = normalize_article_title(record.title)
+            if title_key and title_key in seen_titles:
+                log.info(
+                    "web_signal_collector: duplicate title rejected for '%s' (%s)",
+                    source.id, url,
+                )
+                continue
+            if title_key:
+                seen_titles.add(title_key)
+            records.append(record)
         if records:
             return records
 

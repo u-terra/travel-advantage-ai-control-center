@@ -269,6 +269,36 @@ def test_discovery_finds_multiple_article_urls_for_one_source(tmp_path: Path) ->
     assert all(not r.is_fallback for r in stored)
 
 
+def test_duplicate_title_across_sources_is_collected_once(tmp_path: Path) -> None:
+    """Live bug: the same underlying story discovered via two different
+    sources' domains (or two URLs for the same source) must not appear
+    twice in the feed - collapsed by normalized title, not just URL."""
+    _, owner, catalog, signals = build(tmp_path, [
+        web_source("trip_com", url="https://www.trip.com/travel-guide/"),
+        web_source("aviasales_psgr", url="https://www.aviasales.ru/psgr/"),
+    ])
+    fetcher = make_fetcher({
+        "https://trip_com.example.com/article": page(
+            "https://trip_com.example.com/article",
+            title="Лучшие направления для отдыха в октябре",
+        ),
+        "https://aviasales_psgr.example.com/article": page(
+            "https://aviasales_psgr.example.com/article",
+            title="  лучшие направления   для отдыха в октябре  ",  # same story, different casing/whitespace
+        ),
+    })
+    provider = FakeLLMProvider(analysis=analysis())
+    collector = WebSignalCollector(
+        catalog, signals, provider, fetcher=fetcher, web_search_provider=FakeProvider(),
+    )
+    collector._discover = lambda provider, source, *, limit: [f"https://{source.id}.example.com/article"]
+
+    run(collector.collect_for_workspace(owner))
+
+    stored = run(signals.list_for_workspace(owner))
+    assert len(stored) == 1
+
+
 def test_repeat_collection_does_not_duplicate_discovered_articles(tmp_path: Path) -> None:
     _, owner, catalog, signals = build(tmp_path, [web_source("trip_com", url="https://www.trip.com/travel-guide/")])
     search_provider = FakeProvider(results=[result("https://www.trip.com/travel-guide/italy")])
@@ -389,8 +419,12 @@ def test_trip_participates_in_general_pipeline_without_forced_quota(tmp_path: Pa
         return [f"https://{source.id}.example.com/article"]
 
     fetcher = make_fetcher({
-        "https://aviasales_psgr.example.com/article": page("https://aviasales_psgr.example.com/article"),
-        "https://tutu_guide.example.com/article": page("https://tutu_guide.example.com/article"),
+        "https://aviasales_psgr.example.com/article": page(
+            "https://aviasales_psgr.example.com/article", title="Aviasales article",
+        ),
+        "https://tutu_guide.example.com/article": page(
+            "https://tutu_guide.example.com/article", title="Tutu guide article",
+        ),
         # trip_com's landing page fallback deliberately NOT stubbed -> fails closed.
     })
     llm_provider = FakeLLMProvider(analysis=analysis())
@@ -416,8 +450,12 @@ def test_trip_gets_no_ranking_boost_when_it_does_succeed(tmp_path: Path) -> None
     ]
     _, owner, catalog, signals = build(tmp_path, sources)
     fetcher = make_fetcher({
-        "https://trip_com.example.com/article": page("https://trip_com.example.com/article"),
-        "https://aviasales_psgr.example.com/article": page("https://aviasales_psgr.example.com/article"),
+        "https://trip_com.example.com/article": page(
+            "https://trip_com.example.com/article", title="Trip article",
+        ),
+        "https://aviasales_psgr.example.com/article": page(
+            "https://aviasales_psgr.example.com/article", title="Aviasales article",
+        ),
     })
     llm_provider = FakeLLMProvider(analysis=analysis())
     collector = WebSignalCollector(

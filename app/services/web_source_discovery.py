@@ -126,11 +126,26 @@ _NON_CONTENT_PATH_MARKERS: tuple[str, ...] = (
     "cookie", "sitemap",
 )
 
+# Live bug: a domain-restricted search can also surface the section's own
+# INDEX/LISTING page (e.g. OneTwoTrip's "/blog" itself) instead of one
+# specific article inside it - not a boilerplate/dead page like the markers
+# above, just not a single piece of content either. Matched as a WHOLE path
+# segment (never a substring, unlike _NON_CONTENT_PATH_MARKERS) so a real
+# article slug that happens to contain one of these words (e.g.
+# "/blog/kak-sobrat-chemodan-v-otpusk") is never rejected by this - only a
+# path that IS just the section name gets caught.
+_LISTING_PATH_SEGMENTS = frozenset({
+    "blog", "blogs", "news", "novosti", "guides",
+    "category", "categories", "tag", "tags", "section",
+    "sections", "archive", "archives", "index", "home",
+})
+
 
 def _rejected_by_url_heuristic(url: str) -> str | None:
     """Returns the matched marker (for logging) if ``url``'s path looks like
-    a non-article boilerplate/dead page, else None. Never inspects the
-    domain or query string - a legitimate article path containing e.g.
+    a non-article boilerplate/dead page OR a section homepage/listing page
+    rather than one specific article, else None. Never inspects the domain
+    or query string - a legitimate article path containing e.g.
     "sign-in-to-see-prices" in its slug is an acceptable false negative
     (this is a cheap pre-fetch filter, not the only gate - see
     page_looks_like_non_content for the post-fetch content check)."""
@@ -139,10 +154,22 @@ def _rejected_by_url_heuristic(url: str) -> str | None:
     except ValueError:
         return None
     segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+        # Bare domain root ("https://site.example/" or "https://site.example")
+        # - the homepage itself, never a specific article.
+        return "homepage"
     for segment in segments:
         for marker in _NON_CONTENT_PATH_MARKERS:
             if marker in segment:
                 return marker
+    # A single segment that IS a section name (no further slug after it,
+    # e.g. "/blog" or "/news/") is that section's listing page, not one
+    # article - a real article path almost always has a more specific slug
+    # after the section (checked separately, above, as a substring match
+    # against the boilerplate markers only - this exact-segment check is
+    # deliberately narrower to avoid rejecting legitimate slugs).
+    if len(segments) == 1 and segments[0] in _LISTING_PATH_SEGMENTS:
+        return "listing_page"
     return None
 
 
@@ -181,9 +208,19 @@ def page_looks_like_non_content(title: str, text: str) -> str | None:
     return None
 
 
+def normalize_article_title(title: str) -> str:
+    """Cheap normalization for duplicate detection only (never stored, never
+    shown) - collapse whitespace and case so the same article discovered
+    twice this run (e.g. via two different URLs that both survived
+    normalize_article_url, such as a redirect target vs. its original link)
+    is still recognized as one duplicate title, not two distinct signals."""
+    return _WS_RE.sub(" ", (title or "").strip().lower())
+
+
 # ── Stage 3.1 freshness ranking (not storage - published_at stays honest) ──
 
 _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+_WS_RE = re.compile(r"\s+")
 # How many years behind "now" counts as stale enough to rank below a fresh
 # result - matches the concrete production example (current year 2026,
 # "за 2024 год" flagged as stale: 2026 - 2024 = 2).
