@@ -259,7 +259,7 @@ def build_unified_feed(
             score=signal.score,
             action_reason=why_text(signal),
             content_hint=(
-                content_angle_hint() if signal.recommended_action == "content" else None
+                content_angle_hint(signal) if signal.recommended_action == "content" else None
             ),
             freshness_hours=hours,
         ))
