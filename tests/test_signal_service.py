@@ -104,6 +104,40 @@ def test_dedupes_same_url_keeping_the_freshest_copy() -> None:
     assert unified[0].title == "Newer copy"
 
 
+def test_already_stored_low_quality_web_records_are_filtered_out_of_the_feed() -> None:
+    """Post-deploy bug: the URL Quality Gate only runs at COLLECTION time -
+    rows saved before the gate existed (vacancy pages, section homepages)
+    are still sitting in web_source_signals and must not resurface in the
+    unified feed forever with no DELETE ever issued. Also covers dedupe of
+    two already-stored rows that differ only by a tracking param (a
+    pre-gate collection run could have left one) and a normalized-title
+    duplicate reached via two different URLs."""
+    vacancy = _web_record(
+        1, title="Vacancy page", item_url="https://example.com/about/vacancies/backend",
+    )
+    homepage = _web_record(2, title="Homepage", item_url="https://example.com/")
+    listing = _web_record(3, title="Blog listing", item_url="https://example.com/blog")
+    real_article = _web_record(
+        4, title="Real article", item_url="https://example.com/blog/kak-sobrat-chemodan",
+    )
+    # Older than real_article - a pre-Quality-Gate collection run that kept
+    # a tracking param on the same URL. real_article (fresher, clean URL)
+    # must win the dedupe, not this one.
+    tracked_dup = _web_record(
+        5, title="Real article", hours_ago=2.0,
+        item_url="https://example.com/blog/kak-sobrat-chemodan?utm_source=old-run",
+    )
+
+    unified = build_unified_feed(
+        [], [], [vacancy, homepage, listing, real_article, tracked_dup],
+        limit=10, **_formatters(),
+    )
+
+    assert len(unified) == 1
+    assert unified[0].title == "Real article"
+    assert unified[0].url == "https://example.com/blog/kak-sobrat-chemodan"
+
+
 def test_collect_web_signals_calls_the_shared_collector() -> None:
     # Both Telegram's on_find_signals() and Web's GET /api/signals now call
     # this one function instead of each constructing its own

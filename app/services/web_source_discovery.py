@@ -208,6 +208,17 @@ def page_looks_like_non_content(title: str, text: str) -> str | None:
     return None
 
 
+def url_fails_quality_gate(url: str) -> bool:
+    """Public wrapper around ``_rejected_by_url_heuristic`` for callers that
+    only need a yes/no answer, not the matched marker - used to re-apply the
+    same URL Quality Gate to ALREADY-STORED ``web_source_signals`` rows at
+    read time (see app.services.signal_service.build_unified_feed), since
+    the gate only ran at collection time and rows saved before it existed
+    (or before a given marker was added) are still sitting in the DB.
+    """
+    return _rejected_by_url_heuristic(url) is not None
+
+
 def normalize_article_title(title: str) -> str:
     """Cheap normalization for duplicate detection only (never stored, never
     shown) - collapse whitespace and case so the same article discovered

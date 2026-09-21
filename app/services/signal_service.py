@@ -46,6 +46,11 @@ from app.services.lead_radar import LeadRadarConfig, LeadSignal, build_workspace
 from app.services.llm.base import LLMProvider
 from app.services.web_search.base import WebSearchProvider
 from app.services.web_signal_collector import WebSignalCollector
+from app.services.web_source_discovery import (
+    normalize_article_title,
+    normalize_article_url,
+    url_fails_quality_gate,
+)
 
 log = logging.getLogger(__name__)
 
@@ -217,10 +222,16 @@ _WS = re.compile(r"\s+")
 
 
 def _dedupe_fingerprint(title: str, url: str) -> str:
-    if url and url.strip():
-        return "url:" + url.strip().lower()
-    normalized = _WS.sub(" ", (title or "").strip().lower())
-    return "title:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    # Normalized (tracking params stripped, canonicalized) URL when there is
+    # one - same normalize_article_url the collector itself already applies
+    # at write time - so two records that differ only by a tracking param a
+    # pre-Quality-Gate collection run left in place still collapse to one
+    # fingerprint; normalized title otherwise (whitespace/case-folded).
+    normalized_url = normalize_article_url(url) if url and url.strip() else ""
+    if normalized_url:
+        return "url:" + normalized_url.lower()
+    normalized_title = normalize_article_title(title) or _WS.sub(" ", (title or "").strip().lower())
+    return "title:" + hashlib.sha256(normalized_title.encode("utf-8")).hexdigest()[:24]
 
 
 def build_unified_feed(
@@ -265,6 +276,16 @@ def build_unified_feed(
         ))
 
     for record in web_records:
+        # Quality Gate fix: the URL heuristic (app.services.web_source_
+        # discovery._rejected_by_url_heuristic) only ran at COLLECTION time -
+        # a row saved before the gate existed, or before a given marker was
+        # added to it, is still sitting in web_source_signals and would
+        # otherwise keep showing up here forever (no DELETE is issued
+        # anywhere in this codebase for these rows). Re-checking the stored
+        # item_url here means a deploy that tightens the gate cleans the
+        # feed up immediately, without any DB migration/backfill.
+        if record.item_url and url_fails_quality_gate(record.item_url):
+            continue
         # Stage 3: published_at only ever set from a reliably-found date;
         # fall back to fetched_at (when the page was actually collected) -
         # never a fabricated date.
