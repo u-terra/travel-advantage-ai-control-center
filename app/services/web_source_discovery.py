@@ -193,14 +193,62 @@ _NON_CONTENT_CONTENT_MARKERS: tuple[str, ...] = (
 )
 
 
+# Live bug: a domain-restricted search can surface the section's own
+# generic landing/section page under a URL that looks like an article
+# (so _rejected_by_url_heuristic never sees it) - e.g. Aviasales's "Журнал
+# ПСЖР", OneTwoTrip's "Блог OneTwoTrip - Все о путешествиях", or Tutu's
+# "Путеводитель по странам мира: отдыхаем, путешествуем". These titles
+# describe the SECTION, not one article in it. Matched as a substring
+# against known generic taglines (bilingual, brand-agnostic - never a
+# source id/name) plus a narrow "<журнал/блог/blog/magazine> <single
+# word>" whole-title pattern (the section name plus just the brand, with
+# no article-specific text at all). A real article title that happens to
+# mention e.g. "путеводитель" together with a specific place/topic (e.g.
+# "Путеводитель по Барселоне: главные достопримечательности") does not
+# match either check and is left alone.
+_GENERIC_SECTION_TITLE_MARKERS: tuple[str, ...] = (
+    "все о путешестви",
+    "путеводитель по странам мира",
+    "guide to all countries",
+)
+_GENERIC_BRAND_TITLE_RE = re.compile(
+    r"^(журнал|блог|blog|magazine)\s+\S+$", re.IGNORECASE,
+)
+
+
+def title_looks_like_generic_section(title: str) -> str | None:
+    """Returns the matched marker (for logging) if ``title`` alone reads as
+    a section/landing page's own title (a "Blog"/"Magazine"/country-guide
+    index) rather than one specific article, else None. Title-only (never
+    needs the fetched body), so this can run both at collection time
+    (page.title) and against already-stored rows (WebSignalRecord.title) -
+    see build_unified_feed's re-application of the URL Quality Gate for
+    the same reasoning."""
+    normalized = (title or "").strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    for marker in _GENERIC_SECTION_TITLE_MARKERS:
+        if marker in lowered:
+            return marker
+    if _GENERIC_BRAND_TITLE_RE.match(normalized):
+        return "brand_only_title"
+    return None
+
+
 def page_looks_like_non_content(title: str, text: str) -> str | None:
     """Returns the matched marker (for logging) if the fetched page's own
-    title/text looks like a 404/vacancy/support page rather than travel
-    content, else None. Checked against a bounded prefix of the extracted
-    text (matches how much of it analyze_source itself ever sees) - a
-    marker phrase buried deep in an otherwise legitimate long article is a
-    deliberate, accepted false negative rather than a reason to scan the
-    entire page."""
+    title/text looks like a 404/vacancy/support page, or the title alone
+    looks like a generic section/landing page (see
+    title_looks_like_generic_section), rather than travel content, else
+    None. Checked against a bounded prefix of the extracted text (matches
+    how much of it analyze_source itself ever sees) - a marker phrase
+    buried deep in an otherwise legitimate long article is a deliberate,
+    accepted false negative rather than a reason to scan the entire
+    page."""
+    section_marker = title_looks_like_generic_section(title)
+    if section_marker is not None:
+        return section_marker
     haystack = f"{title or ''} {(text or '')[:2000]}".lower()
     for marker in _NON_CONTENT_CONTENT_MARKERS:
         if marker in haystack:

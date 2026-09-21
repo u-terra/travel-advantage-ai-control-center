@@ -10,6 +10,7 @@ from app.services.web_source_discovery import (
     mentions_stale_year,
     normalize_article_url,
     page_looks_like_non_content,
+    title_looks_like_generic_section,
 )
 
 
@@ -206,6 +207,47 @@ def test_page_looks_like_non_content_detects_vacancy_body_bilingual():
 def test_page_looks_like_non_content_accepts_real_article():
     assert page_looks_like_non_content(
         "Гид по Италии", "Полезная статья про путешествия и достопримечательности",
+    ) is None
+
+
+# --- generic section/landing page titles (live bug: Journal/Blog/Guide
+# index pages surviving the URL heuristic) ---
+
+def test_title_looks_like_generic_section_detects_journal_brand_only_title():
+    assert title_looks_like_generic_section("Журнал ПСЖР") is not None
+
+
+def test_title_looks_like_generic_section_detects_blog_tagline():
+    assert title_looks_like_generic_section(
+        "Блог OneTwoTrip - Все о путешествиях"
+    ) is not None
+
+
+def test_title_looks_like_generic_section_detects_country_guide_index():
+    assert title_looks_like_generic_section(
+        "Путеводитель по странам мира: отдыхаем, путешествуем"
+    ) is not None
+
+
+def test_title_looks_like_generic_section_accepts_specific_article_title():
+    assert title_looks_like_generic_section(
+        "Как собрать чемодан в отпуск: 10 полезных советов"
+    ) is None
+    # Contains "путеводитель" but about one specific place, not a section
+    # index - must not be caught by the country-guide-index marker.
+    assert title_looks_like_generic_section(
+        "Путеводитель по Барселоне: главные достопримечательности"
+    ) is None
+
+
+def test_page_looks_like_non_content_also_rejects_generic_section_title():
+    assert page_looks_like_non_content("Журнал ПСЖР", "любой текст страницы") is not None
+
+
+def test_page_looks_like_non_content_accepts_real_article_from_a_journal_domain():
+    assert page_looks_like_non_content(
+        "10 лучших пляжей Таиланда для отдыха всей семьей",
+        "Подробный разбор пляжей Таиланда с фото и советами.",
     ) is None
 
 

@@ -138,6 +138,39 @@ def test_already_stored_low_quality_web_records_are_filtered_out_of_the_feed() -
     assert unified[0].url == "https://example.com/blog/kak-sobrat-chemodan"
 
 
+def test_already_stored_generic_section_titles_are_filtered_out_of_the_feed() -> None:
+    """Live bug: a domain-restricted search can surface the section's own
+    generic landing/section page under a URL the pre-fetch heuristic does
+    not catch (e.g. Aviasales's "Журнал ПСЖР", OneTwoTrip's "Блог
+    OneTwoTrip - Все о путешествиях", Tutu's "Путеводитель по странам
+    мира..."). These must be filtered from already-stored rows the same
+    way the URL Quality Gate is, without dropping a normal article whose
+    title happens to mention the same words about one specific place."""
+    journal = _web_record(
+        1, title="Журнал ПСЖР", item_url="https://www.aviasales.ru/psgr/journal",
+    )
+    blog_tagline = _web_record(
+        2, title="Блог OneTwoTrip - Все о путешествиях",
+        item_url="https://www.onetwotrip.com/blog/",
+    )
+    country_guide_index = _web_record(
+        3, title="Путеводитель по странам мира: отдыхаем, путешествуем",
+        item_url="https://www.tutu.ru/guide/index",
+    )
+    real_article = _web_record(
+        4, title="Путеводитель по Барселоне: главные достопримечательности",
+        item_url="https://www.tutu.ru/guide/barcelona",
+    )
+
+    unified = build_unified_feed(
+        [], [], [journal, blog_tagline, country_guide_index, real_article],
+        limit=10, **_formatters(),
+    )
+
+    assert len(unified) == 1
+    assert unified[0].title == "Путеводитель по Барселоне: главные достопримечательности"
+
+
 def test_collect_web_signals_calls_the_shared_collector() -> None:
     # Both Telegram's on_find_signals() and Web's GET /api/signals now call
     # this one function instead of each constructing its own

@@ -49,6 +49,7 @@ from app.services.web_signal_collector import WebSignalCollector
 from app.services.web_source_discovery import (
     normalize_article_title,
     normalize_article_url,
+    title_looks_like_generic_section,
     url_fails_quality_gate,
 )
 
@@ -285,6 +286,14 @@ def build_unified_feed(
         # item_url here means a deploy that tightens the gate cleans the
         # feed up immediately, without any DB migration/backfill.
         if record.item_url and url_fails_quality_gate(record.item_url):
+            continue
+        # Quality Gate fix (title/content): a generic section/landing page
+        # ("Журнал ПСЖР", "Блог OneTwoTrip - Все о путешествиях",
+        # "Путеводитель по странам мира...") can be stored under a URL the
+        # heuristic above does not catch - see
+        # web_source_discovery.title_looks_like_generic_section. Same
+        # re-check-already-stored-rows reasoning as the URL gate above.
+        if record.title and title_looks_like_generic_section(record.title):
             continue
         # Stage 3: published_at only ever set from a reliably-found date;
         # fall back to fetched_at (when the page was actually collected) -
