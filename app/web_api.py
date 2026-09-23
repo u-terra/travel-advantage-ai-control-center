@@ -2006,7 +2006,13 @@ async def _create_material_from_web_signal(
                 "material": None,
             }
 
-        sanitized = sanitize_draft_text(draft.text, disputed_claims=analysis.disputed_claims)
+        # cta_allowed=False: this is a button-triggered signal->post
+        # generation with no free-text user brief, so CTA is never
+        # explicitly requested here - see draft_sanitizer.sanitize_draft_text
+        # docstring and the "Подготовить пост" CTA quality fix.
+        sanitized = sanitize_draft_text(
+            draft.text, disputed_claims=analysis.disputed_claims, cta_allowed=False,
+        )
         artifact, version = await artifact_repository.create_artifact_with_initial_version(
             principal.workspace_id,
             artifact_type=spec.artifact_type,
@@ -2188,7 +2194,13 @@ async def create_material_from_signal(
                 "material": None,
             }
 
-        sanitized = sanitize_draft_text(draft.text, disputed_claims=analysis.disputed_claims)
+        # cta_allowed=False: this is a button-triggered signal->post
+        # generation with no free-text user brief, so CTA is never
+        # explicitly requested here - see draft_sanitizer.sanitize_draft_text
+        # docstring and the "Подготовить пост" CTA quality fix.
+        sanitized = sanitize_draft_text(
+            draft.text, disputed_claims=analysis.disputed_claims, cta_allowed=False,
+        )
         artifact, version = await artifact_repository.create_artifact_with_initial_version(
             principal.workspace_id,
             artifact_type=spec.artifact_type,

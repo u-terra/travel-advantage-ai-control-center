@@ -221,6 +221,30 @@ def _is_assistant_ending(sentence: str) -> bool:
     return True
 
 
+# Quality fix (radar/signal-generated posts): banning one exact CTA phrase
+# ("Напишите — подберу варианты по датам и направлению.") only made the
+# model reach for the next equally generic one ("Напишите — подберу, что
+# можно проверить по вашей поездке.") - chasing individual phrasings is a
+# losing game. This is a structural class, not a phrase list: a TRAILING
+# sentence that opens with a direct-address imperative inviting the reader
+# to contact/write/order ("напишите", "пишите", "обращайтесь", "свяжитесь",
+# "звоните", "закажите", "оформите") or a first-person promise to act for
+# them ("подберу"/"подберём", "помогу", "расскажу", "узнаю") - regardless
+# of what follows. Anchored to sentence-start, same principle as
+# _TRAILING_TRIGGER_RE above, so ordinary content/questions mid-sentence or
+# mid-post are never touched - only used when the caller has determined CTA
+# was not explicitly requested for this generation (see cta_allowed below).
+_CONTACT_CTA_START_RE = re.compile(
+    r"^(напиш\w*|пиш\w*|обраща\w*|обрат\w*|свяж\w*|звон\w*|позвон\w*|"
+    r"закаж\w*|оформ\w*|подбер\w*|помог\w*|расскаж\w*|узна\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_contact_cta_ending(sentence: str) -> bool:
+    return bool(_CONTACT_CTA_START_RE.match(sentence.strip()))
+
+
 _TOKEN_RE = re.compile(r"\S+")
 # A token that carries no real sentence content on its own: a hashtag, a bare
 # emoji/punctuation run, or an @mention. Real words (Cyrillic/Latin letters
@@ -244,12 +268,23 @@ def _is_trailing_decoration(sentence: str) -> bool:
     return bool(tokens) and all(_DECORATION_TOKEN_RE.match(token) for token in tokens)
 
 
-def sanitize_draft_text(text: str, *, disputed_claims: tuple[str, ...] = ()) -> str:
+def sanitize_draft_text(
+    text: str, *, disputed_claims: tuple[str, ...] = (), cta_allowed: bool = True,
+) -> str:
     """Убирает ассистентские концовки, мета-фразы о процессе и предложения,
     пересказывающие disputed_claims. Возвращает готовый к показу текст.
 
     Пустой text на входе возвращает пустую строку — вызывающий код сам
     решает, считать ли это ошибкой генерации (как и раньше).
+
+    cta_allowed=False (radar/signal-generated posts, where CTA was never
+    explicitly requested - see app.web_api's two build_radar_generation_spec
+    call sites) additionally cuts any TRAILING sentence matching the
+    general contact-CTA class (_is_contact_cta_ending) - "Напишите...",
+    "Подберу...", "Обращайтесь..." and structurally similar direct
+    solicitations, regardless of exact wording. Default True preserves
+    existing behavior for every other caller (free-text posts, client
+    replies, competitor-signal posts) where a normal CTA is still allowed.
     """
     if not text:
         return text
@@ -290,7 +325,9 @@ def sanitize_draft_text(text: str, *, disputed_claims: tuple[str, ...] = ()) -> 
             continue
         if cuts >= _MAX_TRAILING_CUTS:
             break
-        if _is_assistant_ending(stripped):
+        if _is_assistant_ending(stripped) or (
+            not cta_allowed and _is_contact_cta_ending(stripped)
+        ):
             kept[index] = False
             cuts += 1
             continue

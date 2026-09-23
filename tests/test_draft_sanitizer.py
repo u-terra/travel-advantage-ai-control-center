@@ -359,3 +359,77 @@ def test_genuine_specific_cta_survives_despite_containing_podberem() -> None:
     подобрать/подобрать itself - a real, simple CTA must keep working."""
     text = "Пишите — подберём подходящий вариант."
     assert sanitize_draft_text(text) == text
+
+
+# --- cta_allowed=False (radar/signal-generated posts): CTA banned by
+# default, general class of trailing solicitations removed, not just one
+# exact phrase ---
+
+def test_cta_allowed_false_removes_the_new_live_example_phrase() -> None:
+    text = (
+        "Цены на туры в Египет выросли на четверть за месяц. "
+        "Раннее бронирование пока остаётся выгодным решением. "
+        "Напишите — подберу, что можно проверить по вашей поездке."
+    )
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert "подберу" not in result.lower()
+    assert "Цены на туры в Египет выросли на четверть за месяц." in result
+    assert "Раннее бронирование пока остаётся выгодным решением." in result
+
+
+def test_cta_allowed_false_removes_previously_banned_exact_phrase_too() -> None:
+    text = (
+        "Спрос на отдых в ОАЭ вырос вдвое. "
+        "Напишите — подберу варианты по датам и направлению."
+    )
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert "подберу" not in result.lower()
+    assert "Спрос на отдых в ОАЭ вырос вдвое." in result
+
+
+def test_cta_allowed_false_removes_a_novel_unlisted_solicitation() -> None:
+    """The whole point: a class, not a phrase list - a CTA the previous
+    exact-phrase filters never saw must still be caught."""
+    text = (
+        "Билеты в Стамбул подешевели к ноябрю. "
+        "Свяжитесь со мной, чтобы обсудить детали перелёта."
+    )
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert "свяжитесь" not in result.lower()
+    assert "Билеты в Стамбул подешевели к ноябрю." in result
+
+
+def test_cta_allowed_false_removes_plain_write_to_us_cta_too() -> None:
+    """cta_allowed=False means NO default CTA at all, not just the
+    templated ones - even a simple, otherwise-legitimate "напишите нам"
+    CTA must go when the caller says CTA was not requested."""
+    text = "Пишите — подберём подходящий вариант."
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert result == ""
+
+
+def test_cta_allowed_true_default_still_keeps_the_same_plain_cta() -> None:
+    """Backward compatibility: every other caller (cta_allowed=True,
+    the default) must see unchanged behavior."""
+    text = "Пишите — подберём подходящий вариант."
+    assert sanitize_draft_text(text) == text
+    assert sanitize_draft_text(text, cta_allowed=True) == text
+
+
+def test_cta_allowed_false_does_not_touch_ordinary_content_mid_text() -> None:
+    text = (
+        "Пишите — подберём подходящий вариант. "
+        "Стоимость перелёта выросла на 10% за неделю. "
+        "Это связано с ростом спроса перед праздниками."
+    )
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert "Стоимость перелёта выросла на 10% за неделю." in result
+    assert "Это связано с ростом спроса перед праздниками." in result
+
+
+def test_cta_allowed_false_respects_max_trailing_cuts() -> None:
+    """Same safety cap as the assistant-ending scan - a pathological input
+    of only CTA-shaped sentences must not wipe the entire text."""
+    text = " ".join([f"Напишите вариант номер {i}." for i in range(6)])
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert result != ""

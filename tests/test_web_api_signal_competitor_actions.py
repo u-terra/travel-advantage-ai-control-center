@@ -983,3 +983,80 @@ def test_signal_action_prompt_still_contains_factual_safety_constraints(api, mon
     source_text = captured["source_text"]
     assert "не подавай их как факт" in source_text
     assert "не появляется в самом посте как" in source_text
+
+
+# ── CTA quality fix: POST /api/signals/{id}/actions ("Подготовить пост")
+# strips ANY default CTA (general class, not one exact phrase) since this
+# flow never carries an explicit user request for a CTA ──────────────────
+
+def test_signal_action_strips_the_new_live_cta_example(api, monkeypatch) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: _fake_draft(
+            "Цены на туры выросли на 20%. Раннее бронирование пока выгодно. "
+            "Напишите — подберу, что можно проверить по вашей поездке."
+        ),
+    )
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    content = response.json()["version"]["content"]
+    assert "подберу" not in content.lower()
+    assert "Цены на туры выросли на 20%." in content
+
+
+def test_signal_action_strips_a_novel_cta_never_seen_before(api, monkeypatch) -> None:
+    """The fix is a general class, not a phrase list - an unlisted
+    solicitation the exact-phrase filters never saw must still be caught."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: _fake_draft(
+            "Билеты в Стамбул подешевели к ноябрю. "
+            "Свяжитесь со мной, чтобы обсудить детали перелёта."
+        ),
+    )
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    content = response.json()["version"]["content"]
+    assert "свяжитесь" not in content.lower()
+    assert "Билеты в Стамбул подешевели к ноябрю." in content
+
+
+def test_signal_action_strips_even_a_plain_write_to_us_cta(api, monkeypatch) -> None:
+    """CTA is banned by default for this flow, not just the templated
+    wording - a simple "напишите нам" CTA must go too when it was not
+    explicitly requested."""
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: _fake_draft(
+            "Раннее бронирование Турции подешевело на 15%. Пишите — подберём подходящий вариант."
+        ),
+    )
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    content = response.json()["version"]["content"]
+    assert "пишите" not in content.lower()
+    assert "Раннее бронирование Турции подешевело на 15%." in content

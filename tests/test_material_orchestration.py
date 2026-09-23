@@ -1196,11 +1196,11 @@ def test_radar_spec_constraints_forbid_generic_filler_phrases():
     assert "важно отметить" in joined
 
 
-def test_radar_spec_constraints_forbid_automatic_template_cta():
+def test_radar_spec_constraints_forbid_cta_by_default():
     spec = radar_spec(profile())
     joined = " ".join(spec.constraints).lower()
-    assert "автоматически" in joined
-    assert "cta" in joined.lower() or "призыв к действию" in joined
+    assert "запрещён полностью по умолчанию" in joined
+    assert "призыв к действию (cta)" in joined
 
 
 def test_radar_spec_constraints_require_self_contained_post_not_a_recap():
@@ -1210,8 +1210,16 @@ def test_radar_spec_constraints_require_self_contained_post_not_a_recap():
     assert "пересказ" in joined
 
 
-def test_radar_spec_constraints_forbid_the_specific_dates_and_direction_cta_template():
+def test_radar_spec_constraints_forbid_the_general_class_of_contact_ctas():
+    """CTA-banning must be a general class, not a phrase list - naming one
+    exact template only made the model reach for the next equally generic
+    one. The constraint text must name the class of banned openers
+    (write/contact/order/pick/check), not just one historical example, and
+    must say replacing one banned template with another equally generic
+    invitation is also forbidden."""
     spec = radar_spec(profile())
     joined = " ".join(spec.constraints).lower()
-    assert "подберу варианты по датам и направлению" in joined
-    assert "не заменяй такой шаблон другим столь же универсальным cta" in joined
+    for opener in ("напишите", "обращайтесь", "свяжитесь", "подберу", "помогу", "расскажу"):
+        assert opener in joined
+    assert "класс концовок" in joined
+    assert "коммерческого контекста" in joined and "не считается" in joined
