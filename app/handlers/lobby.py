@@ -78,8 +78,10 @@ PAYMENT_COMING_SOON_TEXT = (
 # workspace определяется server-side из web-сессии (email+пароль,
 # app.web_api.get_current_principal), тот же принцип, что и у любого
 # billing-эндпоинта. Отдельный signed-token flow для прямого перехода из
-# Telegram без повторного логина - см. отчёт, следующий этап, не
-# реализован сейчас.
+# Telegram без повторного логина реализован для обратного направления
+# (веб -> Telegram) - см. POST /api/telegram/bind-token и
+# app.handlers.start's /start <token>; здесь, для перехода Telegram -> веб,
+# по-прежнему обычный логин по email/паролю.
 WEB_BILLING_URL = "https://app.orchestravel.ru/billing"
 
 PAYMENT_RENEW_TEXT = (

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,36 @@ from app.domain.business_profiles import (
     BusinessProfileValidationError,
     StaleBusinessProfileError,
 )
+
+
+# Placeholder identity range for a self-service workspace that hasn't
+# connected Telegram yet (see provision_self_service_workspace /
+# rebind_workspace_telegram_id below). Real Telegram Bot API user ids are
+# always positive - checking sign is enough to tell "not linked yet" apart
+# from any real incoming update, with zero schema/column changes needed.
+def is_telegram_linked(telegram_user_id: int) -> bool:
+    return telegram_user_id > 0
+
+
+_CYRILLIC_TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "",
+    "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def slugify(text: str) -> str:
+    """Cyrillic-aware, collision-agnostic slug base - collision handling
+    itself lives in PartnerRepository._unique_slug (needs a live DB
+    transaction, this function doesn't). Always returns a non-empty
+    string: an input that transliterates to nothing (empty/punctuation-only)
+    falls back to a short random token rather than an empty slug."""
+    lowered = text.strip().lower()
+    transliterated = "".join(_CYRILLIC_TRANSLIT.get(ch, ch) for ch in lowered)
+    slug = re.sub(r"[^a-z0-9]+", "-", transliterated).strip("-")
+    return slug or f"workspace-{secrets.token_hex(3)}"
 
 
 WORKSPACE_ROLES = frozenset({"owner", "admin", "member"})
@@ -823,6 +855,218 @@ class PartnerRepository:
             _business_profile_from_row(profile_row),
             True,
         )
+
+    async def provision_self_service_workspace(
+        self, business_name: str, *, base_slug: str | None = None,
+    ) -> ProvisionedPartner:
+        """Public self-service signup (see app.web_api's POST
+        /api/auth/signup) - the CLI/admin-only counterpart is
+        provision_partner() above, which requires a real, already-known
+        Telegram user id. A self-service signup has no Telegram identity
+        yet (Telegram is connected later, see rebind_workspace_telegram_id
+        below), so this method assigns a NEGATIVE placeholder
+        telegram_user_id (-workspace_id) instead - real Telegram user ids
+        from the Bot API are always positive, so a placeholder can never
+        collide with, or be mistaken for, a real incoming Telegram update
+        (see is_telegram_linked()). Slug collisions are resolved here,
+        inside the same transaction, by trying base_slug, base_slug-2,
+        base_slug-3, ... then falling back to a random suffix - never by
+        silently attaching to an existing workspace the way
+        provision_partner()'s "re-run with same slug" branch does.
+
+        business_type/short_description/context are intentionally minimal
+        (business_type='other', no description, empty context) - the
+        profile comes back profile_status='incomplete', which the
+        existing onboarding gate (app/onboarding_gate.py,
+        app/web_api.py's _onboarding_pending-equivalent for Business
+        Profile) already knows how to prompt for. Self-service signup
+        does not duplicate that flow.
+        """
+        name = business_name.strip()
+        if not name:
+            raise ValueError("business_name обязателен")
+        normalized = validate_business_profile_input(
+            name, "other", "", {}, BUSINESS_PROFILE_SCHEMA_VERSION,
+        )
+        profile_status = _profile_status(name, "", normalized)
+        tone = normalized["communication"]["tone"]
+        base = base_slug or slugify(name)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                slug = await self._unique_slug(db, base)
+                now = _now()
+                cursor = await db.execute(
+                    "INSERT INTO partner_workspaces "
+                    "(name, slug, status, created_at, updated_at) "
+                    "VALUES (?, ?, 'active', ?, ?)",
+                    (name, slug, now, now),
+                )
+                workspace_id = cursor.lastrowid or 0
+                placeholder_telegram_id = -workspace_id
+                membership_cursor = await db.execute(
+                    "INSERT INTO workspace_memberships "
+                    "(workspace_id, telegram_user_id, role, status, created_at, updated_at) "
+                    "VALUES (?, ?, 'owner', 'active', ?, ?)",
+                    (workspace_id, placeholder_telegram_id, now, now),
+                )
+                profile_cursor = await db.execute(
+                    "INSERT INTO partner_profiles "
+                    "(workspace_id, telegram_user_id, partner_name, project_name, "
+                    "business_description, communication_style, business_name, business_type, "
+                    "ta_affiliated, short_description, profile_status, schema_version, revision, "
+                    "context_json, created_at, updated_at) "
+                    "VALUES (?, NULL, '', ?, '', ?, ?, 'other', 0, '', ?, ?, 1, ?, ?, ?)",
+                    (
+                        workspace_id, name, tone, name,
+                        profile_status, BUSINESS_PROFILE_SCHEMA_VERSION,
+                        _encode_context(normalized), now, now,
+                    ),
+                )
+                workspace_row = await self._workspace_row_by_id(db, workspace_id)
+                membership_row = await self._membership_row_by_id(
+                    db, membership_cursor.lastrowid or 0
+                )
+                profile_row = await (await db.execute(
+                    "SELECT * FROM partner_profiles WHERE id = ?",
+                    (profile_cursor.lastrowid or 0,),
+                )).fetchone()
+                if workspace_row is None or membership_row is None or profile_row is None:
+                    raise RuntimeError("Не удалось создать полный tenant")
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return ProvisionedPartner(
+            _workspace_from_row(workspace_row),
+            _membership_from_row(membership_row),
+            _business_profile_from_row(profile_row),
+            True,
+        )
+
+    @staticmethod
+    async def _unique_slug(db: aiosqlite.Connection, base: str) -> str:
+        """Called inside the caller's own BEGIN IMMEDIATE transaction -
+        IMMEDIATE already takes the write lock before this runs, so no
+        other writer can insert a colliding slug between this check and
+        the INSERT that follows it in provision_self_service_workspace."""
+        candidate = base
+        for suffix in range(2, 51):
+            row = await (await db.execute(
+                "SELECT 1 FROM partner_workspaces WHERE slug = ?", (candidate,),
+            )).fetchone()
+            if row is None:
+                return candidate
+            candidate = f"{base}-{suffix}"
+        # Extremely unlikely (50 collisions on the same base) - a short
+        # random suffix guarantees termination without an unbounded loop.
+        return f"{base}-{secrets.token_hex(3)}"
+
+    async def delete_freshly_provisioned_workspace(self, workspace_id: int) -> None:
+        """Compensating rollback for self-service signup ONLY (see
+        app.web_api's POST /api/auth/signup): provision_self_service_workspace()
+        commits workspace+membership+profile in one transaction, but the
+        web-account (web_auth_users/web_auth_bindings, a different
+        repository/connection - see app.repositories.web_auth_repository)
+        can still fail afterwards (e.g. an email-uniqueness race). Rather
+        than leave an unreachable, ownerless workspace behind, the caller
+        deletes it immediately in that case.
+
+        NOT a general-purpose "delete a workspace" API - only safe to call
+        on a workspace that was JUST created in the same request and has
+        no other data (materials, conversations, payments, ...) yet;
+        nothing else in this codebase calls it."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute(
+                    "DELETE FROM partner_profiles WHERE workspace_id = ?", (workspace_id,),
+                )
+                await db.execute(
+                    "DELETE FROM workspace_memberships WHERE workspace_id = ?", (workspace_id,),
+                )
+                await db.execute(
+                    "DELETE FROM partner_workspaces WHERE id = ?", (workspace_id,),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def rebind_workspace_telegram_id(
+        self, workspace_id: int, old_telegram_user_id: int, new_telegram_user_id: int,
+    ) -> WorkspaceMembership:
+        """Telegram bind-token consumption (see
+        app.repositories.telegram_bind_token_repository and
+        app.handlers.start's /start <token> handling) - renames the
+        identity a self-service workspace's membership acts as, from its
+        negative placeholder to the real Telegram user id that just
+        proved ownership by opening the bot's deep link. Cascades the same
+        rename to every other table keyed by (workspace_id,
+        telegram_user_id) so nothing written under the placeholder before
+        binding (e.g. a web-only "Мой стиль" edit) becomes orphaned.
+
+        Fails closed if new_telegram_user_id already has an active
+        membership ANYWHERE (including a different workspace) - the same
+        one-Telegram-identity-per-workspace invariant provision_partner()
+        already enforces, never weakened for this path."""
+        if type(new_telegram_user_id) is not int or new_telegram_user_id < 1:
+            raise ValueError("new_telegram_user_id должен быть положительным целым числом")
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            # Renaming workspace_memberships' (workspace_id, telegram_user_id)
+            # key AND the child rows that reference it (user_consents,
+            # workspace_user_preferences) can't be ordered to satisfy
+            # immediate (per-statement) FK checking either way round - defer
+            # every FK check in this transaction to COMMIT instead, where
+            # the parent+children are consistent again. Must be set BEFORE
+            # BEGIN: SQLite silently ignores this pragma mid-transaction.
+            await db.execute("PRAGMA defer_foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                membership_row = await (await db.execute(
+                    "SELECT * FROM workspace_memberships "
+                    "WHERE workspace_id = ? AND telegram_user_id = ?",
+                    (workspace_id, old_telegram_user_id),
+                )).fetchone()
+                if membership_row is None:
+                    raise PartnerMembershipNotFoundError(
+                        "Membership для этого workspace не найдена"
+                    )
+                conflict = await (await db.execute(
+                    "SELECT 1 FROM workspace_memberships "
+                    "WHERE telegram_user_id = ? AND status = 'active'",
+                    (new_telegram_user_id,),
+                )).fetchone()
+                if conflict is not None:
+                    raise PartnerProvisioningConflictError(
+                        "Этот Telegram-аккаунт уже привязан к другому рабочему пространству"
+                    )
+                now = _now()
+                await db.execute(
+                    "UPDATE workspace_memberships SET telegram_user_id = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (new_telegram_user_id, now, membership_row["id"]),
+                )
+                for table in ("user_consents", "workspace_user_preferences"):
+                    await db.execute(
+                        f"UPDATE {table} SET telegram_user_id = ? "
+                        "WHERE workspace_id = ? AND telegram_user_id = ?",
+                        (new_telegram_user_id, workspace_id, old_telegram_user_id),
+                    )
+                updated_row = await self._membership_row_by_id(db, membership_row["id"])
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        if updated_row is None:
+            raise RuntimeError("Membership исчезла при перепривязке")
+        return _membership_from_row(updated_row)
 
     async def set_partner_membership_status(
         self, telegram_user_id: int, status: str

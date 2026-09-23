@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove
 
@@ -10,9 +10,70 @@ from app.domain.partners import WorkspaceContext
 from app.handlers.lobby import is_access_granted, route_access_gate
 from app.handlers.onboarding import enter_onboarding_gate
 from app.keyboards import BTN_HOW_IT_WORKS, active_main_menu, main_menu
-from app.repositories.partner_repository import PartnerRepository
+from app.repositories.partner_repository import (
+    PartnerProvisioningConflictError,
+    PartnerRepository,
+)
+from app.repositories.telegram_bind_token_repository import TelegramBindTokenRepository
+from app.services.web_auth_tokens import hash_token
 
 router = Router(name="start")
+
+TELEGRAM_CONNECTED_TEXT = (
+    "✅ ORCHESTRAVEL подключён к вашему рабочему пространству «{workspace_name}».\n\n"
+    "Отправьте /start ещё раз, чтобы открыть рабочее меню."
+)
+
+TELEGRAM_BIND_FAILED_TEXT = (
+    "Ссылка для подключения Telegram недействительна, уже использована или "
+    "истекла.\n\n"
+    "Откройте «Подключить Telegram» ещё раз в веб-кабинете, чтобы получить "
+    "новую ссылку."
+)
+
+TELEGRAM_BIND_CONFLICT_TEXT = (
+    "Этот Telegram-аккаунт уже подключён к другому рабочему пространству "
+    "ORCHESTRAVEL."
+)
+
+
+async def _try_bind_telegram(
+    token: str,
+    telegram_user_id: int,
+    partner_repository: PartnerRepository | None,
+    telegram_bind_token_repository: TelegramBindTokenRepository | None,
+) -> str:
+    """Consumes a one-time Telegram-connect deep-link token (see POST
+    /api/telegram/bind-token, app.repositories.telegram_bind_token_repository).
+    Always returns a reply to show the user - never raises: any failure
+    (unknown/expired/already-used token, or the incoming Telegram account
+    already owning a different workspace) surfaces as a clear message,
+    never a stack trace."""
+    if partner_repository is None or telegram_bind_token_repository is None:
+        return TELEGRAM_BIND_FAILED_TEXT
+    consumed = await telegram_bind_token_repository.consume_token(
+        hash_token(token), telegram_user_id,
+    )
+    if consumed is None:
+        return TELEGRAM_BIND_FAILED_TEXT
+    # Self-service workspaces start with a negative placeholder
+    # telegram_user_id (-workspace_id) - see
+    # provision_self_service_workspace/is_telegram_linked. The bind token
+    # only ever targets such a workspace (POST /api/telegram/bind-token
+    # refuses to issue one once real Telegram is already linked), so this
+    # is the identity rebind_workspace_telegram_id renames FROM.
+    placeholder_telegram_id = -consumed.workspace_id
+    try:
+        workspace = await partner_repository.get_workspace(consumed.workspace_id)
+        await partner_repository.rebind_workspace_telegram_id(
+            consumed.workspace_id, placeholder_telegram_id, telegram_user_id,
+        )
+    except PartnerProvisioningConflictError:
+        return TELEGRAM_BIND_CONFLICT_TEXT
+    except Exception:
+        return TELEGRAM_BIND_FAILED_TEXT
+    workspace_name = workspace.name if workspace is not None else ""
+    return TELEGRAM_CONNECTED_TEXT.format(workspace_name=workspace_name)
 
 
 HELP_TEXT = (
@@ -69,16 +130,36 @@ async def _resolve_start_reply(
 async def cmd_start(
     message: Message,
     state: FSMContext,
+    command: CommandObject | None = None,
     v2_menu_enabled: bool = False,
     workspace_context: WorkspaceContext | None = None,
     workspace_context_ambiguous: bool = False,
     partner_repository: PartnerRepository | None = None,
+    telegram_bind_token_repository: TelegramBindTokenRepository | None = None,
     onboarding_required: bool = False,
     onboarding_profile: BusinessProfile | None = None,
     access_state: str = "active",
 ) -> None:
     if v2_menu_enabled:
         await state.clear()
+
+    # /start <token> - one-time Telegram-connect deep link from the web
+    # cabinet's "Подключить Telegram" button (see POST
+    # /api/telegram/bind-token). Handled BEFORE the workspace_context
+    # branch below on purpose: a brand-new visitor opening this link has
+    # workspace_context=None (computed by WorkspaceContextMiddleware
+    # before this handler ever runs, from the OLD placeholder identity),
+    # so binding first and replying immediately - rather than trying to
+    # patch the already-computed workspace_context/access_state for this
+    # same update - is the simplest correct behavior. The user is asked to
+    # send /start again for the (now correctly resolved) main menu.
+    token = (command.args or "").strip() if command is not None else ""
+    if token:
+        reply = await _try_bind_telegram(
+            token, message.from_user.id, partner_repository, telegram_bind_token_repository,
+        )
+        await message.answer(reply)
+        return
 
     # Stage 3A: публичный вход ≠ рабочий доступ. Без workspace (новый
     # посетитель) или с access_state, отличным от active/trial_active

@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ORCHESTRAVEL — AI-система для туристического бизнеса</title>
+<meta name="description" content="ORCHESTRAVEL следит за рынком, понимает контекст и помогает доводить задачи до действия. Демо на подготовленных данных.">
+<style>
+* { box-sizing: border-box; }
+
+:root {
+    --navy-950: #0a0f1c;
+    --navy-900: #0d1424;
+    --sidebar-grad: linear-gradient(180deg, #0a0f1c 0%, #121b30 60%, #16213a 100%);
+    --teal: #17b3a3;
+    --teal-dark: #0f9488;
+    --teal-soft: rgba(23, 179, 163, .12);
+    --bg: #f4f6fa;
+    --card: #ffffff;
+    --border: #e3e7ee;
+    --text: #16202f;
+    --text-muted: #66728a;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+        Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    scroll-behavior: smooth;
+}
+
+a { color: inherit; }
+
+.container {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 24px;
+}
+
+/* ---------- Hero ---------- */
+
+.hero {
+    background: var(--sidebar-grad);
+    color: #fff;
+    padding: 56px 0 72px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    margin-bottom: 48px;
+}
+
+.brand-mark {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--teal) 0%, #3fd1c4 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 16px rgba(23, 179, 163, .35);
+}
+
+.brand-mark svg { width: 18px; height: 18px; }
+
+.brand-name {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: .02em;
+}
+
+.hero h1 {
+    font-size: clamp(28px, 5vw, 44px);
+    line-height: 1.15;
+    margin: 0 0 6px;
+    font-weight: 800;
+}
+
+.hero .tagline {
+    font-size: clamp(16px, 2.4vw, 20px);
+    color: #c7d0e0;
+    margin: 0 0 20px;
+    font-weight: 600;
+}
+
+.hero .lede {
+    max-width: 620px;
+    font-size: 16px;
+    line-height: 1.6;
+    color: #a9b4c9;
+    margin: 0 0 34px;
+}
+
+.hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 10px;
+    padding: 13px 22px;
+    font-size: 14.5px;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+    border: 0;
+    transition: filter .15s ease, transform .1s ease;
+    font-family: inherit;
+}
+
+.btn:hover { transform: translateY(-1px); }
+
+.btn-primary {
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(15, 148, 136, .35);
+}
+
+.btn-primary:hover { filter: brightness(1.06); }
+
+.btn-ghost {
+    background: rgba(255, 255, 255, .06);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, .18);
+}
+
+.btn-ghost:hover { background: rgba(255, 255, 255, .12); }
+
+/* ---------- Sections ---------- */
+
+section { padding: 64px 0; }
+
+.section-label {
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--teal-dark);
+    margin: 0 0 10px;
+}
+
+.section-title {
+    font-size: clamp(22px, 3.4vw, 30px);
+    font-weight: 800;
+    margin: 0 0 14px;
+    letter-spacing: -.01em;
+}
+
+.section-sub {
+    font-size: 15.5px;
+    color: var(--text-muted);
+    max-width: 640px;
+    line-height: 1.6;
+    margin: 0 0 36px;
+}
+
+/* ---------- Features ---------- */
+
+.features {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 18px;
+}
+
+.feature-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+}
+
+.feature-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: var(--teal-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 14px;
+    color: var(--teal-dark);
+}
+
+.feature-card h3 {
+    font-size: 16.5px;
+    margin: 0 0 6px;
+}
+
+.feature-card p {
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.orchestrator-note {
+    margin: 22px 0 0;
+    font-size: 14px;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+/* ---------- Scenarios ---------- */
+
+.scenarios-wrap { background: var(--card); }
+
+.scenarios {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+}
+
+.scenario-card {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px;
+    background: var(--bg);
+}
+
+.scenario-card h3 {
+    font-size: 15.5px;
+    margin: 0 0 16px;
+}
+
+.chain {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.chain-step {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    position: relative;
+    padding-bottom: 18px;
+}
+
+.chain-step:last-child { padding-bottom: 0; }
+
+.chain-step::before {
+    content: "";
+    position: absolute;
+    left: 11px;
+    top: 24px;
+    bottom: 0;
+    width: 1px;
+    background: var(--border);
+}
+
+.chain-step:last-child::before { display: none; }
+
+.chain-dot {
+    flex: 0 0 auto;
+    width: 23px;
+    height: 23px;
+    border-radius: 50%;
+    background: var(--teal-soft);
+    color: var(--teal-dark);
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+}
+
+.chain-body .label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--teal-dark);
+    margin-bottom: 2px;
+}
+
+.chain-body .text {
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--text);
+}
+
+/* ---------- Differentiator ---------- */
+
+.differentiator {
+    background: var(--sidebar-grad);
+    color: #fff;
+    text-align: center;
+}
+
+.differentiator .section-title { color: #fff; }
+
+.differentiator p {
+    max-width: 620px;
+    margin: 0 auto;
+    font-size: 16.5px;
+    line-height: 1.7;
+    color: #c7d0e0;
+}
+
+.differentiator strong { color: #fff; }
+
+/* ---------- Demo note ---------- */
+
+.demo-note {
+    background: var(--teal-soft);
+    border: 1px solid rgba(23, 179, 163, .25);
+    border-radius: 14px;
+    padding: 20px 24px;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text);
+}
+
+.demo-note p { margin: 0 0 8px; }
+.demo-note p:last-child { margin-bottom: 0; }
+
+.setup-help-note {
+    max-width: 640px;
+    margin: 0 auto;
+    text-align: center;
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--text-muted);
+}
+
+/* ---------- Where it works / pricing ---------- */
+
+.two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+}
+
+.channels {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.channel {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    font-size: 14.5px;
+    font-weight: 600;
+}
+
+.channel-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.channel-sub {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.channel-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: var(--teal-soft);
+    color: var(--teal-dark);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+}
+
+.pricing {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.price-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+}
+
+.price-row .plan {
+    font-size: 14px;
+    color: var(--text-muted);
+}
+
+.price-row .amount {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.price-note {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    margin-top: 10px;
+    line-height: 1.5;
+}
+
+/* ---------- Final CTA ---------- */
+
+.final-cta {
+    background: var(--card);
+    text-align: center;
+}
+
+.final-cta .section-title { margin-bottom: 10px; }
+
+.final-cta-actions {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin: 28px 0 36px;
+}
+
+.final-cta .btn-ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.final-cta .btn-ghost:hover { background: var(--bg); }
+
+.contacts {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 24px;
+    font-size: 14px;
+    color: var(--text-muted);
+}
+
+.contacts a { color: var(--teal-dark); font-weight: 600; text-decoration: none; }
+.contacts a:hover { text-decoration: underline; }
+
+footer {
+    text-align: center;
+    padding: 28px 0 40px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 860px) {
+    .features { grid-template-columns: 1fr; }
+    .scenarios { grid-template-columns: 1fr; }
+    .two-col { grid-template-columns: 1fr; gap: 28px; }
+}
+
+@media (max-width: 560px) {
+    .hero { padding: 36px 0 48px; }
+    section { padding: 44px 0; }
+    .hero-actions .btn, .final-cta-actions .btn { width: 100%; }
+    .hero-actions, .final-cta-actions { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+    <div class="container">
+        <div class="brand">
+            <div class="brand-mark">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2l2.6 6.6L21 11l-6.4 2.4L12 20l-2.6-6.6L3 11l6.4-2.4z"/>
+                </svg>
+            </div>
+            <div class="brand-name">ORCHESTRAVEL</div>
+        </div>
+
+        <h1>ORCHESTRAVEL</h1>
+        <p class="tagline">AI-система для туристического бизнеса</p>
+        <p class="lede">
+            Следит за рынком, понимает контекст, помогает принимать решения
+            и доводить задачи до действия.
+        </p>
+
+        <div class="hero-actions">
+            <a href="#scenarios" class="btn btn-primary">Посмотреть, как работает</a>
+            <a href="https://t.me/ta_control_center_vassian_bot" target="_blank" rel="noopener" class="btn btn-ghost">Попробовать в Telegram</a>
+        </div>
+    </div>
+</header>
+
+<section id="features">
+    <div class="container">
+        <div class="section-label">Возможности</div>
+        <h2 class="section-title">Что делает ORCHESTRAVEL</h2>
+        <p class="section-sub">
+            Основные рабочие блоки ORCHESTRAVEL.
+        </p>
+
+        <div class="features">
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/></svg>
+                </div>
+                <h3>Radar</h3>
+                <p>Следит за рынком, конкурентами и информационными сигналами.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l7 4v6c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z"/></svg>
+                </div>
+                <h3>Content Factory</h3>
+                <p>Превращает идеи и сигналы в готовые материалы.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </div>
+                <h3>AI-ассистент</h3>
+                <p>Помогает с рабочими задачами, клиентскими запросами и решениями.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h1m4 0h1m-6 4h1m4 0h1m-6 4h1m4 0h1"/></svg>
+                </div>
+                <h3>Контекст бизнеса</h3>
+                <p>Учитывает информацию о компании, аудитории, конкурентах и текущих задачах.</p>
+            </div>
+        </div>
+
+        <p class="orchestrator-note">
+            Оркестратор связывает эти блоки между собой и определяет следующий шаг.
+        </p>
+    </div>
+</section>
+
+<section id="scenarios" class="scenarios-wrap">
+    <div class="container">
+        <div class="section-label">Демонстрация</div>
+        <h2 class="section-title">ORCHESTRAVEL в работе</h2>
+        <p class="section-sub">
+            Три сценария на заранее подготовленных данных — от сигнала до готового действия.
+        </p>
+
+        <div class="scenarios">
+            <div class="scenario-card">
+                <h3>Конкурент запустил новую акцию</h3>
+                <div class="chain">
+                    <div class="chain-step">
+                        <div class="chain-dot">1</div>
+                        <div class="chain-body">
+                            <div class="label">Сигнал</div>
+                            <div class="text">Конкурент объявил скидку 20% на туры в Турцию.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">2</div>
+                        <div class="chain-body">
+                            <div class="label">Анализ</div>
+                            <div class="text">Акция затрагивает ключевое направление и период спроса.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">3</div>
+                        <div class="chain-body">
+                            <div class="label">Решение</div>
+                            <div class="text">Сформировать встречное предложение с акцентом на сервис.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">4</div>
+                        <div class="chain-body">
+                            <div class="label">Действие</div>
+                            <div class="text">Готовый пост и рассылка для базы клиентов.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="scenario-card">
+                <h3>Подготовить контент на неделю</h3>
+                <div class="chain">
+                    <div class="chain-step">
+                        <div class="chain-dot">1</div>
+                        <div class="chain-body">
+                            <div class="label">Сигнал</div>
+                            <div class="text">Рост интереса к раннему бронированию зимних туров.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">2</div>
+                        <div class="chain-body">
+                            <div class="label">Анализ</div>
+                            <div class="text">Тема совпадает с аудиторией и текущими приоритетами.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">3</div>
+                        <div class="chain-body">
+                            <div class="label">Решение</div>
+                            <div class="text">Спланировать серию постов на неделю по теме раннего бронирования.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">4</div>
+                        <div class="chain-body">
+                            <div class="label">Действие</div>
+                            <div class="text">Готовый контент-план с текстами для публикации.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="scenario-card">
+                <h3>Подготовить ответ клиенту</h3>
+                <div class="chain">
+                    <div class="chain-step">
+                        <div class="chain-dot">1</div>
+                        <div class="chain-body">
+                            <div class="label">Сигнал</div>
+                            <div class="text">Клиент спрашивает про смену дат и условия возврата.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">2</div>
+                        <div class="chain-body">
+                            <div class="label">Анализ</div>
+                            <div class="text">Запрос сопоставлен с условиями тура и историей клиента.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">3</div>
+                        <div class="chain-body">
+                            <div class="label">Решение</div>
+                            <div class="text">Определён корректный ответ с учётом правил и контекста.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">4</div>
+                        <div class="chain-body">
+                            <div class="label">Действие</div>
+                            <div class="text">Готовый ответ клиенту, который можно сразу отправить.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="differentiator">
+    <div class="container">
+        <div class="section-label" style="color:#7fe0d3;">Отличие</div>
+        <h2 class="section-title">Почему это не обычный AI</h2>
+        <p>
+            Обычный AI ждёт вопроса.<br>
+            <strong>ORCHESTRAVEL</strong> связывает информацию, контекст и действия в одном процессе.
+        </p>
+    </div>
+</section>
+
+<section>
+    <div class="container">
+        <div class="demo-note">
+            <p>Демо работает на подготовленных данных и предназначено для знакомства с возможностями системы.</p>
+            <p>В рабочей версии ORCHESTRAVEL учитывает ваш бизнес, конкурентов, источники и базу знаний.</p>
+        </div>
+    </div>
+</section>
+
+<section class="scenarios-wrap">
+    <div class="container">
+        <div class="two-col">
+            <div>
+                <div class="section-label">Где работает</div>
+                <h2 class="section-title" style="font-size:22px;">Каналы доступа</h2>
+                <div class="channels">
+                    <div class="channel">
+                        <div class="channel-icon">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M21.94 2.94a1.5 1.5 0 0 0-1.53-.24L2.6 9.86a1.5 1.5 0 0 0 .1 2.82l4.7 1.54 1.8 5.63a1.5 1.5 0 0 0 2.5.57l2.53-2.53 4.63 3.4a1.5 1.5 0 0 0 2.37-.9l3-16a1.5 1.5 0 0 0-.29-1.45zM9.6 14.7l-.6 3.15-1.1-3.44 9.4-8.05z"/></svg>
+                        </div>
+                        Telegram
+                    </div>
+                    <div class="channel">
+                        <div class="channel-icon">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/></svg>
+                        </div>
+                        <div class="channel-text">
+                            <div class="channel-title">Web</div>
+                            <div class="channel-sub">Полноценная работа с компьютера</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <div class="section-label">Стоимость</div>
+                <h2 class="section-title" style="font-size:22px;">Тарифы для старта</h2>
+                <div class="pricing">
+                    <div class="price-row">
+                        <span class="plan">2 недели доступа</span>
+                        <span class="amount">490 ₽</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="plan">Подписка / месяц</span>
+                        <span class="amount">990 ₽</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="plan">Расширенная версия / месяц</span>
+                        <span class="amount">1 490 ₽</span>
+                    </div>
+                </div>
+                <p class="price-note">
+                    Тарифы могут пересматриваться по мере развития системы и изменения
+                    расходов на инфраструктуру и AI-модели.
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="container">
+        <p class="setup-help-note">
+            Не хотите самостоятельно готовить базу знаний и настраивать систему?
+            Мы можем помочь с первоначальной настройкой и адаптацией ORCHESTRAVEL под ваш бизнес.
+        </p>
+    </div>
+</section>
+
+<section class="final-cta">
+    <div class="container">
+        <div class="section-label">Начать</div>
+        <h2 class="section-title">Попробуйте ORCHESTRAVEL на своём бизнесе</h2>
+
+        <div class="final-cta-actions">
+            <a href="/signup" class="btn btn-primary">Получить доступ</a>
+            <a href="https://t.me/VladCRM" target="_blank" rel="noopener" class="btn btn-ghost">Задать вопрос / Связаться</a>
+        </div>
+
+        <div class="contacts">
+            <span>Telegram: <a href="https://t.me/VladCRM" target="_blank" rel="noopener">@VladCRM</a></span>
+            <span>Сайт: <a href="https://vassian.ru" target="_blank" rel="noopener">vassian.ru</a></span>
+        </div>
+    </div>
+</section>
+
+<footer>
+    ORCHESTRAVEL — <a href="https://t.me/ta_control_center_vassian_bot" target="_blank" rel="noopener">t.me/ta_control_center_vassian_bot</a>
+</footer>
+
+</body>
+</html>
