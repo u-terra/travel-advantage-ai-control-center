@@ -430,6 +430,163 @@ def test_competitor_context_preamble_is_unchanged_for_direct_fetch(api) -> None:
     assert "Radar" not in context
 
 
+# ── POST /api/competitors/{id}/analyze - one-click Web analyze/refresh ──────
+# (same CompetitorIntelligenceService.analyze() + save_intelligence() call
+# the Telegram "Анализировать"/"Обновить анализ" buttons already use - see
+# app.handlers.competitors._refresh_competitor - no parallel business logic
+# here, only wiring + workspace scoping.)
+
+def test_analyze_endpoint_runs_analysis_directly_and_saves_snapshot(api) -> None:
+    client, web_api, _ = api
+    workspace_id = _login(client, web_api)
+    competitor = _run(web_api.competitor_repository.add_competitor(
+        workspace_id, "https://nl.trip.com/?locale=nl-nl", label="Trip.com",
+    ))
+
+    captured_kwargs: dict = {}
+
+    async def fake_analyze(comp, **kwargs):
+        captured_kwargs["competitor_id"] = comp.id
+        captured_kwargs.update(kwargs)
+        return _full_intelligence(comp.id, "2026-02-01T00:00:00+00:00")
+
+    web_api.competitor_intelligence_service.analyze = fake_analyze
+
+    response = client.post(f"/api/competitors/{competitor.id}/analyze")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" not in body
+    assert captured_kwargs["competitor_id"] == competitor.id
+    assert body["competitor"]["id"] == competitor.id
+    assert body["competitor"]["last_analyzed_at"] == "2026-02-01T00:00:00+00:00"
+    assert body["intelligence"]["analyzed_at"] == "2026-02-01T00:00:00+00:00"
+
+    # The snapshot is really persisted, not just returned once in the response.
+    saved = _run(web_api.competitor_repository.get_intelligence(workspace_id, competitor.id))
+    assert saved is not None
+    assert saved.analyzed_at == "2026-02-01T00:00:00+00:00"
+
+    # GET /api/competitors now reflects the fresh analysis too.
+    listed = client.get("/api/competitors").json()["competitors"][0]
+    assert listed["last_analyzed_at"] == "2026-02-01T00:00:00+00:00"
+
+
+def test_analyze_endpoint_refresh_reuses_the_same_endpoint(api) -> None:
+    """'Обновить анализ' is the same button/endpoint as 'Анализировать' -
+    calling it again on an already-analyzed competitor just re-saves a
+    newer snapshot."""
+    client, web_api, _ = api
+    workspace_id = _login(client, web_api)
+    competitor = _run(web_api.competitor_repository.add_competitor(
+        workspace_id, "https://competitor.example.com", label="Example",
+    ))
+    _run(web_api.competitor_repository.save_intelligence(
+        workspace_id, _intelligence(competitor.id, "2026-01-01T00:00:00+00:00"),
+    ))
+
+    async def fake_analyze(comp, **kwargs):
+        return _full_intelligence(comp.id, "2026-03-01T00:00:00+00:00")
+
+    web_api.competitor_intelligence_service.analyze = fake_analyze
+
+    response = client.post(f"/api/competitors/{competitor.id}/analyze")
+
+    assert response.status_code == 200
+    assert response.json()["intelligence"]["analyzed_at"] == "2026-03-01T00:00:00+00:00"
+
+
+def test_analyze_endpoint_unknown_competitor_id_has_no_500(api) -> None:
+    client, web_api, _ = api
+    _login(client, web_api)
+
+    called = False
+
+    async def fake_analyze(comp, **kwargs):
+        nonlocal called
+        called = True
+        return _full_intelligence(comp.id, "2026-01-01T00:00:00+00:00")
+
+    web_api.competitor_intelligence_service.analyze = fake_analyze
+
+    response = client.post("/api/competitors/999999/analyze")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intelligence"] is None
+    assert "error" in body
+    assert called is False
+
+
+def test_analyze_endpoint_is_workspace_isolated(api) -> None:
+    """A competitor belonging to another workspace can't be analyzed (or
+    even have its existence confirmed) through this endpoint - same
+    isolation rule as GET .../intelligence above."""
+    client, web_api, _ = api
+    _login(client, web_api)
+    other = _run(web_api.partner_repository.provision_partner(
+        222333777, "Other Agency 4", "other-agency-4",
+        business_name="Other Agency 4", business_type="independent_agent",
+        short_description="Другое рабочее пространство.",
+        context={},
+    ))
+    foreign_competitor = _run(web_api.competitor_repository.add_competitor(
+        other.workspace.id, "https://not-mine.example.com", label="Not mine",
+    ))
+
+    called = False
+
+    async def fake_analyze(comp, **kwargs):
+        nonlocal called
+        called = True
+        return _full_intelligence(comp.id, "2026-01-01T00:00:00+00:00")
+
+    web_api.competitor_intelligence_service.analyze = fake_analyze
+
+    response = client.post(f"/api/competitors/{foreign_competitor.id}/analyze")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intelligence"] is None
+    assert "error" in body
+    assert called is False
+    # No snapshot leaked into the foreign workspace via this workspace's call.
+    saved = _run(web_api.competitor_repository.get_intelligence(
+        other.workspace.id, foreign_competitor.id,
+    ))
+    assert saved is None
+
+
+def test_analyze_endpoint_surfaces_analysis_failure_without_crashing(api) -> None:
+    """CompetitorIntelligenceUnavailable (no readable source, no matching
+    signal) is surfaced as a plain error field - HTTP 200, not a 500 - the
+    same contract every other competitor endpoint here uses."""
+    client, web_api, _ = api
+    workspace_id = _login(client, web_api)
+    competitor = _run(web_api.competitor_repository.add_competitor(
+        workspace_id, "https://unreachable.example.com", label="Unreachable",
+    ))
+
+    async def fake_analyze(comp, **kwargs):
+        raise web_api.CompetitorIntelligenceUnavailable(
+            "Свежие источники по этому конкуренту найти не удалось, "
+            "поэтому анализ основан на доступных устойчивых данных."
+        )
+
+    web_api.competitor_intelligence_service.analyze = fake_analyze
+
+    response = client.post(f"/api/competitors/{competitor.id}/analyze")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intelligence"] is None
+    assert "не удалось" in body["error"].lower()
+
+    # No snapshot was written, and the competitor is unaffected otherwise.
+    saved = _run(web_api.competitor_repository.get_intelligence(workspace_id, competitor.id))
+    assert saved is None
+
+
 def test_competitor_context_preamble_flags_radar_signal_fallback(api) -> None:
     from app.domain.competitor_intelligence import DATA_ORIGIN_RADAR_SIGNAL
     from dataclasses import replace

@@ -1629,6 +1629,76 @@ async def get_competitor_intelligence(
         return {"error": "Не удалось загрузить отчёт по конкуренту."}
 
 
+@app.post("/api/competitors/{competitor_id}/analyze")
+async def analyze_competitor_endpoint(
+    competitor_id: int, principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """One-click Web analyze/refresh for a single competitor card - same
+    CompetitorIntelligenceService.analyze() + competitor_repository.save_intelligence()
+    call the Telegram "Анализировать"/"Обновить анализ" buttons already use
+    (see app.handlers.competitors._refresh_competitor), no parallel
+    business logic. Previously the Web card only pre-filled an Assistant
+    chat prompt ("Проанализируй конкурента ...") the user still had to send
+    - this endpoint makes the Web button itself do the analysis.
+
+    workspace-scoped the same way as every other competitor endpoint here:
+    competitor_repository.get_for_workspace(principal.workspace_id, ...)
+    returns None for both an unknown id and one belonging to another
+    workspace, so cross-workspace access and a bad id are indistinguishable
+    to the caller (same as get_competitor_intelligence above).
+
+    On-demand only: this endpoint is never called from add_competitor_endpoint
+    or anywhere else automatically - it only runs when this route is hit."""
+    try:
+        competitor = await competitor_repository.get_for_workspace(
+            principal.workspace_id, competitor_id,
+        )
+        if competitor is None:
+            return {"error": "Конкурент не найден.", "competitor": None, "intelligence": None}
+
+        ta_affiliated = await _is_ta_affiliated(principal.workspace_id)
+        try:
+            intelligence = await competitor_intelligence_service.analyze(
+                competitor, ta_affiliated=ta_affiliated,
+            )
+        except CompetitorIntelligenceUnavailable as exc:
+            await record_event(
+                operational_event_repository, module="competitors", event_type="analyze",
+                success=False, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                error_code="unavailable", safe_message="no fresh source or matching signal",
+            )
+            return {"error": str(exc), "competitor": None, "intelligence": None}
+
+        await competitor_repository.save_intelligence(principal.workspace_id, intelligence)
+        await record_event(
+            operational_event_repository, module="competitors", event_type="analyze",
+            success=True, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id,
+            metadata={"data_origin": intelligence.data_origin},
+        )
+
+        return {
+            "competitor": {
+                "id": competitor.id,
+                "label": competitor.label,
+                "domain": canonical_domain(competitor.url),
+                "url": competitor.url,
+                "last_analyzed_at": intelligence.analyzed_at,
+            },
+            "intelligence": asdict(intelligence),
+        }
+
+    except Exception:
+        await record_event(
+            operational_event_repository, module="competitors", event_type="analyze",
+            success=False, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+            error_code="unhandled_exception",
+        )
+        return {"error": "Не удалось выполнить анализ конкурента.", "competitor": None, "intelligence": None}
+
+
 @app.post("/api/competitors/{competitor_id}/opportunities/{opportunity_id}/actions")
 async def create_material_from_competitor_opportunity(
     competitor_id: int,

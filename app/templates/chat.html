@@ -1040,6 +1040,20 @@ textarea {
     outline-offset: 2px;
 }
 
+.competitor-analyze-btn:disabled {
+    opacity: .6;
+    cursor: default;
+}
+
+.competitor-analyze-error {
+    color: var(--danger, #c0392b);
+    font-size: 12px;
+}
+
+.competitor-analyze-error:empty {
+    display: none;
+}
+
 .competitor-open-report-btn {
     align-self: flex-start;
     border: 1px solid transparent;
@@ -2878,24 +2892,21 @@ function renderCompetitorsList(items) {
         meta.appendChild(dot);
         meta.appendChild(document.createTextNode(formatAnalyzedAt(item.last_analyzed_at)));
 
+        const analyzeError = document.createElement("div");
+        analyzeError.className = "competitor-analyze-error";
+
+        // One-click Web analyze: POSTs directly to
+        // /api/competitors/{id}/analyze (CompetitorIntelligenceService.analyze()
+        // + save_intelligence(), same call the Telegram button already
+        // makes) instead of pre-filling an Assistant chat prompt the user
+        // then had to send themselves - see analyzeCompetitor() below.
+        // Never navigates to the Assistant view.
         const analyzeBtn = document.createElement("button");
         analyzeBtn.type = "button";
         analyzeBtn.className = "competitor-analyze-btn";
-        analyzeBtn.textContent = item.last_analyzed_at ? "Обновить анализ" : "Анализировать";
-        analyzeBtn.addEventListener("click", () => {
-            const target =
-                item.label && item.label !== item.url
-                    ? item.label
-                    : (item.domain || item.url);
-
-            const prompt = "Проанализируй конкурента " + target;
-
-            activateView("assistant");
-            message.value = prompt;
-            message.dispatchEvent(new Event("input"));
-            message.focus();
-            message.setSelectionRange(prompt.length, prompt.length);
-        });
+        const analyzeLabel = item.last_analyzed_at ? "Обновить анализ" : "Анализировать";
+        analyzeBtn.textContent = analyzeLabel;
+        analyzeBtn.addEventListener("click", () => analyzeCompetitor(item, analyzeBtn, analyzeError, analyzeLabel));
 
         const actions = document.createElement("div");
         actions.className = "competitor-card-actions";
@@ -2914,10 +2925,42 @@ function renderCompetitorsList(items) {
         card.appendChild(top);
         card.appendChild(meta);
         card.appendChild(actions);
+        card.appendChild(analyzeError);
         grid.appendChild(card);
     });
 
     competitorsState.appendChild(grid);
+}
+
+async function analyzeCompetitor(item, button, errorEl, idleLabel) {
+    errorEl.textContent = "";
+    button.disabled = true;
+    button.textContent = "Анализирую…";
+
+    try {
+        const response = await fetch(
+            "/api/competitors/" + encodeURIComponent(item.id) + "/analyze",
+            { method: "POST" },
+        );
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            errorEl.textContent = data.error || "Не удалось выполнить анализ конкурента.";
+            button.disabled = false;
+            button.textContent = idleLabel;
+            return;
+        }
+
+        // Re-fetch the list so the card picks up the new last_analyzed_at
+        // and the "Открыть отчёт"/"Обновить анализ" state - same source of
+        // truth GET /api/competitors already uses, no separate render path.
+        loadCompetitors();
+
+    } catch (_) {
+        errorEl.textContent = "Не удалось выполнить анализ конкурента. Проверьте соединение.";
+        button.disabled = false;
+        button.textContent = idleLabel;
+    }
 }
 
 async function loadCompetitors() {
