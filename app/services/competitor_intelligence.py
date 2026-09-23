@@ -42,6 +42,38 @@ _SIGNAL_FRESH_DAYS = 30
 # against arbitrary signal text (see _relevant_recent_signals) - domain
 # matching still applies regardless of label length.
 _MIN_LABEL_MATCH_LENGTH = 3
+
+# Bug fix (live production example, competitor_id=6 "Яндекс-путешествия",
+# https://travel.yandex.ru/): direct_fetch is correctly blocked by Yandex's
+# own SmartCaptcha (confirmed live, out of scope to work around), so the
+# Radar-signal fallback is the only path left - and it also missed, for two
+# separate, both individually-correct-by-design reasons:
+#  - domain match: the product's Telegram channel's item_url is
+#    https://t.me/yandex_travel/... - canonical_domain() of that is "t.me",
+#    never "travel.yandex.ru", so the plain domain check in
+#    _signal_matches_competitor can never see it as the same competitor;
+#  - label match: the saved competitor label is "Яндекс-путешествия"
+#    (hyphen), the signal's actual text says "Яндекс Путешествия" (space) -
+#    _label_regex is a literal, punctuation-sensitive \b...\b match by
+#    design (see its own docstring's warning against general fuzzy text
+#    matching), so it correctly does NOT treat a hyphen and a space as the
+#    same character - it just also doesn't know they're the same brand here.
+#
+# Fix: a small, explicit, hand-curated identity map from a competitor's OWN
+# canonical domain to the source_catalog source_id(s) (config/sources.json)
+# that are KNOWN to be the same brand/product under a different domain -
+# never inferred from text similarity. yandex_web_journal's own catalog
+# entry already documents this fact in plain language ("Telegram-канал того
+# же продукта уже отдельно в реестре (telegram_yandex_travel)") - this map
+# is that same editorial fact, made machine-readable for exactly this
+# fallback. Adding an alias here is a conscious, one-at-a-time editorial
+# decision (same weight as adding a competitor or a source_catalog entry),
+# never a generic "same company" heuristic - a bare word like "Яндекс"
+# alone must stay insufficient, and no other Telegram channel/Yandex
+# service is added here just because it shares the word "Яндекс".
+_COMPETITOR_DOMAIN_SOURCE_ID_ALIASES: dict[str, frozenset[str]] = {
+    "travel.yandex.ru": frozenset({"telegram_yandex_travel"}),
+}
 _OPPORTUNITY_CATEGORIES = (
     ("AI и технологии в travel", (" ai ", "chatgpt", "artificial intelligence", "technology", "digital", "biometric", "esim", "app", "интеллект", "нейросет")),
     ("travel trends", ("trend", "traveler", "traveller", "tourism", "booking data", "тренд")),
@@ -353,11 +385,17 @@ def _signal_matches_competitor(
     record: WorkspaceSignalRecord, *, domain: str, label_pattern: re.Pattern[str] | None,
 ) -> bool:
     """Genuinely matching, not "any travel news": either the signal's own
-    URL resolves to the competitor's canonical domain, or the competitor's
-    label appears as a whole word in the signal's title/summary/source
-    name. A short/generic label (see _MIN_LABEL_MATCH_LENGTH) never matches
-    by text alone - only by domain."""
+    URL resolves to the competitor's canonical domain, or its source_id is
+    a hand-curated known alias of that domain (see
+    _COMPETITOR_DOMAIN_SOURCE_ID_ALIASES - a different domain/platform for
+    the SAME product, e.g. a competitor's own Telegram channel), or the
+    competitor's label appears as a whole word in the signal's
+    title/summary/source name. A short/generic label (see
+    _MIN_LABEL_MATCH_LENGTH) never matches by text alone - only by domain or
+    the curated alias map."""
     if domain and canonical_domain(record.item_url) == domain:
+        return True
+    if domain and record.source_id in _COMPETITOR_DOMAIN_SOURCE_ID_ALIASES.get(domain, frozenset()):
         return True
     if label_pattern is None:
         return False

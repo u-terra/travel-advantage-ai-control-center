@@ -380,12 +380,12 @@ def _always_failing_fetch(url: str):
 def _signal_record(
     *, interpretation_id: int = 1, workspace_id: int = 42, item_title: str = "",
     item_summary: str = "", item_url: str = "", source_name: str = "",
-    raw_created_at: str | None = None,
+    raw_created_at: str | None = None, source_id: str | None = None,
 ) -> WorkspaceSignalRecord:
     when = raw_created_at or (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     return WorkspaceSignalRecord(
         interpretation_id=interpretation_id, workspace_id=workspace_id,
-        radar_signal_id=interpretation_id, source_id=None, usage_role_snapshot=None,
+        radar_signal_id=interpretation_id, source_id=source_id, usage_role_snapshot=None,
         status="new", notes="", ai_score=None, ai_category=None, ai_reason=None,
         suggested_message=None, created_at=when, raw_created_at=when,
         source_type="rss", origin_type="publisher_post", item_title=item_title,
@@ -482,6 +482,105 @@ def test_signal_fallback_rejects_unrelated_travel_news():
     with pytest.raises(CompetitorIntelligenceUnavailable) as exc_info:
         run(service.analyze(competitor, ta_affiliated=True))
     assert "Свежие источники" in str(exc_info.value)
+
+
+# ── Bug fix (live production, competitor_id=6 "Яндекс-путешествия",
+# https://travel.yandex.ru/): direct_fetch is correctly blocked by Yandex's
+# own SmartCaptcha, and the signal fallback's domain check can never match
+# the product's own Telegram channel (item_url domain is "t.me", not
+# "travel.yandex.ru") while the label check is a literal, punctuation-
+# sensitive match ("Яндекс-путешествия" the saved label vs "Яндекс
+# Путешествия" the actual signal text - hyphen vs space). See
+# _COMPETITOR_DOMAIN_SOURCE_ID_ALIASES's own docstring in
+# app.services.competitor_intelligence for the full reasoning. ─────────────
+
+def test_signal_fallback_matches_known_telegram_alias_for_yandex_travel():
+    record = _signal_record(
+        item_title="Новые направления на майские",
+        item_summary="Подборка курортов с прямыми рейсами.",
+        item_url="https://t.me/yandex_travel/12652",
+        source_name="Telegram Яндекс Путешествия",
+        source_id="telegram_yandex_travel",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(6, 42, "https://travel.yandex.ru/", "Яндекс-путешествия", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://t.me/yandex_travel/12652"
+
+
+def test_signal_fallback_alias_is_scoped_to_the_exact_competitor_domain():
+    """The telegram_yandex_travel alias is keyed to travel.yandex.ru only -
+    it must not make the same signal match some unrelated competitor that
+    happens to also be a travel site."""
+    record = _signal_record(
+        item_title="Новые направления на майские",
+        item_summary="Подборка курортов с прямыми рейсами.",
+        item_url="https://t.me/yandex_travel/12652",
+        source_name="Telegram Яндекс Путешествия",
+        source_id="telegram_yandex_travel",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_does_not_alias_other_telegram_channels_to_yandex_travel():
+    """A different Telegram channel (different source_id) must not match
+    travel.yandex.ru just because its text also mentions the word "Яндекс" -
+    the alias map is by exact source_id, never a bare brand-word guess."""
+    record = _signal_record(
+        item_title="Яндекс запускает новый сервис для бизнеса",
+        item_summary="Экспресс-обзор новостей технологического рынка.",
+        item_url="https://t.me/some_other_tech_channel/42",
+        source_name="Telegram Технологии Яндекса",
+        source_id="telegram_some_other_tech_channel",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(6, 42, "https://travel.yandex.ru/", "Яндекс-путешествия", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_bare_yandex_word_alone_still_insufficient():
+    """Regression guard: a signal that only contains the generic word
+    "Яндекс" (no source_id alias, no domain match, no exact label match)
+    must still be rejected - this fix must not have loosened the existing
+    label-match narrowness."""
+    record = _signal_record(
+        item_title="Яндекс объявил финансовые результаты за квартал",
+        item_summary="Общий разбор показателей группы компаний.",
+        item_url="https://skift.com/yandex-earnings",
+        source_name="Skift",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(6, 42, "https://travel.yandex.ru/", "Яндекс-путешествия", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_onetwotrip_domain_match_still_works_unchanged():
+    """Control: this fix must not affect the existing, already-working
+    domain-match path for an unrelated competitor (OneTwoTrip, competitor_id
+    7 in the live production workspace)."""
+    record = _signal_record(
+        item_title="OneTwoTrip запускает новую программу лояльности",
+        item_summary="Кэшбэк на билеты и отели.",
+        item_url="https://www.onetwotrip.com/blog/loyalty-2026",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.onetwotrip.com", "OneTwoTrip", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://www.onetwotrip.com/blog/loyalty-2026"
 
 
 def test_signal_fallback_ignores_signals_older_than_the_freshness_window():
