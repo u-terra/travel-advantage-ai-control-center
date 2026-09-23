@@ -481,6 +481,29 @@ def test_source_content_is_sufficient_accepts_the_live_phuket_signal():
     assert source_content_is_sufficient(title, summary, "Турправда") is True
 
 
+# Live production case (radar_signal_id=1287): the Vietnam signal actually
+# ingested by the source is NOT the fully-generic no-places version above -
+# it names three real resort towns, just in a paragraph SEPARATE from (and
+# unrelated to) the unlisted The Times rating. source_content_is_sufficient
+# must accept this signal (concrete place names ARE present - see
+# _has_mid_sentence_capitalized_word) - the fix for this live bug is at the
+# generation-prompt level (see material_orchestration._RADAR_CONSTRAINTS'
+# unsupported-attribution rule), not at this content-sufficiency gate: the
+# gate is correct here, the earlier "list of beautiful places" no-details
+# test above is a genuinely different (fully generic) signal, not the same
+# production case under a different name.
+def test_source_content_is_sufficient_accepts_the_live_vietnam_signal_1287():
+    title = "Вьетнам снова в туристической повестке"
+    summary = (
+        "The Times опубликовало рейтинг самых красивых и аутентичных мест "
+        "Вьетнама. Конкретные пункты рейтинга в доступном пересказе не "
+        "перечислены.\n\n"
+        "Отдельно эксперт Турпрома составил путеводитель по экскурсиям для "
+        "туристов, отдыхающих на пляжах Нячанга, Муйне или Фукуока."
+    )
+    assert source_content_is_sufficient(title, summary, "Турправда") is True
+
+
 def test_source_content_is_sufficient_rejects_generic_filler_even_without_a_brand_mention():
     """The gate must catch generic-description-only content on its own
     concreteness signal (digit / mid-sentence proper noun), not rely on

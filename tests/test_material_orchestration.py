@@ -376,6 +376,23 @@ def test_radar_spec_constraints_require_standalone_post_and_no_invented_facts():
     assert "не придумывай факты" in joined.lower()
 
 
+# Live production case (radar_signal_id=1287): source summary said (1) The
+# Times published a rating of beautiful Vietnam places without listing its
+# items, and, in a SEPARATE sentence, (2) an expert made an excursion guide
+# for tourists staying in Нячанг/Муйне/Фукуок. The generated post merged
+# the two into "в новостях отдельно выделили Нячанг, Муйне и Фукуок" - all
+# three names are real (source_content_is_sufficient correctly accepted the
+# signal - see test_generation_request_builder's accepts_1287 test), but
+# the RATING membership was invented, not the names themselves. Fix is this
+# prompt-level rule: mentioning an entity near a rating/list/event is not
+# proof it belongs to it.
+def test_radar_spec_constraints_forbid_unsupported_entity_attribution():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints)
+    assert "значит, что эта сущность входит" in joined
+    assert "пункты в сигнале не перечислены" in joined
+
+
 def test_radar_spec_constraints_do_not_leak_into_other_flows():
     # _RADAR_CONSTRAINTS должен использоваться только build_radar_generation_spec —
     # обычная генерация и free-text не должны получать этот расширенный набор.
