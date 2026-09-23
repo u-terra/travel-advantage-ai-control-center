@@ -1525,6 +1525,13 @@ textarea {
     margin-top: 12px;
 }
 
+.material-created-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
 .bulk-actions-toolbar {
     display: flex;
     flex-wrap: wrap;
@@ -3465,11 +3472,19 @@ function openSignalInAssistant(item) {
     message.setSelectionRange(prompt.length, prompt.length);
 }
 
-async function createMaterialFromSignal(item, action, button, errorEl) {
+// UX fix: "Подготовить пост" used to jump straight to «Материалы» and open
+// the new draft, throwing the user off the signals list they were just
+// reading. Success now stays on this page - a compact "Материал создан"
+// confirmation with an explicit "Открыть материал" action - and navigates
+// to «Материалы» only on that click, never automatically. Errors already
+// rendered in place (errorEl) - unchanged, just kept separate from the new
+// success confirmation (statusEl) so the two never overwrite each other.
+async function createMaterialFromSignal(item, action, button, errorEl, statusEl) {
     button.disabled = true;
     const originalText = button.textContent;
     button.textContent = "Готовим…";
     errorEl.textContent = "";
+    statusEl.innerHTML = "";
 
     try {
         const response = await fetch(
@@ -3489,14 +3504,36 @@ async function createMaterialFromSignal(item, action, button, errorEl) {
             return;
         }
 
-        activateView("materials");
-        openMaterial(data.material);
+        button.disabled = false;
+        button.textContent = originalText;
+        renderMaterialCreatedConfirmation(statusEl, data.material);
 
     } catch (_) {
         errorEl.textContent = "Не удалось подготовить материал. Проверьте соединение.";
         button.disabled = false;
         button.textContent = originalText;
     }
+}
+
+function renderMaterialCreatedConfirmation(statusEl, material) {
+    statusEl.innerHTML = "";
+
+    const text = document.createElement("span");
+    text.className = "info-card-text";
+    text.textContent = "Материал создан.";
+    statusEl.appendChild(text);
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "info-action-btn";
+    openBtn.textContent = "Открыть материал";
+    // Navigates to «Материалы» only on this explicit click - never
+    // automatically on generation success (see the fix note above).
+    openBtn.addEventListener("click", () => {
+        activateView("materials");
+        openMaterial(material);
+    });
+    statusEl.appendChild(openBtn);
 }
 
 // Контекстные действия по recommended_action - та же логика, что Telegram
@@ -3607,6 +3644,9 @@ function renderSignalsList(items) {
         const materialError = document.createElement("p");
         materialError.className = "info-card-text material-edit-error";
 
+        const materialStatus = document.createElement("div");
+        materialStatus.className = "material-created-status";
+
         const materialActions = document.createElement("div");
         materialActions.className = "report-opportunity-actions";
 
@@ -3619,7 +3659,7 @@ function renderSignalsList(items) {
                 if (step.kind === "discuss") {
                     openSignalInAssistant(item);
                 } else {
-                    createMaterialFromSignal(item, step.kind, button, materialError);
+                    createMaterialFromSignal(item, step.kind, button, materialError, materialStatus);
                 }
             });
             materialActions.appendChild(button);
@@ -3627,6 +3667,7 @@ function renderSignalsList(items) {
 
         card.appendChild(materialActions);
         card.appendChild(materialError);
+        card.appendChild(materialStatus);
 
         grid.appendChild(card);
     });

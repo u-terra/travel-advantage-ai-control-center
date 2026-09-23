@@ -119,6 +119,32 @@ def _contains_generic_filler(sentence: str) -> bool:
     lowered = sentence.lower()
     return any(marker in lowered for marker in _GENERIC_FILLER_MARKERS)
 
+
+# Quality fix (live example): "Напишите — подберу варианты по датам и
+# направлению." was showing up as a systematic, auto-appended CTA regardless
+# of the post's actual content - a universal template ("подберу/подберём
+# варианты по <критерий> и <критерий>"), not a CTA tied to any specific fact
+# of the post. The prompt-level constraint (see
+# app.services.material_orchestration._RADAR_CONSTRAINTS) is the primary
+# fix; this is the deterministic backstop for when the model still emits
+# the pattern anyway - same "drop the whole sentence" mechanism as
+# _GENERIC_FILLER_MARKERS above.
+#
+# Deliberately narrower than "any CTA mentioning подобрать" - a genuine,
+# content-specific CTA like "Пишите — подберём подходящий вариант." (see
+# test_write_to_us_we_will_pick_an_option_cta_survives below) must keep
+# working. What marks this pattern as template boilerplate specifically is
+# the "по <X> и <Y>" tail - two generic, interchangeable criteria not tied
+# to any fact actually in the post - which a one-off, content-driven CTA
+# normally does not need to spell out.
+_TEMPLATE_CTA_RE = re.compile(
+    r"подбер\w*\s+вариант\w*\s+по\s+\S+\s+и\s+\S+", re.IGNORECASE,
+)
+
+
+def _is_template_cta(sentence: str) -> bool:
+    return bool(_TEMPLATE_CTA_RE.search(sentence))
+
 # Доля слов disputed claim, которая должна встретиться в предложении черновика,
 # чтобы считать его пересказом этого claim. Специально высокий порог —
 # это fail-safe от повторения конкретного спорного утверждения, а не
@@ -239,6 +265,9 @@ def sanitize_draft_text(text: str, *, disputed_claims: tuple[str, ...] = ()) -> 
             kept[index] = False
             continue
         if _contains_generic_filler(stripped):
+            kept[index] = False
+            continue
+        if _is_template_cta(stripped):
             kept[index] = False
             continue
         if any(_matches_disputed_claim(stripped, claim) for claim in disputed_claims if claim.strip()):

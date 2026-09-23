@@ -1208,3 +1208,10 @@ def test_radar_spec_constraints_require_self_contained_post_not_a_recap():
     joined = " ".join(spec.constraints).lower()
     assert "самостоятельным постом" in joined
     assert "пересказ" in joined
+
+
+def test_radar_spec_constraints_forbid_the_specific_dates_and_direction_cta_template():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "подберу варианты по датам и направлению" in joined
+    assert "не заменяй такой шаблон другим столь же универсальным cta" in joined

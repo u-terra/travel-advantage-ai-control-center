@@ -315,3 +315,47 @@ def test_generic_filler_phrase_in_the_middle_is_removed() -> None:
     assert "стоит отметить" not in result.lower()
     assert "Раннее бронирование Бали подешевело." in result
     assert "Планируйте поездку на ноябрь." in result
+
+
+# --- systematic template CTA ("Напишите — подберу варианты по датам и
+# направлению.") removed; genuine content-specific CTAs still survive ---
+
+def test_template_cta_dates_and_direction_is_removed() -> None:
+    text = (
+        "Цены на билеты в Таиланд выросли на 20%. "
+        "Раннее бронирование пока остаётся выгодным. "
+        "Напишите — подберу варианты по датам и направлению."
+    )
+    result = sanitize_draft_text(text)
+    assert "подберу варианты" not in result.lower()
+    assert "Цены на билеты в Таиланд выросли на 20%." in result
+    assert "Раннее бронирование пока остаётся выгодным." in result
+
+
+def test_close_template_cta_budget_and_direction_is_removed() -> None:
+    text = (
+        "Спрос на туры в Японию вырос вдвое за месяц. "
+        "Подберём варианты по бюджету и направлению."
+    )
+    result = sanitize_draft_text(text)
+    assert "подберём варианты" not in result.lower()
+    assert "Спрос на туры в Японию вырос вдвое за месяц." in result
+
+
+def test_close_template_cta_middle_of_text_is_removed() -> None:
+    text = (
+        "Сезон скидок на авиабилеты начался раньше обычного. "
+        "Подберу вариант по срокам и погоде. "
+        "Бронируйте заранее, пока цены не выросли."
+    )
+    result = sanitize_draft_text(text)
+    assert "подберу вариант по" not in result.lower()
+    assert "Сезон скидок на авиабилеты начался раньше обычного." in result
+    assert "Бронируйте заранее, пока цены не выросли." in result
+
+
+def test_genuine_specific_cta_survives_despite_containing_podberem() -> None:
+    """Distinguishing signal is the generic "по X и Y" tail, not the verb
+    подобрать/подобрать itself - a real, simple CTA must keep working."""
+    text = "Пишите — подберём подходящий вариант."
+    assert sanitize_draft_text(text) == text
