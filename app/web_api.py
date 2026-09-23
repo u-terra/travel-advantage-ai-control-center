@@ -1313,12 +1313,53 @@ def _is_signal_intent(message: str) -> bool:
     return any(marker in lowered for marker in _SIGNAL_INTENT_MARKERS)
 
 
-def _signal_intent_context(unified) -> str:
+# Explicit "workspace-only" requests ("используй мои подключённые
+# источники", "из моих источников", "по моим сигналам") must never trigger
+# generic Web Search or let it into the prompt context - the user is
+# explicitly opting out of the open internet for this answer. See the
+# ORCHESTRAVEL FinOps/signal-footer fix report: the bug was the Assistant
+# answering from workspace signals but still appending a generic Web
+# Search "Источники" footer (vc.ru, Neil Patel, TexTerra, ...) that had
+# nothing to do with the actual signals used.
+_WORKSPACE_ONLY_MARKERS = (
+    "мои подключённые источники", "мои подключенные источники",
+    "из моих источников", "по моим сигналам", "используй мои источники",
+    "используй мои подключ", "только из моих источников",
+    "только мои источники",
+)
+
+# Phrases that mean the user actually wants a long, multi-day content plan
+# - the default compact shape (item 5 of the fix) only applies when none of
+# these are present, so an explicit "недельный план" request still gets a
+# full plan instead of being truncated to 3-5 bullets.
+_LONG_PLAN_MARKERS = (
+    "план на неделю", "недельный план", "контент-план", "контент план",
+    "график публикаций", "план на месяц", "на всю неделю", "на каждый день",
+)
+
+
+def _is_workspace_only_request(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _WORKSPACE_ONLY_MARKERS)
+
+
+def _wants_long_content_plan(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _LONG_PLAN_MARKERS)
+
+
+def _signal_intent_context(unified, *, workspace_only: bool, compact: bool) -> str:
     """Formats the workspace's own connected-source signals for the LLM
     prompt, clearly separated from generic Web Search (see the
     "=== WEB SEARCH RESULTS ===" section built by format_search_context()
     just below in /api/chat) so the model - and the user reading its answer
-    - never mistakes one for the other."""
+    - never mistakes one for the other.
+
+    Also carries the hard rules the model must follow for this turn:
+    never invent a source or URL beyond what is listed here, never present
+    the model's own general knowledge as a market signal, and (unless the
+    user asked for a full content plan) keep the answer to a short
+    priority list rather than a long plan."""
     if not unified:
         return ""
     lines = [
@@ -1332,9 +1373,41 @@ def _signal_intent_context(unified) -> str:
         parts = [f"- {item.title}"]
         if item.source_name:
             parts.append(f"(источник: {item.source_name})")
+        if getattr(item, "url", None):
+            parts.append(f"URL: {item.url}")
         if item.action_reason:
             parts.append(f"— {item.action_reason}")
         lines.append(" ".join(parts))
+
+    lines.append(
+        "\nПравила для этого ответа:\n"
+        "- Если в конце ответа перечисляешь источники - указывай ТОЛЬКО "
+        "источники из списка выше, строго как «source_name — URL». Если у "
+        "сигнала нет URL - не придумывай ссылку и не указывай её.\n"
+        "- Никогда не добавляй сайты, которых нет в списке выше (например "
+        "vc.ru, Neil Patel, TexTerra, InSales, Equity.Today и подобные), "
+        "если они не входят в этот список сигналов.\n"
+        "- Чётко отделяй факт/сигнал из источника от собственной идеи "
+        "Assistant: не выдавай общие знания модели за рыночный сигнал."
+    )
+
+    if workspace_only:
+        lines.append(
+            "\nПользователь явно попросил использовать только подключённые "
+            "источники workspace для этого ответа. НЕ используй результаты "
+            "общего веб-поиска и не упоминай источники, которых нет в "
+            "списке выше. Если сигналов недостаточно для полного ответа - "
+            "честно скажи об этом, не выдумывая источники."
+        )
+
+    if compact:
+        lines.append(
+            "\nОтветь компактно: 3-5 самых приоритетных сигналов, для "
+            "каждого коротко - что произошло и почему это важно, и в конце "
+            "1-2 идеи действия/контента. Не генерируй длинный недельный "
+            "контент-план - пользователь его не просил."
+        )
+
     return "\n".join(lines)
 
 
@@ -3316,6 +3389,8 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         # computes. When the message looks signal-shaped, the same shared
         # Signal Service feed is fetched and injected as its own clearly
         # labelled context block, ahead of - and separate from - Web Search.
+        workspace_only_requested = _is_workspace_only_request(message)
+        has_signal_context = False
         if _is_signal_intent(message):
             try:
                 intent_signals, intent_records = await sync_and_list_radar_signals(
@@ -3339,8 +3414,13 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                         why_text=why_text,
                         content_angle_hint=content_angle_hint,
                     )
-                    signal_context = _signal_intent_context(intent_unified)
+                    signal_context = _signal_intent_context(
+                        intent_unified,
+                        workspace_only=workspace_only_requested,
+                        compact=not _wants_long_content_plan(message),
+                    )
                     if signal_context:
+                        has_signal_context = True
                         knowledge_context = "\n\n".join(
                             part for part in (knowledge_context, signal_context) if part
                         )
@@ -3354,12 +3434,28 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         # (disabled, unconfigured, timeout, HTTP error, malformed response)
         # returns None here - the Assistant answers exactly as if web search
         # did not exist, never a broken/incomplete response.
-        search_response = await asyncio.to_thread(
-            web_search_service.maybe_search, message,
-        )
+        #
+        # Explicit "используй мои подключённые источники" / "из моих
+        # источников" / "по моим сигналам" requests skip generic Web Search
+        # entirely - it must never even run, let alone leak generic sites
+        # (vc.ru, Neil Patel, TexTerra, ...) into the answer's sources.
+        search_response = None
+        if not workspace_only_requested:
+            search_response = await asyncio.to_thread(
+                web_search_service.maybe_search, message,
+            )
         if search_response is not None and search_response.results:
+            search_context = format_search_context(search_response)
+            if has_signal_context and search_context:
+                search_context = (
+                    "Ниже - результаты общего веб-поиска, ДОПОЛНИТЕЛЬНО к "
+                    "сигналам workspace выше. В ответе явно раздели два "
+                    "блока источников: «Из подключённых источников» и "
+                    "«Дополнительно из открытого интернета» - никогда не "
+                    "смешивай их в одном списке.\n\n" + search_context
+                )
             knowledge_context = "\n\n".join(
-                part for part in (knowledge_context, format_search_context(search_response))
+                part for part in (knowledge_context, search_context)
                 if part
             )
             await record_event(
