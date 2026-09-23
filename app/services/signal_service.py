@@ -66,6 +66,18 @@ _DEFAULT_LIMIT = 5
 _FRESH_TIER_HOURS = 72.0
 _STALE_TIER_HOURS = 24.0 * 7
 
+# User history management (ORCHESTRAVEL pre-launch): signals are not a
+# manually-curated inbox the user is expected to clear one-by-one - old
+# items simply age out of the visible feed on their own. 30 days is the
+# upper end of the product's suggested 14-30 day window: long enough that a
+# genuinely relevant signal never disappears mid-review, short enough that
+# the feed does not accumulate months of stale items. This only hides old
+# rows from this shared read path (Telegram + Web) - nothing is deleted from
+# the underlying Radar/web_source_signals tables, so no separate retention
+# job or data-loss risk is introduced.
+_DISPLAY_RETENTION_DAYS = 30
+_DISPLAY_RETENTION_HOURS = _DISPLAY_RETENTION_DAYS * 24.0
+
 # Bug 2: Trip gets a tie-break nudge in ranking only - never a hard quota or
 # a guarantee of inclusion.
 _TRIP_TIE_BREAK_MARKER = "trip"
@@ -317,6 +329,18 @@ def build_unified_feed(
             content_hint=None,
             freshness_hours=hours,
         ))
+
+    # User history management: drop anything older than the display
+    # retention window BEFORE dedupe/ranking, so a stale item never wins a
+    # dedupe slot over (or gets ranked ahead of, via _hour_bucket's "unknown
+    # age sorts last" rule) a fresher one just because it happens to share a
+    # fingerprint. An item with no known age (freshness_hours is None) is
+    # kept - there's no evidence it's actually old, and hiding it outright
+    # would be a guess, not a retention decision.
+    unified = [
+        item for item in unified
+        if item.freshness_hours is None or item.freshness_hours <= _DISPLAY_RETENTION_HOURS
+    ]
 
     # Dedupe: same URL (or, lacking one, same normalized title) keeps only
     # the freshest instance - Radar and the web-source pipeline can

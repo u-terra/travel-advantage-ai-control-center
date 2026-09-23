@@ -2294,6 +2294,15 @@ class MaterialUpdateRequest(BaseModel):
     expected_version_id: int
 
 
+class BulkDeleteMaterialsRequest(BaseModel):
+    ids: list[int] = []
+    confirm: bool = False
+
+
+class ClearMaterialsRequest(BaseModel):
+    confirm: bool = False
+
+
 @app.get("/api/materials")
 async def list_materials(principal: WebPrincipal = Depends(get_active_principal)):
     """Read-only: реально сохранённые Artifact текущего workspace - тот же
@@ -2405,6 +2414,48 @@ async def delete_material(
 
     except Exception:
         return {"error": "Не удалось удалить материал.", "deleted": False}
+
+
+@app.post("/api/materials/bulk-delete")
+async def bulk_delete_materials(
+    request: BulkDeleteMaterialsRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Удаление НЕСКОЛЬКИХ выбранных материалов за один запрос. Требует
+    явного confirm=true (UI не должен отправлять его без диалога
+    подтверждения) - защита от случайного bulk-delete без предупреждения.
+    Workspace isolation - тем же способом, что и delete_material():
+    ArtifactRepository.delete_artifacts() фильтрует по workspace_id внутри
+    SQL, чужой id просто не совпадает ни с одной строкой и пропускается."""
+    if not request.confirm:
+        return {"error": "Требуется подтверждение (confirm=true).", "deleted_count": 0}
+    if not request.ids:
+        return {"error": "Не выбрано ни одного материала.", "deleted_count": 0}
+    try:
+        deleted_count = await artifact_repository.delete_artifacts(
+            principal.workspace_id, request.ids,
+        )
+        return {"deleted_count": deleted_count}
+    except Exception:
+        return {"error": "Не удалось удалить материалы.", "deleted_count": 0}
+
+
+@app.post("/api/materials/clear")
+async def clear_materials(
+    request: ClearMaterialsRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Очистить ВСЕ материалы workspace. Требует явного confirm=true -
+    это самое разрушительное действие в этом разделе, скрытый вызов без
+    подтверждения недопустим. Scoped строго к principal.workspace_id -
+    другой workspace никогда не задет."""
+    if not request.confirm:
+        return {"error": "Требуется подтверждение (confirm=true).", "deleted_count": 0}
+    try:
+        deleted_count = await artifact_repository.clear_artifacts(principal.workspace_id)
+        return {"deleted_count": deleted_count}
+    except Exception:
+        return {"error": "Не удалось очистить материалы.", "deleted_count": 0}
 
 
 def _business_profile_payload(profile) -> dict | None:
@@ -3096,6 +3147,77 @@ async def create_conversation(principal: WebPrincipal = Depends(require_csrf_and
 
     except Exception:
         return {"error": "Не удалось создать диалог.", "conversation": None}
+
+
+class BulkDeleteConversationsRequest(BaseModel):
+    ids: list[int] = []
+    confirm: bool = False
+
+
+class ClearConversationsRequest(BaseModel):
+    confirm: bool = False
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: int, principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Удалить один диалог целиком (и все его сообщения). Workspace/user
+    isolation - тем же способом, что и delete_material(): удаление
+    фильтруется по (workspace_id, telegram_user_id, id) внутри SQL, чужой
+    conversation_id просто не совпадает ни с одной строкой. После удаления
+    диалог и его сообщения больше не читаются list_conversations()/
+    list_messages() - значит, они больше не попадут в контекст /api/chat
+    для будущих ответов Ассистента."""
+    try:
+        deleted = await web_conversation_repository.delete_conversation(
+            principal.workspace_id, principal.telegram_user_id, conversation_id,
+        )
+        if not deleted:
+            return {"error": "Диалог не найден.", "deleted": False}
+        return {"deleted": True}
+    except Exception:
+        return {"error": "Не удалось удалить диалог.", "deleted": False}
+
+
+@app.post("/api/conversations/bulk-delete")
+async def bulk_delete_conversations(
+    request: BulkDeleteConversationsRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Удаление НЕСКОЛЬКИХ выбранных диалогов за один запрос. Требует
+    явного confirm=true - защита от случайного bulk-delete без
+    предупреждения, тот же контракт, что и /api/materials/bulk-delete."""
+    if not request.confirm:
+        return {"error": "Требуется подтверждение (confirm=true).", "deleted_count": 0}
+    if not request.ids:
+        return {"error": "Не выбрано ни одного диалога.", "deleted_count": 0}
+    try:
+        deleted_count = await web_conversation_repository.delete_conversations(
+            principal.workspace_id, principal.telegram_user_id, request.ids,
+        )
+        return {"deleted_count": deleted_count}
+    except Exception:
+        return {"error": "Не удалось удалить диалоги.", "deleted_count": 0}
+
+
+@app.post("/api/conversations/clear")
+async def clear_conversations(
+    request: ClearConversationsRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Очистить всю историю диалогов этого пользователя в этом workspace.
+    Требует явного confirm=true - самое разрушительное действие в этом
+    разделе, скрытый вызов без подтверждения недопустим."""
+    if not request.confirm:
+        return {"error": "Требуется подтверждение (confirm=true).", "deleted_count": 0}
+    try:
+        deleted_count = await web_conversation_repository.clear_conversations(
+            principal.workspace_id, principal.telegram_user_id,
+        )
+        return {"deleted_count": deleted_count}
+    except Exception:
+        return {"error": "Не удалось очистить историю диалогов.", "deleted_count": 0}
 
 
 @app.get("/api/conversations")

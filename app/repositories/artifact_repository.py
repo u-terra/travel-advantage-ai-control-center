@@ -485,6 +485,81 @@ class ArtifactRepository:
                 raise
         return True
 
+    async def delete_artifacts(
+        self, workspace_id: int, artifact_ids: list[int],
+    ) -> int:
+        """Bulk delete - same per-row ownership check as delete_artifact,
+        looped inside one transaction. Returns how many of the requested
+        ids actually belonged to this workspace and were deleted; a
+        foreign/missing id is simply skipped, never raises."""
+        if not artifact_ids:
+            return 0
+        deleted = 0
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                for artifact_id in artifact_ids:
+                    row = await self._artifact_row(db, workspace_id, artifact_id)
+                    if row is None:
+                        continue
+                    await db.execute(
+                        "UPDATE artifacts SET current_version_id = NULL "
+                        "WHERE workspace_id = ? AND id = ?",
+                        (workspace_id, artifact_id),
+                    )
+                    await db.execute(
+                        "DELETE FROM artifact_versions WHERE artifact_id = ?",
+                        (artifact_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM artifacts WHERE workspace_id = ? AND id = ?",
+                        (workspace_id, artifact_id),
+                    )
+                    deleted += 1
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return deleted
+
+    async def clear_artifacts(self, workspace_id: int) -> int:
+        """Deletes every artifact (and its versions) in this workspace -
+        the "очистить все материалы" action. Scoped to workspace_id exactly
+        like every other method here, so this can never touch another
+        workspace's materials."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                ids_rows = await (await db.execute(
+                    "SELECT id FROM artifacts WHERE workspace_id = ?",
+                    (workspace_id,),
+                )).fetchall()
+                ids = [row["id"] for row in ids_rows]
+                if ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    await db.execute(
+                        f"UPDATE artifacts SET current_version_id = NULL "
+                        f"WHERE workspace_id = ? AND id IN ({placeholders})",
+                        [workspace_id, *ids],
+                    )
+                    await db.execute(
+                        f"DELETE FROM artifact_versions WHERE artifact_id IN ({placeholders})",
+                        ids,
+                    )
+                    await db.execute(
+                        "DELETE FROM artifacts WHERE workspace_id = ?",
+                        (workspace_id,),
+                    )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return len(ids)
+
     @staticmethod
     async def _source_row(
         db: aiosqlite.Connection, workspace_id: int, source_id: int

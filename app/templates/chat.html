@@ -1525,6 +1525,25 @@ textarea {
     margin-top: 12px;
 }
 
+.bulk-actions-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.info-card-select-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.info-card-select-row label {
+    font-size: 12.5px;
+    color: var(--text-muted);
+}
+
 .profile-field {
     display: flex;
     flex-direction: column;
@@ -3911,8 +3930,47 @@ function materialStatusLabel(status) {
     return MATERIAL_STATUS_LABELS[status] || status || "";
 }
 
+const selectedMaterialIds = new Set();
+
 function renderMaterialsList(items) {
     materialsState.innerHTML = "";
+    selectedMaterialIds.clear();
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "bulk-actions-toolbar";
+
+    const bulkDeleteBtn = document.createElement("button");
+    bulkDeleteBtn.type = "button";
+    bulkDeleteBtn.className = "info-action-btn-danger";
+    bulkDeleteBtn.textContent = "Удалить выбранные (0)";
+    bulkDeleteBtn.disabled = true;
+    bulkDeleteBtn.addEventListener("click", () => {
+        if (selectedMaterialIds.size === 0) return;
+        const ids = Array.from(selectedMaterialIds);
+        requestDestructiveConfirmation(
+            toolbar,
+            "Удалить выбранные материалы (" + ids.length + ") без возможности восстановления?",
+            () => bulkDeleteMaterials(ids),
+            () => renderMaterialsList(items),
+        );
+    });
+    toolbar.appendChild(bulkDeleteBtn);
+
+    const clearAllBtn = document.createElement("button");
+    clearAllBtn.type = "button";
+    clearAllBtn.className = "info-action-btn-danger";
+    clearAllBtn.textContent = "Очистить все материалы";
+    clearAllBtn.addEventListener("click", () => {
+        requestDestructiveConfirmation(
+            toolbar,
+            "Удалить ВСЕ материалы этого workspace без возможности восстановления?",
+            () => clearAllMaterials(),
+            () => renderMaterialsList(items),
+        );
+    });
+    toolbar.appendChild(clearAllBtn);
+
+    materialsState.appendChild(toolbar);
 
     const grid = document.createElement("div");
     grid.className = "info-grid";
@@ -3920,6 +3978,22 @@ function renderMaterialsList(items) {
     items.forEach(item => {
         const card = document.createElement("div");
         card.className = "info-card";
+
+        const selectRow = document.createElement("div");
+        selectRow.className = "info-card-select-row";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.addEventListener("change", () => {
+            if (checkbox.checked) selectedMaterialIds.add(item.id);
+            else selectedMaterialIds.delete(item.id);
+            bulkDeleteBtn.disabled = selectedMaterialIds.size === 0;
+            bulkDeleteBtn.textContent = "Удалить выбранные (" + selectedMaterialIds.size + ")";
+        });
+        selectRow.appendChild(checkbox);
+        const selectLabel = document.createElement("label");
+        selectLabel.textContent = "Выбрать";
+        selectRow.appendChild(selectLabel);
+        card.appendChild(selectRow);
 
         const badge = document.createElement("div");
         badge.className = "info-card-badge";
@@ -3951,6 +4025,56 @@ function renderMaterialsList(items) {
     });
 
     materialsState.appendChild(grid);
+}
+
+async function bulkDeleteMaterials(ids) {
+    renderStateLoading(materialsState, "Удаляем материалы…");
+    try {
+        const response = await fetch("/api/materials/bulk-delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: ids, confirm: true }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            renderStateError(
+                materialsState, "Не удалось удалить материалы",
+                data.error || "Проверьте соединение и попробуйте ещё раз.", loadMaterials,
+            );
+            return;
+        }
+        loadMaterials();
+    } catch (_) {
+        renderStateError(
+            materialsState, "Не удалось удалить материалы",
+            "Проверьте соединение и попробуйте ещё раз.", loadMaterials,
+        );
+    }
+}
+
+async function clearAllMaterials() {
+    renderStateLoading(materialsState, "Очищаем материалы…");
+    try {
+        const response = await fetch("/api/materials/clear", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ confirm: true }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            renderStateError(
+                materialsState, "Не удалось очистить материалы",
+                data.error || "Проверьте соединение и попробуйте ещё раз.", loadMaterials,
+            );
+            return;
+        }
+        loadMaterials();
+    } catch (_) {
+        renderStateError(
+            materialsState, "Не удалось очистить материалы",
+            "Проверьте соединение и попробуйте ещё раз.", loadMaterials,
+        );
+    }
 }
 
 function makeMaterialsBackButton() {
@@ -4939,8 +5063,47 @@ function formatConversationDate(value) {
     });
 }
 
+const selectedConversationIds = new Set();
+
 function renderConversationsList(items) {
     historyState.innerHTML = "";
+    selectedConversationIds.clear();
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "bulk-actions-toolbar";
+
+    const bulkDeleteBtn = document.createElement("button");
+    bulkDeleteBtn.type = "button";
+    bulkDeleteBtn.className = "info-action-btn-danger";
+    bulkDeleteBtn.textContent = "Удалить выбранные (0)";
+    bulkDeleteBtn.disabled = true;
+    bulkDeleteBtn.addEventListener("click", () => {
+        if (selectedConversationIds.size === 0) return;
+        const ids = Array.from(selectedConversationIds);
+        requestDestructiveConfirmation(
+            toolbar,
+            "Удалить выбранные диалоги (" + ids.length + ") без возможности восстановления?",
+            () => bulkDeleteConversations(ids),
+            () => renderConversationsList(items),
+        );
+    });
+    toolbar.appendChild(bulkDeleteBtn);
+
+    const clearAllBtn = document.createElement("button");
+    clearAllBtn.type = "button";
+    clearAllBtn.className = "info-action-btn-danger";
+    clearAllBtn.textContent = "Очистить всю историю";
+    clearAllBtn.addEventListener("click", () => {
+        requestDestructiveConfirmation(
+            toolbar,
+            "Удалить ВСЮ историю диалогов без возможности восстановления?",
+            () => clearAllConversations(),
+            () => renderConversationsList(items),
+        );
+    });
+    toolbar.appendChild(clearAllBtn);
+
+    historyState.appendChild(toolbar);
 
     const grid = document.createElement("div");
     grid.className = "info-grid";
@@ -4948,6 +5111,22 @@ function renderConversationsList(items) {
     items.forEach(item => {
         const card = document.createElement("div");
         card.className = "info-card";
+
+        const selectRow = document.createElement("div");
+        selectRow.className = "info-card-select-row";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.addEventListener("change", () => {
+            if (checkbox.checked) selectedConversationIds.add(item.id);
+            else selectedConversationIds.delete(item.id);
+            bulkDeleteBtn.disabled = selectedConversationIds.size === 0;
+            bulkDeleteBtn.textContent = "Удалить выбранные (" + selectedConversationIds.size + ")";
+        });
+        selectRow.appendChild(checkbox);
+        const selectLabel = document.createElement("label");
+        selectLabel.textContent = "Выбрать";
+        selectRow.appendChild(selectLabel);
+        card.appendChild(selectRow);
 
         const title = document.createElement("div");
         title.className = "info-card-title";
@@ -4959,17 +5138,117 @@ function renderConversationsList(items) {
         meta.appendChild(document.createTextNode(formatConversationDate(item.updated_at)));
         card.appendChild(meta);
 
+        const actionsRow = document.createElement("div");
+        actionsRow.className = "material-edit-actions";
+
         const openBtn = document.createElement("button");
         openBtn.type = "button";
         openBtn.className = "info-action-btn";
         openBtn.textContent = "Открыть";
         openBtn.addEventListener("click", () => openConversation(item));
-        card.appendChild(openBtn);
+        actionsRow.appendChild(openBtn);
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "info-action-btn-danger";
+        deleteBtn.textContent = "Удалить";
+        deleteBtn.addEventListener("click", () => {
+            requestDestructiveConfirmation(
+                actionsRow,
+                "Удалить этот диалог без возможности восстановления?",
+                () => deleteOneConversation(item),
+                () => renderConversationsList(items),
+            );
+        });
+        actionsRow.appendChild(deleteBtn);
+
+        card.appendChild(actionsRow);
 
         grid.appendChild(card);
     });
 
     historyState.appendChild(grid);
+}
+
+async function deleteOneConversation(item) {
+    renderStateLoading(historyState, "Удаляем диалог…");
+    try {
+        const response = await fetch(
+            "/api/conversations/" + encodeURIComponent(item.id),
+            { method: "DELETE" },
+        );
+        const data = await response.json();
+        if (!response.ok || data.error || !data.deleted) {
+            renderStateError(
+                historyState, "Не удалось удалить диалог",
+                (data && data.error) || "Проверьте соединение и попробуйте ещё раз.", loadConversations,
+            );
+            return;
+        }
+        if (currentConversationId === item.id) {
+            currentConversationId = null;
+        }
+        loadConversations();
+    } catch (_) {
+        renderStateError(
+            historyState, "Не удалось удалить диалог",
+            "Проверьте соединение и попробуйте ещё раз.", loadConversations,
+        );
+    }
+}
+
+async function bulkDeleteConversations(ids) {
+    renderStateLoading(historyState, "Удаляем диалоги…");
+    try {
+        const response = await fetch("/api/conversations/bulk-delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: ids, confirm: true }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            renderStateError(
+                historyState, "Не удалось удалить диалоги",
+                data.error || "Проверьте соединение и попробуйте ещё раз.", loadConversations,
+            );
+            return;
+        }
+        if (ids.includes(currentConversationId)) {
+            currentConversationId = null;
+        }
+        loadConversations();
+    } catch (_) {
+        renderStateError(
+            historyState, "Не удалось удалить диалоги",
+            "Проверьте соединение и попробуйте ещё раз.", loadConversations,
+        );
+    }
+}
+
+async function clearAllConversations() {
+    renderStateLoading(historyState, "Очищаем историю диалогов…");
+    try {
+        const response = await fetch("/api/conversations/clear", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ confirm: true }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            renderStateError(
+                historyState, "Не удалось очистить историю диалогов",
+                data.error || "Проверьте соединение и попробуйте ещё раз.", loadConversations,
+            );
+            return;
+        }
+        currentConversationId = null;
+        loadConversations();
+    } catch (_) {
+        renderStateError(
+            historyState, "Не удалось очистить историю диалогов",
+            "Проверьте соединение и попробуйте ещё раз.", loadConversations,
+        );
+    }
 }
 
 async function loadConversations() {

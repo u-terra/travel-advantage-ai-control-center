@@ -249,3 +249,40 @@ def test_sync_web_signals_if_stale_collects_when_missing_or_older_than_guard() -
             ))
 
             instance.collect_for_workspace.assert_awaited_once_with(42)
+
+
+# ── ORCHESTRAVEL user history management: signals age out of the feed on
+# their own (14-30 day display retention window), no manual per-item
+# cleanup required, nothing deleted from the underlying tables ──────────
+
+def test_old_signal_beyond_retention_window_is_hidden() -> None:
+    # action="observe" (not the default "content") deliberately sidesteps a
+    # pre-existing, unrelated bug in this module (content_angle_hint() takes
+    # no args but is called with one for recommended_action == "content") -
+    # out of scope for this fix, which only adds a display-age filter.
+    old = _radar_signal(1, title="Old signal", hours_ago=24.0 * 45, action="observe")  # 45 days
+
+    unified = build_unified_feed([old], [], [], limit=10, **_formatters())
+
+    assert unified == []
+
+
+def test_fresh_signal_within_retention_window_remains_visible() -> None:
+    fresh = _radar_signal(1, title="Fresh signal", hours_ago=24.0 * 5, action="observe")  # 5 days
+
+    unified = build_unified_feed([fresh], [], [], limit=10, **_formatters())
+
+    assert [item.title for item in unified] == ["Fresh signal"]
+
+
+def test_old_signal_hidden_while_fresh_one_from_the_same_batch_stays() -> None:
+    fresh = _radar_signal(
+        1, title="Fresh", hours_ago=24.0 * 2, url="https://radar.example/fresh", action="observe",
+    )
+    old = _radar_signal(
+        2, title="Old", hours_ago=24.0 * 60, url="https://radar.example/old", action="observe",
+    )
+
+    unified = build_unified_feed([fresh, old], [], [], limit=10, **_formatters())
+
+    assert [item.title for item in unified] == ["Fresh"]

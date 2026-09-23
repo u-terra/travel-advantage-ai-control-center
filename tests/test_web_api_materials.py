@@ -375,3 +375,110 @@ def test_delete_endpoint_never_returns_500_on_backend_error(api, monkeypatch) ->
     body = response.json()
     assert body["deleted"] is False
     assert "error" in body
+
+
+# ── POST /api/materials/bulk-delete, /api/materials/clear (ORCHESTRAVEL
+# user history management: bulk/clear materials, explicit confirm required,
+# workspace-isolated) ────────────────────────────────────────────────────
+
+def test_bulk_delete_requires_confirm(api) -> None:
+    client, web_api, _, workspace_id = api
+    artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        workspace_id, artifact_type="post", title="Пост", content="Текст.",
+    ))
+
+    response = client.post("/api/materials/bulk-delete", json={"ids": [artifact.id], "confirm": False})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" in body
+    assert body["deleted_count"] == 0
+    assert _run(web_api.artifact_repository.get_artifact(workspace_id, artifact.id)) is not None
+
+
+def test_bulk_delete_removes_selected_materials(api) -> None:
+    client, web_api, _, workspace_id = api
+    a1, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        workspace_id, artifact_type="post", title="Пост 1", content="Текст 1.",
+    ))
+    a2, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        workspace_id, artifact_type="post", title="Пост 2", content="Текст 2.",
+    ))
+    a3, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        workspace_id, artifact_type="post", title="Пост 3 (не трогаем)", content="Текст 3.",
+    ))
+
+    response = client.post(
+        "/api/materials/bulk-delete", json={"ids": [a1.id, a2.id], "confirm": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted_count": 2}
+    assert _run(web_api.artifact_repository.get_artifact(workspace_id, a1.id)) is None
+    assert _run(web_api.artifact_repository.get_artifact(workspace_id, a2.id)) is None
+    assert _run(web_api.artifact_repository.get_artifact(workspace_id, a3.id)) is not None
+
+
+def test_bulk_delete_cannot_touch_another_workspaces_material(api) -> None:
+    client, web_api, _, workspace_id = api
+    other = _run(web_api.partner_repository.provision_partner(
+        222334333, "Other Agency 5", "other-agency-materials-5",
+        business_name="Other Agency 5", business_type="independent_agent",
+        short_description="Другое рабочее пространство.", context={},
+    ))
+    foreign_artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        other.workspace.id, artifact_type="post", title="Чужой", content="Чужой текст.",
+    ))
+
+    response = client.post(
+        "/api/materials/bulk-delete", json={"ids": [foreign_artifact.id], "confirm": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted_count": 0}
+    assert _run(web_api.artifact_repository.get_artifact(
+        other.workspace.id, foreign_artifact.id,
+    )) is not None
+
+
+def test_clear_materials_requires_confirm(api) -> None:
+    client, web_api, _, workspace_id = api
+    _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        workspace_id, artifact_type="post", title="Пост", content="Текст.",
+    ))
+
+    response = client.post("/api/materials/clear", json={"confirm": False})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" in body
+    assert body["deleted_count"] == 0
+    materials = _run(web_api.artifact_repository.list_artifacts(workspace_id))
+    assert len(materials) == 1
+
+
+def test_clear_materials_removes_all_workspace_materials_only(api) -> None:
+    client, web_api, _, workspace_id = api
+    _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        workspace_id, artifact_type="post", title="Пост 1", content="Текст 1.",
+    ))
+    _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        workspace_id, artifact_type="post", title="Пост 2", content="Текст 2.",
+    ))
+    other = _run(web_api.partner_repository.provision_partner(
+        222334444, "Other Agency 6", "other-agency-materials-6",
+        business_name="Other Agency 6", business_type="independent_agent",
+        short_description="Другое рабочее пространство.", context={},
+    ))
+    foreign_artifact, _ = _run(web_api.artifact_repository.create_artifact_with_initial_version(
+        other.workspace.id, artifact_type="post", title="Чужой", content="Чужой текст.",
+    ))
+
+    response = client.post("/api/materials/clear", json={"confirm": True})
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted_count": 2}
+    assert _run(web_api.artifact_repository.list_artifacts(workspace_id)) == []
+    assert _run(web_api.artifact_repository.get_artifact(
+        other.workspace.id, foreign_artifact.id,
+    )) is not None
