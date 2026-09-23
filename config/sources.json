@@ -323,7 +323,8 @@
         "language": "ru",
         "fetch_limit": 3,
         "drop_promo": true,
-        "min_score_for_llm": 70
+        "min_score_for_llm": 70,
+        "competitor_domain": "travel.yandex.ru"
       }
     },
     {

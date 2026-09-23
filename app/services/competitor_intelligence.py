@@ -25,6 +25,7 @@ from app.repositories.workspace_signal_repository import (
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
 from app.services.llm.models import SourceAnalysisPayload
+from app.services.source_registry import load_registry
 from app.services.usage_recorder import record_llm_call
 
 _MAX_SOURCES = 5
@@ -43,37 +44,53 @@ _SIGNAL_FRESH_DAYS = 30
 # matching still applies regardless of label length.
 _MIN_LABEL_MATCH_LENGTH = 3
 
-# Bug fix (live production example, competitor_id=6 "Яндекс-путешествия",
-# https://travel.yandex.ru/): direct_fetch is correctly blocked by Yandex's
-# own SmartCaptcha (confirmed live, out of scope to work around), so the
-# Radar-signal fallback is the only path left - and it also missed, for two
-# separate, both individually-correct-by-design reasons:
-#  - domain match: the product's Telegram channel's item_url is
-#    https://t.me/yandex_travel/... - canonical_domain() of that is "t.me",
-#    never "travel.yandex.ru", so the plain domain check in
-#    _signal_matches_competitor can never see it as the same competitor;
-#  - label match: the saved competitor label is "Яндекс-путешествия"
-#    (hyphen), the signal's actual text says "Яндекс Путешествия" (space) -
-#    _label_regex is a literal, punctuation-sensitive \b...\b match by
-#    design (see its own docstring's warning against general fuzzy text
-#    matching), so it correctly does NOT treat a hyphen and a space as the
-#    same character - it just also doesn't know they're the same brand here.
+# Bug fix (live production example): a competitor whose own domain is
+# correctly unreachable via direct_fetch (e.g. blocked by an anti-bot
+# challenge - out of scope to work around here) falls back to matching
+# recent Radar signals already visible to the workspace - but a signal from
+# the SAME brand's own Telegram channel can legitimately have a completely
+# different domain (t.me/...) and slightly different punctuation in its
+# display name than the saved competitor label, so neither the domain check
+# nor the literal, punctuation-sensitive label-word-boundary match (by
+# design - see _signal_matches_competitor's own docstring against loosening
+# either into general fuzzy text matching) can see them as the same
+# competitor on their own.
 #
-# Fix: a small, explicit, hand-curated identity map from a competitor's OWN
-# canonical domain to the source_catalog source_id(s) (config/sources.json)
-# that are KNOWN to be the same brand/product under a different domain -
-# never inferred from text similarity. yandex_web_journal's own catalog
-# entry already documents this fact in plain language ("Telegram-канал того
-# же продукта уже отдельно в реестре (telegram_yandex_travel)") - this map
-# is that same editorial fact, made machine-readable for exactly this
-# fallback. Adding an alias here is a conscious, one-at-a-time editorial
-# decision (same weight as adding a competitor or a source_catalog entry),
-# never a generic "same company" heuristic - a bare word like "Яндекс"
-# alone must stay insufficient, and no other Telegram channel/Yandex
-# service is added here just because it shares the word "Яндекс".
-_COMPETITOR_DOMAIN_SOURCE_ID_ALIASES: dict[str, frozenset[str]] = {
-    "travel.yandex.ru": frozenset({"telegram_yandex_travel"}),
-}
+# Fix: a competitor's own canonical domain can be paired with a *different*
+# source_catalog entry's collector setting "competitor_domain"
+# (config/sources.json) as a hand-curated, one-at-a-time editorial fact -
+# "this source, whatever its own domain/platform, IS this competitor's own
+# channel" - never inferred from text similarity. This mirrors the source
+# registry's own convention (Source.collector_setting - "настройка
+# сборщика... реестром не интерпретируется") instead of hardcoding any
+# specific registry id/username/url here, so adding a new alias stays a
+# config/sources.json-only change (see
+# tests/test_source_registry.py::test_no_telegram_source_from_registry_leaks_into_business_logic,
+# which forbids literal registry identifiers in app/ code). A bare shared
+# brand word (e.g. a generic company name) is never enough on its own - see
+# the label-match narrowness this leaves untouched.
+_COMPETITOR_DOMAIN_ALIAS_COLLECTOR_KEY = "competitor_domain"
+
+
+def _competitor_domain_alias_source_ids(domain: str) -> frozenset[str]:
+    """source_id(s) of any registry entry whose collector setting
+    ``competitor_domain`` names this exact canonical domain - see the
+    constant's docstring above. Registry read is cheap (mtime-cached by
+    load_registry itself); computed once per _relevant_recent_signals call,
+    not per record."""
+    if not domain:
+        return frozenset()
+    try:
+        registry = load_registry()
+    except Exception:
+        # Same fail-open-to-"no alias" posture as _relevant_recent_signals
+        # itself - a registry hiccup must not break the whole fallback, it
+        # just means this extra alias path finds nothing this time.
+        return frozenset()
+    return frozenset(
+        source.id for source in registry.all()
+        if source.collector_setting(_COMPETITOR_DOMAIN_ALIAS_COLLECTOR_KEY) == domain
+    )
 _OPPORTUNITY_CATEGORIES = (
     ("AI и технологии в travel", (" ai ", "chatgpt", "artificial intelligence", "technology", "digital", "biometric", "esim", "app", "интеллект", "нейросет")),
     ("travel trends", ("trend", "traveler", "traveller", "tourism", "booking data", "тренд")),
@@ -332,9 +349,13 @@ class CompetitorIntelligenceService:
         label_pattern = (
             _label_regex(label) if len(label) >= _MIN_LABEL_MATCH_LENGTH else None
         )
+        alias_source_ids = _competitor_domain_alias_source_ids(domain)
         matched = [
             record for record in records
-            if _signal_matches_competitor(record, domain=domain, label_pattern=label_pattern)
+            if _signal_matches_competitor(
+                record, domain=domain, label_pattern=label_pattern,
+                alias_source_ids=alias_source_ids,
+            )
             and _signal_is_recent(record.raw_created_at)
         ]
         matched.sort(key=lambda record: record.raw_created_at, reverse=True)
@@ -383,19 +404,20 @@ def _label_regex(label: str) -> re.Pattern[str] | None:
 
 def _signal_matches_competitor(
     record: WorkspaceSignalRecord, *, domain: str, label_pattern: re.Pattern[str] | None,
+    alias_source_ids: frozenset[str] = frozenset(),
 ) -> bool:
     """Genuinely matching, not "any travel news": either the signal's own
     URL resolves to the competitor's canonical domain, or its source_id is
     a hand-curated known alias of that domain (see
-    _COMPETITOR_DOMAIN_SOURCE_ID_ALIASES - a different domain/platform for
+    _competitor_domain_alias_source_ids - a different domain/platform for
     the SAME product, e.g. a competitor's own Telegram channel), or the
     competitor's label appears as a whole word in the signal's
     title/summary/source name. A short/generic label (see
     _MIN_LABEL_MATCH_LENGTH) never matches by text alone - only by domain or
-    the curated alias map."""
+    the curated alias set."""
     if domain and canonical_domain(record.item_url) == domain:
         return True
-    if domain and record.source_id in _COMPETITOR_DOMAIN_SOURCE_ID_ALIASES.get(domain, frozenset()):
+    if record.source_id and record.source_id in alias_source_ids:
         return True
     if label_pattern is None:
         return False

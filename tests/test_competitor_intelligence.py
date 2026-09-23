@@ -484,23 +484,60 @@ def test_signal_fallback_rejects_unrelated_travel_news():
     assert "Свежие источники" in str(exc_info.value)
 
 
-# ── Bug fix (live production, competitor_id=6 "Яндекс-путешествия",
-# https://travel.yandex.ru/): direct_fetch is correctly blocked by Yandex's
-# own SmartCaptcha, and the signal fallback's domain check can never match
-# the product's own Telegram channel (item_url domain is "t.me", not
-# "travel.yandex.ru") while the label check is a literal, punctuation-
-# sensitive match ("Яндекс-путешествия" the saved label vs "Яндекс
-# Путешествия" the actual signal text - hyphen vs space). See
-# _COMPETITOR_DOMAIN_SOURCE_ID_ALIASES's own docstring in
-# app.services.competitor_intelligence for the full reasoning. ─────────────
+# ── Bug fix (live production, competitor_id=6, a competitor whose direct
+# site fetch is correctly blocked by the site's own anti-bot check): the
+# signal fallback's domain check can never match the product's own Telegram
+# channel (a Telegram item_url resolves to domain "t.me", never the
+# competitor's own web domain) while the label check is a literal,
+# punctuation-sensitive match (a saved label using a hyphen vs the actual
+# signal text using a space, for example). See
+# _competitor_domain_alias_source_ids's own docstring in
+# app.services.competitor_intelligence for the full reasoning. Registry
+# lookups are stubbed here (not the real config/sources.json) so these
+# tests exercise the alias-resolution *logic* itself, independent of the
+# registry's current live content. ──────────────────────────────────────────
 
-def test_signal_fallback_matches_known_telegram_alias_for_yandex_travel():
+class _StubAliasSource:
+    def __init__(self, source_id: str, competitor_domain: str | None) -> None:
+        self.id = source_id
+        self._competitor_domain = competitor_domain
+
+    def collector_setting(self, key: str, default=None):
+        return self._competitor_domain if key == "competitor_domain" else default
+
+
+class _StubAliasRegistry:
+    def __init__(self, sources: list[_StubAliasSource]) -> None:
+        self._sources = sources
+
+    def all(self):
+        return tuple(self._sources)
+
+
+def _patch_alias_registry(monkeypatch, aliases: dict[str, str]) -> None:
+    """aliases: {source_id: competitor_domain}."""
+    registry = _StubAliasRegistry(
+        [_StubAliasSource(source_id, domain) for source_id, domain in aliases.items()]
+    )
+    monkeypatch.setattr(
+        "app.services.competitor_intelligence.load_registry", lambda: registry,
+    )
+
+
+_YANDEX_TRAVEL_ALIAS_SOURCE_ID = "telegram_yandex_travel"
+_YANDEX_TRAVEL_DOMAIN = "travel.yandex.ru"
+
+
+def test_signal_fallback_matches_known_telegram_alias_for_yandex_travel(monkeypatch):
+    _patch_alias_registry(
+        monkeypatch, {_YANDEX_TRAVEL_ALIAS_SOURCE_ID: _YANDEX_TRAVEL_DOMAIN},
+    )
     record = _signal_record(
         item_title="Новые направления на майские",
         item_summary="Подборка курортов с прямыми рейсами.",
         item_url="https://t.me/yandex_travel/12652",
         source_name="Telegram Яндекс Путешествия",
-        source_id="telegram_yandex_travel",
+        source_id=_YANDEX_TRAVEL_ALIAS_SOURCE_ID,
     )
     service, _ = _service_with_signals([record])
     competitor = Competitor(6, 42, "https://travel.yandex.ru/", "Яндекс-путешествия", "now")
@@ -511,16 +548,19 @@ def test_signal_fallback_matches_known_telegram_alias_for_yandex_travel():
     assert result.sources[0].final_url == "https://t.me/yandex_travel/12652"
 
 
-def test_signal_fallback_alias_is_scoped_to_the_exact_competitor_domain():
-    """The telegram_yandex_travel alias is keyed to travel.yandex.ru only -
-    it must not make the same signal match some unrelated competitor that
-    happens to also be a travel site."""
+def test_signal_fallback_alias_is_scoped_to_the_exact_competitor_domain(monkeypatch):
+    """The alias is keyed to travel.yandex.ru only - it must not make the
+    same signal match some unrelated competitor that happens to also be a
+    travel site."""
+    _patch_alias_registry(
+        monkeypatch, {_YANDEX_TRAVEL_ALIAS_SOURCE_ID: _YANDEX_TRAVEL_DOMAIN},
+    )
     record = _signal_record(
         item_title="Новые направления на майские",
         item_summary="Подборка курортов с прямыми рейсами.",
         item_url="https://t.me/yandex_travel/12652",
         source_name="Telegram Яндекс Путешествия",
-        source_id="telegram_yandex_travel",
+        source_id=_YANDEX_TRAVEL_ALIAS_SOURCE_ID,
     )
     service, _ = _service_with_signals([record])
     competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
@@ -529,10 +569,14 @@ def test_signal_fallback_alias_is_scoped_to_the_exact_competitor_domain():
         run(service.analyze(competitor, ta_affiliated=True))
 
 
-def test_signal_fallback_does_not_alias_other_telegram_channels_to_yandex_travel():
-    """A different Telegram channel (different source_id) must not match
-    travel.yandex.ru just because its text also mentions the word "Яндекс" -
-    the alias map is by exact source_id, never a bare brand-word guess."""
+def test_signal_fallback_does_not_alias_other_telegram_channels_to_yandex_travel(monkeypatch):
+    """A different Telegram channel (different source_id, not registered as
+    a competitor_domain alias) must not match travel.yandex.ru just because
+    its text also mentions the word "Яндекс" - the alias set is by exact
+    source_id, never a bare brand-word guess."""
+    _patch_alias_registry(
+        monkeypatch, {_YANDEX_TRAVEL_ALIAS_SOURCE_ID: _YANDEX_TRAVEL_DOMAIN},
+    )
     record = _signal_record(
         item_title="Яндекс запускает новый сервис для бизнеса",
         item_summary="Экспресс-обзор новостей технологического рынка.",
@@ -547,11 +591,14 @@ def test_signal_fallback_does_not_alias_other_telegram_channels_to_yandex_travel
         run(service.analyze(competitor, ta_affiliated=True))
 
 
-def test_signal_fallback_bare_yandex_word_alone_still_insufficient():
+def test_signal_fallback_bare_yandex_word_alone_still_insufficient(monkeypatch):
     """Regression guard: a signal that only contains the generic word
     "Яндекс" (no source_id alias, no domain match, no exact label match)
     must still be rejected - this fix must not have loosened the existing
     label-match narrowness."""
+    _patch_alias_registry(
+        monkeypatch, {_YANDEX_TRAVEL_ALIAS_SOURCE_ID: _YANDEX_TRAVEL_DOMAIN},
+    )
     record = _signal_record(
         item_title="Яндекс объявил финансовые результаты за квартал",
         item_summary="Общий разбор показателей группы компаний.",
