@@ -5186,7 +5186,14 @@ async function deleteOneConversation(item) {
             return;
         }
         if (currentConversationId === item.id) {
+            // The deleted conversation was the one currently open in the
+            // Ассистент tab - drop its id AND the stale rendered messages,
+            // so the next message starts a fresh conversation instead of
+            // silently appending to a thread that no longer exists on the
+            // server (ensureConversationId() creates a new one once
+            // currentConversationId is null - see its own comment above).
             currentConversationId = null;
+            clearChatArea();
         }
         loadConversations();
     } catch (_) {
@@ -5215,6 +5222,7 @@ async function bulkDeleteConversations(ids) {
         }
         if (ids.includes(currentConversationId)) {
             currentConversationId = null;
+            clearChatArea();
         }
         loadConversations();
     } catch (_) {
@@ -5242,6 +5250,7 @@ async function clearAllConversations() {
             return;
         }
         currentConversationId = null;
+        clearChatArea();
         loadConversations();
     } catch (_) {
         renderStateError(

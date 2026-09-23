@@ -138,6 +138,8 @@ def test_render_conversations_list_treats_title_as_data() -> None:
 {_FAKE_DOM}
 {_extract_function(source, "formatConversationDate")}
 function openConversation() {{}}
+function requestDestructiveConfirmation() {{}}
+let selectedConversationIds = new Set();
 const historyState = document.createElement("div");
 {_extract_function(source, "renderConversationsList")}
 
@@ -153,7 +155,9 @@ renderConversationsList([
     all_text = _collect_text(tree)
     assert any(_XSS_PAYLOAD in item for item in all_text)
     tag_names = {child["tagName"] for child in _flatten(tree)}
-    assert tag_names <= {"DIV", "BUTTON", "H2", "H3", "P", "#text"}
+    # INPUT/LABEL added by the bulk-select checkbox (ORCHESTRAVEL user
+    # history management, be12cda) - still plain, non-script-bearing tags.
+    assert tag_names <= {"DIV", "BUTTON", "H2", "H3", "P", "INPUT", "LABEL", "#text"}
 
 
 def test_render_conversations_list_never_assigns_innerhtml_with_content() -> None:
