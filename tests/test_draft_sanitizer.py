@@ -282,3 +282,36 @@ def test_write_if_you_want_to_pick_a_trip_cta_survives() -> None:
 def test_if_planning_japan_lets_discuss_dates_cta_survives() -> None:
     text = "Если планируете Японию — обсудим даты и маршрут."
     assert sanitize_draft_text(text) == text
+
+
+# --- "Подготовить пост" quality fix: generic filler phrases removed ---
+
+def test_generic_filler_phrase_this_is_a_great_reason_is_removed() -> None:
+    text = (
+        "Цены на билеты в Японию выросли на 15%. "
+        "Это отличный повод забронировать поездку заранее. "
+        "Планируйте бюджет с учётом новых тарифов."
+    )
+    result = sanitize_draft_text(text)
+    assert "отличный повод" not in result.lower()
+    assert "Цены на билеты в Японию выросли на 15%." in result
+    assert "Планируйте бюджет с учётом новых тарифов." in result
+
+
+def test_generic_filler_phrase_important_to_note_is_removed() -> None:
+    text = "Важно отметить, что сезон скидок начался раньше обычного. Билеты уже подешевели на треть."
+    result = sanitize_draft_text(text)
+    assert "важно отметить" not in result.lower()
+    assert "Билеты уже подешевели на треть." in result
+
+
+def test_generic_filler_phrase_in_the_middle_is_removed() -> None:
+    text = (
+        "Раннее бронирование Бали подешевело. "
+        "Стоит отметить, что это происходит впервые за два года. "
+        "Планируйте поездку на ноябрь."
+    )
+    result = sanitize_draft_text(text)
+    assert "стоит отметить" not in result.lower()
+    assert "Раннее бронирование Бали подешевело." in result
+    assert "Планируйте поездку на ноябрь." in result

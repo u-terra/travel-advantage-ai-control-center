@@ -90,6 +90,35 @@ _META_PROCESS_MARKERS: tuple[str, ...] = (
     "автор пишет, что",
 )
 
+# Quality fix ("Подготовить пост" 2/5 rating): generic filler phrases that
+# make a draft read like a template rather than a specific, self-contained
+# post - they carry no fact and no author's own point, just padding around
+# whatever the model already wrote. Distinct from _META_PROCESS_MARKERS
+# above (those are the model narrating its own process/the source's
+# reliability); these are stock transition phrases any generic AI post
+# reaches for regardless of the actual signal. Same removal mechanism
+# (drop the whole sentence) since, like the meta markers, the phrase itself
+# carries the sentence - what is left after removing it is rarely worth
+# keeping half of.
+_GENERIC_FILLER_MARKERS: tuple[str, ...] = (
+    "это отличный повод",
+    "прекрасный повод",
+    "хороший повод",
+    "важно отметить",
+    "важно понимать",
+    "стоит отметить",
+    "нельзя не отметить",
+    "нельзя не сказать",
+    "стоит сказать",
+    "не секрет, что",
+    "как известно",
+)
+
+
+def _contains_generic_filler(sentence: str) -> bool:
+    lowered = sentence.lower()
+    return any(marker in lowered for marker in _GENERIC_FILLER_MARKERS)
+
 # Доля слов disputed claim, которая должна встретиться в предложении черновика,
 # чтобы считать его пересказом этого claim. Специально высокий порог —
 # это fail-safe от повторения конкретного спорного утверждения, а не
@@ -207,6 +236,9 @@ def sanitize_draft_text(text: str, *, disputed_claims: tuple[str, ...] = ()) -> 
         if not stripped:
             continue
         if _contains_meta_marker(stripped):
+            kept[index] = False
+            continue
+        if _contains_generic_filler(stripped):
             kept[index] = False
             continue
         if any(_matches_disputed_claim(stripped, claim) for claim in disputed_claims if claim.strip()):

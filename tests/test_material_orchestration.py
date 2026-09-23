@@ -1184,3 +1184,27 @@ def test_competitor_signal_spec_demands_market_insight_not_generic_advice():
     # Constraint must not leak into unrelated flows.
     assert spec.constraints != radar_spec(profile()).constraints
     assert spec.constraints != build(profile()).constraints
+
+
+# --- "Подготовить пост" quality fix: no generic filler / no auto-CTA /
+# result must be a self-contained post, not a recap of the signal ---
+
+def test_radar_spec_constraints_forbid_generic_filler_phrases():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "отличный повод" in joined
+    assert "важно отметить" in joined
+
+
+def test_radar_spec_constraints_forbid_automatic_template_cta():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "автоматически" in joined
+    assert "cta" in joined.lower() or "призыв к действию" in joined
+
+
+def test_radar_spec_constraints_require_self_contained_post_not_a_recap():
+    spec = radar_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "самостоятельным постом" in joined
+    assert "пересказ" in joined
