@@ -1357,38 +1357,73 @@ def _signal_intent_context(unified, *, workspace_only: bool, compact: bool) -> s
 
     Also carries the hard rules the model must follow for this turn:
     never invent a source or URL beyond what is listed here, never present
-    the model's own general knowledge as a market signal, and (unless the
-    user asked for a full content plan) keep the answer to a short
-    priority list rather than a long plan."""
+    the model's own general knowledge as a market signal, never state a
+    future event as if it already happened, and (unless the user asked for
+    a full content plan) keep the answer to a short priority list rather
+    than a long plan.
+
+    Quality fix (live example, 2026-09-23): the Assistant wrote "вопрос был
+    вынесен на обсуждение 24 сентября" the day BEFORE that date, as if it
+    had already happened - the model conflated the signal's own publication
+    timestamp (item.created_at, when the source posted it) with a date
+    mentioned INSIDE the signal's text (a future event), and defaulted to
+    past tense. Today's date and each signal's own publication date are now
+    both given explicitly, with an instruction not to guess which one a
+    date inside title/summary refers to.
+    """
     if not unified:
         return ""
+    today = datetime.now(timezone.utc).date().isoformat()
     lines = [
         "=== СИГНАЛЫ ИЗ ПОДКЛЮЧЁННЫХ ИСТОЧНИКОВ WORKSPACE ===",
+        f"Сегодняшняя дата: {today}.",
         "Ниже - реальные свежие сигналы из источников, подключённых в этом "
         "workspace (раздел «Сигналы и идеи»). Это НЕ результаты общего "
         "веб-поиска - используй их в первую очередь для вопросов о том, "
         "что сейчас важно на рынке или какие есть идеи для контента.",
     ]
     for item in unified:
+        published = (item.created_at or "").strip()
+        published_date = published.split("T", 1)[0] if published else ""
         parts = [f"- {item.title}"]
         if item.source_name:
             parts.append(f"(источник: {item.source_name})")
         if getattr(item, "url", None):
             parts.append(f"URL: {item.url}")
+        if published_date:
+            parts.append(f"опубликовано источником: {published_date}")
         if item.action_reason:
             parts.append(f"— {item.action_reason}")
         lines.append(" ".join(parts))
 
     lines.append(
         "\nПравила для этого ответа:\n"
+        "- «Опубликовано источником: <дата>» - это когда ИСТОЧНИК разместил "
+        "материал, а не обязательно дата события, описанного внутри. Если "
+        "в title/summary сигнала упомянута дата события (например, "
+        "«обсуждение назначено на 24 сентября») - сравни её с сегодняшней "
+        f"датой ({today}) и сформулируй как предстоящее событие (будущее "
+        "время: «назначено на», «состоится», «планируется»), если эта дата "
+        "ещё не наступила. Никогда не описывай будущее событие так, будто "
+        "оно уже произошло.\n"
+        "- Если дата события в источнике не указана явно или сформулирована "
+        "неоднозначно - не придумывай и не уточняй её самостоятельно, "
+        "говори об этом без конкретной даты.\n"
+        "- Для каждого сигнала, который ты используешь в ответе, укажи его "
+        "реальный источник: source_name и URL из списка выше. Если у "
+        "сигнала нет URL - укажи только source_name, не придумывай ссылку.\n"
         "- Если в конце ответа перечисляешь источники - указывай ТОЛЬКО "
         "источники из списка выше, строго как «source_name — URL». Если у "
         "сигнала нет URL - не придумывай ссылку и не указывай её.\n"
         "- Никогда не добавляй сайты, которых нет в списке выше (например "
         "vc.ru, Neil Patel, TexTerra, InSales, Equity.Today и подобные), "
         "если они не входят в этот список сигналов.\n"
-        "- Чётко отделяй факт/сигнал из источника от собственной идеи "
-        "Assistant: не выдавай общие знания модели за рыночный сигнал."
+        "- Для каждого сигнала явно отделяй «Факт из источника» (только то, "
+        "что реально написано в title/summary/источнике) от «Идея "
+        "Оркестратора» (твоя аналитика или идея для контента на основе "
+        "факта) - используй эти или аналогичные явные пометки, не смешивай "
+        "факт и интерпретацию в одном неразделённом предложении. Не выдавай "
+        "общие знания модели за рыночный сигнал."
     )
 
     if workspace_only:
@@ -1402,10 +1437,13 @@ def _signal_intent_context(unified, *, workspace_only: bool, compact: bool) -> s
 
     if compact:
         lines.append(
-            "\nОтветь компактно: 3-5 самых приоритетных сигналов, для "
-            "каждого коротко - что произошло и почему это важно, и в конце "
-            "1-2 идеи действия/контента. Не генерируй длинный недельный "
-            "контент-план - пользователь его не просил."
+            "\nОтветь компактно: 3-5 самых приоритетных сигналов. Для "
+            "каждого сигнала укажи: (1) что произошло - факт из источника; "
+            "(2) источник (source_name и URL, если есть); (3) почему это "
+            "важно; (4) ровно одну идею действия/контента, явно помеченную "
+            "как идея Оркестратора, а не как факт. Не генерируй длинный "
+            "недельный контент-план и не превращай ответ в развёрнутый "
+            "отчёт - пользователь этого не просил."
         )
 
     return "\n".join(lines)
