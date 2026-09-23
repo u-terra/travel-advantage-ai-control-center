@@ -1060,3 +1060,57 @@ def test_signal_action_strips_even_a_plain_write_to_us_cta(api, monkeypatch) -> 
     content = response.json()["version"]["content"]
     assert "пишите" not in content.lower()
     assert "Раннее бронирование Турции подешевело на 15%." in content
+
+
+# ── CTA/offer quality fix (follow-up to bc49151): general class extended to
+# conditional "Если вы..., могу..." offers, plus internal source/signal
+# meta-references removed - both verified end to end through
+# POST /api/signals/{id}/actions ───────────────────────────────────────────
+
+def test_signal_action_strips_the_conditional_offer_live_example(api, monkeypatch) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: _fake_draft(
+            "Цены на туры в Таиланд снизились на 15% к ноябрю. "
+            "Если вы как раз выбираете Таиланд на ближайшие даты, могу "
+            "сравнить варианты по регионам и подсказать, что лучше подойдёт вам."
+        ),
+    )
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    content = response.json()["version"]["content"]
+    assert "могу" not in content.lower()
+    assert "Цены на туры в Таиланд снизились на 15% к ноябрю." in content
+
+
+def test_signal_action_strips_source_meta_reference_live_example(api, monkeypatch) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _make_signal(web_api, db_path, radar_db_path, workspace_id)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: _fake_draft(
+            "Туристический поток в Таиланд продолжает расти. "
+            "Под ударом, по сообщению источника, Пхукет, Краби и Самуи. "
+            "Спрос на отели там уже увеличился."
+        ),
+    )
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    content = response.json()["version"]["content"]
+    assert "по сообщению источника" not in content.lower()
+    assert "Туристический поток в Таиланд продолжает расти." in content
+    assert "Спрос на отели там уже увеличился." in content

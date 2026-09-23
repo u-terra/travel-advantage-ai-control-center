@@ -433,3 +433,84 @@ def test_cta_allowed_false_respects_max_trailing_cuts() -> None:
     text = " ".join([f"Напишите вариант номер {i}." for i in range(6)])
     result = sanitize_draft_text(text, cta_allowed=False)
     assert result != ""
+
+
+# --- cta_allowed=False: general offer/CTA class extended to conditional
+# "Если вы..., могу..." wrapping (live example after bc49151), not just
+# direct-address imperatives ---
+
+def test_cta_allowed_false_removes_the_conditional_offer_live_example() -> None:
+    text = (
+        "Цены на туры в Таиланд снизились на 15% к ноябрю. "
+        "Прямые рейсы стали доступнее после запуска нового маршрута. "
+        "Если вы как раз выбираете Таиланд на ближайшие даты, могу "
+        "сравнить варианты по регионам и подсказать, что лучше подойдёт вам."
+    )
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert "могу" not in result.lower()
+    assert "Цены на туры в Таиланд снизились на 15% к ноябрю." in result
+    assert "Прямые рейсы стали доступнее после запуска нового маршрута." in result
+
+
+def test_cta_allowed_false_removes_bare_mogu_offer_without_если() -> None:
+    text = "Спрос на Бали вырос вдвое за месяц. Могу подобрать вариант под ваш бюджет."
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert "могу" not in result.lower()
+    assert "Спрос на Бали вырос вдвое за месяц." in result
+
+
+def test_cta_allowed_false_removes_podskazhu_and_sravnyu_offers() -> None:
+    text = "Отели в Сочи подорожали к сезону. Подскажу актуальные варианты по датам."
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert "подскажу" not in result.lower()
+    assert "Отели в Сочи подорожали к сезону." in result
+
+
+def test_cta_allowed_false_does_not_touch_ordinary_if_sentence_mid_text() -> None:
+    """A genuinely informational "если..." sentence with no offer verb -
+    not part of the CTA/offer class - must survive, wherever it appears."""
+    text = (
+        "Если вы планируете поездку в октябре, учтите пересмотр визовых "
+        "правил. Билеты уже подорожали на 10%."
+    )
+    result = sanitize_draft_text(text, cta_allowed=False)
+    assert "Если вы планируете поездку в октябре, учтите пересмотр визовых" in result
+    assert "Билеты уже подорожали на 10%." in result
+
+
+# --- internal "source kitchen" meta-references removed - fact must stand
+# on its own, not attributed to "источник"/"сигнал" ---
+
+def test_source_meta_reference_phukет_krabi_live_example_is_removed() -> None:
+    text = (
+        "Туристический поток в Таиланд продолжает расти. "
+        "Под ударом, по сообщению источника, Пхукет, Краби и Самуи. "
+        "Спрос на отели там уже увеличился."
+    )
+    result = sanitize_draft_text(text)
+    assert "по сообщению источника" not in result.lower()
+    assert "Туристический поток в Таиланд продолжает расти." in result
+    assert "Спрос на отели там уже увеличился." in result
+
+
+def test_source_meta_reference_signal_says_is_removed() -> None:
+    text = "Цены выросли на треть. В сигнале говорится о новом маршруте авиакомпании."
+    result = sanitize_draft_text(text)
+    assert "в сигнале говорится" not in result.lower()
+    assert "Цены выросли на треть." in result
+
+
+def test_source_meta_reference_according_to_signal_data_is_removed() -> None:
+    text = "Спрос на туры вырос. По данным сигнала, интерес сместился на осенние даты."
+    result = sanitize_draft_text(text)
+    assert "по данным сигнала" not in result.lower()
+    assert "Спрос на туры вырос." in result
+
+
+def test_source_meta_reference_general_class_catches_unlisted_variant() -> None:
+    """General regex class, not just the 4 listed phrases - "по словам
+    источника" was never explicitly named but matches the same shape."""
+    text = "Билеты подешевели. По словам источника, скидка продлится до конца месяца."
+    result = sanitize_draft_text(text)
+    assert "по словам источника" not in result.lower()
+    assert "Билеты подешевели." in result

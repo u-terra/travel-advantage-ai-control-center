@@ -88,7 +88,33 @@ _META_PROCESS_MARKERS: tuple[str, ...] = (
     "в тексте упоминается",
     "как видно из этого сообщения",
     "автор пишет, что",
+    # Quality fix (live example): "Под ударом, по сообщению источника,
+    # Пхукет, Краби..." - another phrasing of the same "narrating the
+    # source's existence instead of just stating the fact" problem, this
+    # time as a parenthetical attribution rather than a full sentence. A
+    # fact in the finished post must stand on its own; if it can't be
+    # stated confidently without hedging on where it came from, it should
+    # be dropped, not wrapped in "по сообщению источника".
+    "по сообщению источника",
+    "в сигнале говорится",
+    "по данным сигнала",
 )
+
+# General class for the same "internal kitchen" leak as the markers above -
+# any "по <источник-word> <источника/сигнала>" or "в <источнике/сигнале>
+# <сказано/указано/говорится/упоминается>" attribution, not just the exact
+# phrasings listed. Whole-text scan (not trailing-only), same as
+# _contains_meta_marker, since this kind of aside can appear anywhere a
+# fact is stated, not only at the end of the post.
+_SOURCE_META_REFERENCE_RE = re.compile(
+    r"по\s+(?:сообщению|данным|словам|информации)\s+(?:источника|сигнала)"
+    r"|в\s+(?:источнике|сигнале)\s+(?:сказано|указано|говорится|упоминается)",
+    re.IGNORECASE,
+)
+
+
+def _contains_source_meta_reference(sentence: str) -> bool:
+    return bool(_SOURCE_META_REFERENCE_RE.search(sentence))
 
 # Quality fix ("Подготовить пост" 2/5 rating): generic filler phrases that
 # make a draft read like a template rather than a specific, self-contained
@@ -236,13 +262,29 @@ def _is_assistant_ending(sentence: str) -> bool:
 # was not explicitly requested for this generation (see cta_allowed below).
 _CONTACT_CTA_START_RE = re.compile(
     r"^(напиш\w*|пиш\w*|обраща\w*|обрат\w*|свяж\w*|звон\w*|позвон\w*|"
-    r"закаж\w*|оформ\w*|подбер\w*|помог\w*|расскаж\w*|узна\w*)\b",
+    r"закаж\w*|оформ\w*|подбер\w*|помог\w*|расскаж\w*|узна\w*|подскаж\w*|"
+    r"сравн\w*|могу\b)",
     re.IGNORECASE,
 )
 
+# Quality fix (live example after bc49151): "Если вы как раз выбираете
+# Таиланд на ближайшие даты, могу сравнить варианты по регионам и
+# подсказать, что лучше подойдёт вам." is the same AI-offer class as
+# "Могу сравнить варианты..." (already caught by _CONTACT_CTA_START_RE's
+# "могу\b" above and by _is_assistant_ending elsewhere) - just wrapped in a
+# conditional "Если вы..., " clause first, so a plain sentence-start match
+# on "могу" never reaches it. Structural, not a phrase list: ANY sentence
+# that opens with "если" and contains one of the same offer verbs used
+# elsewhere in this module (_ASSISTANT_OFFER_VERB_RE) is this pattern,
+# regardless of how the condition itself is worded.
+_STARTS_WITH_IF_RE = re.compile(r"^если\b", re.IGNORECASE)
+
 
 def _is_contact_cta_ending(sentence: str) -> bool:
-    return bool(_CONTACT_CTA_START_RE.match(sentence.strip()))
+    stripped = sentence.strip()
+    if _CONTACT_CTA_START_RE.match(stripped):
+        return True
+    return bool(_STARTS_WITH_IF_RE.match(stripped) and _ASSISTANT_OFFER_VERB_RE.search(stripped))
 
 
 _TOKEN_RE = re.compile(r"\S+")
@@ -297,6 +339,9 @@ def sanitize_draft_text(
         if not stripped:
             continue
         if _contains_meta_marker(stripped):
+            kept[index] = False
+            continue
+        if _contains_source_meta_reference(stripped):
             kept[index] = False
             continue
         if _contains_generic_filler(stripped):
