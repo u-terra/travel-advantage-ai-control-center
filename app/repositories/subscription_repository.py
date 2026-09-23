@@ -29,9 +29,9 @@ from app.services.access_state import EXPIRED, compute_access_state
 _TABLE_COLUMNS_SQL = """(
     workspace_id INTEGER PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'beta'
-        CHECK (status IN ('trial', 'beta', 'active', 'past_due', 'expired', 'suspended')),
+        CHECK (status IN ('trial', 'beta', 'active', 'past_due', 'expired', 'suspended', 'pending')),
     plan TEXT NOT NULL DEFAULT 'beta'
-        CHECK (plan IN ('beta', 'standard')),
+        CHECK (plan IN ('beta', 'standard', 'start', 'full')),
     started_at TEXT NOT NULL,
     trial_until TEXT,
     paid_until TEXT,
@@ -60,25 +60,43 @@ class SubscriptionRepository:
 
     @staticmethod
     async def _migrate_schema(db: aiosqlite.Connection) -> None:
-        """Additive migration for a workspace_subscriptions table created by
-        an earlier version of this repository (4-value status CHECK, no
-        plan/trial_until columns). CREATE TABLE IF NOT EXISTS in _SCHEMA is
-        a no-op against an already-existing table, so it won't pick up the
-        wider status CHECK or the new columns on its own - same situation
-        as WebAuthRepository._migrate_onboarding_column. Rebuilds the table
-        only when the stored CHECK constraint doesn't already allow
-        'trial'/'suspended' (SQLite can't ALTER a CHECK constraint in
-        place); a no-op on every later startup once the table matches the
-        current schema.
+        """Additive migration for a workspace_subscriptions table whose
+        stored CHECK constraint doesn't yet allow every current status/plan
+        value (SQLite can't ALTER a CHECK constraint in place - the table
+        has to be rebuilt). CREATE TABLE IF NOT EXISTS in _SCHEMA is a
+        no-op against an already-existing table, so it won't pick up a
+        wider CHECK on its own - same situation as
+        WebAuthRepository._migrate_onboarding_column.
+
+        Column-count-agnostic on purpose: this fires both for a genuinely
+        ancient table (4-value status CHECK, no plan/trial_until columns
+        at all) AND for a current-shape production table that only needs
+        'pending'/'start'/'full' added to its CHECK - the INSERT below
+        copies whatever columns actually exist in the old table instead of
+        a hardcoded list, so an already-populated plan/trial_until never
+        gets silently dropped on rebuild. A no-op on every later startup
+        once the table already matches the current schema.
         """
         cursor = await db.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' "
             "AND name='workspace_subscriptions'"
         )
         row = await cursor.fetchone()
-        needs_rebuild = row is not None and "'trial'" not in (row[0] or "")
+        needs_rebuild = row is not None and "'pending'" not in (row[0] or "")
 
         if needs_rebuild:
+            legacy_columns_cursor = await db.execute(
+                "PRAGMA table_info(workspace_subscriptions)"
+            )
+            legacy_columns = [r[1] for r in await legacy_columns_cursor.fetchall()]
+            copyable = [
+                c for c in legacy_columns
+                if c in {
+                    "workspace_id", "status", "plan", "started_at", "trial_until",
+                    "paid_until", "external_payment_id", "payment_provider", "updated_at",
+                }
+            ]
+            column_list = ", ".join(copyable)
             await db.execute(
                 "ALTER TABLE workspace_subscriptions "
                 "RENAME TO workspace_subscriptions_legacy"
@@ -87,12 +105,8 @@ class SubscriptionRepository:
                 f"CREATE TABLE workspace_subscriptions {_TABLE_COLUMNS_SQL}"
             )
             await db.execute(
-                "INSERT INTO workspace_subscriptions "
-                "(workspace_id, status, started_at, paid_until, "
-                "external_payment_id, payment_provider, updated_at) "
-                "SELECT workspace_id, status, started_at, paid_until, "
-                "external_payment_id, payment_provider, updated_at "
-                "FROM workspace_subscriptions_legacy"
+                f"INSERT INTO workspace_subscriptions ({column_list}) "
+                f"SELECT {column_list} FROM workspace_subscriptions_legacy"
             )
             await db.execute("DROP TABLE workspace_subscriptions_legacy")
 
@@ -146,6 +160,31 @@ class SubscriptionRepository:
                 "INSERT INTO workspace_subscriptions "
                 "(workspace_id, status, plan, started_at, updated_at) "
                 "VALUES (?, 'beta', 'beta', ?, ?) "
+                "ON CONFLICT(workspace_id) DO NOTHING",
+                (workspace_id, now, now),
+            )
+            await db.commit()
+        row = await self.get_for_workspace(workspace_id)
+        if row is None:
+            raise RuntimeError("Не удалось создать subscription")
+        return row
+
+    async def create_pending(self, workspace_id: int) -> Subscription:
+        """Self-service signup only (see
+        app.repositories.partner_repository.provision_self_service_workspace) -
+        a freshly self-registered workspace starts with ZERO product
+        access (see app.services.access_state.compute_access_state's
+        'pending' branch), unlike ensure_beta()'s grandfathered full
+        access. Idempotent - a pre-existing row (e.g. this workspace later
+        gets CLI-provisioned too, or a retried signup) is never
+        overwritten, same upsert-guard shape as ensure_beta()."""
+        now = _now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute(
+                "INSERT INTO workspace_subscriptions "
+                "(workspace_id, status, plan, started_at, updated_at) "
+                "VALUES (?, 'pending', 'beta', ?, ?) "
                 "ON CONFLICT(workspace_id) DO NOTHING",
                 (workspace_id, now, now),
             )

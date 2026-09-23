@@ -139,13 +139,16 @@ def test_config_is_not_configured_when_any_secret_is_missing():
     assert _config(password2="").is_configured is False
 
 
-def test_config_is_not_configured_without_a_price():
-    assert _config(standard_price_rub=None).is_configured is False
-    assert _config(standard_price_rub=Decimal("0")).is_configured is False
-
-
-def test_config_is_not_configured_without_subscription_days():
-    assert _config(subscription_days=0).is_configured is False
+def test_config_is_configured_regardless_of_the_legacy_price_fields():
+    """standard_price_rub/subscription_days are legacy display-only fields
+    now (see app.services.plans.PLAN_CATALOG for the real, server-side
+    tariff prices/durations that actually feed create_payment) - billing
+    must not report "not configured" just because this one unused legacy
+    env var is unset, as long as the three real RoboKassa merchant
+    secrets are present."""
+    assert _config(standard_price_rub=None).is_configured is True
+    assert _config(standard_price_rub=Decimal("0")).is_configured is True
+    assert _config(subscription_days=0).is_configured is True
 
 
 # ── compute_extended_paid_until: the renewal rule ────────────────────────

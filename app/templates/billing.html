@@ -122,6 +122,41 @@ h1 { font-size: 19px; margin: 0 0 16px; }
 }
 .error-box.show { display: block; }
 
+.plans {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 18px 0 4px;
+}
+
+.plan-card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.plan-card .plan-info .plan-label { font-size: 14px; font-weight: 700; }
+.plan-card .plan-info .plan-duration { font-size: 12.5px; color: var(--text-muted); }
+.plan-card .plan-amount { font-size: 15px; font-weight: 700; white-space: nowrap; }
+
+.plan-buy-btn {
+    border: 0;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    font-family: inherit;
+    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
+    color: white;
+}
+.plan-buy-btn:disabled { opacity: .6; cursor: wait; }
+
 .actions { margin-top: 22px; display: flex; flex-direction: column; gap: 10px; }
 
 .btn {
@@ -177,13 +212,13 @@ h1 { font-size: 19px; margin: 0 0 16px; }
             <div class="status-row"><span class="label">Тариф</span><span class="value" id="planValue">…</span></div>
             <div class="status-row"><span class="label">Оплачено до</span><span class="value" id="paidUntilValue">—</span></div>
             <div class="status-row"><span class="label">Пробный период до</span><span class="value" id="trialUntilValue">—</span></div>
-            <div class="status-row"><span class="label">Стоимость</span><span class="value" id="priceValue">…</span></div>
         </div>
 
         <div class="error-box" id="errorBox"></div>
 
+        <div class="plans" id="plansList"></div>
+
         <div class="actions">
-            <button type="button" class="btn btn-primary" id="payBtn">Оплатить / продлить</button>
             <a class="btn btn-secondary" href="/help">Помощь</a>
             <a class="btn btn-secondary" href="/">Вернуться в кабинет</a>
         </div>
@@ -194,6 +229,7 @@ h1 { font-size: 19px; margin: 0 0 16px; }
 const STATUS_LABELS = {
     trial: "Пробный доступ", beta: "Бета-доступ", active: "Активна",
     past_due: "Платёж не прошёл", expired: "Истекла", suspended: "Приостановлена",
+    pending: "Тариф ещё не выбран",
 };
 
 function csrfToken() {
@@ -209,6 +245,66 @@ function showError(text) {
     const box = document.getElementById("errorBox");
     box.textContent = text;
     box.classList.add("show");
+}
+
+async function buyPlan(planCode, btn) {
+    btn.disabled = true;
+    try {
+        const response = await fetch("/api/billing/create-payment", {
+            method: "POST",
+            headers: { "X-CSRF-Token": csrfToken(), "Content-Type": "application/json" },
+            body: JSON.stringify({ plan: planCode }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error || !data.payment_url) {
+            showError(data.error || "Не удалось создать платёж. Попробуйте ещё раз.");
+            btn.disabled = false;
+            return;
+        }
+        window.location.href = data.payment_url;
+    } catch (_) {
+        showError("Ошибка соединения. Попробуйте ещё раз.");
+        btn.disabled = false;
+    }
+}
+
+function renderPlans(plans, billingConfigured) {
+    const list = document.getElementById("plansList");
+    list.innerHTML = "";
+    plans.forEach((plan) => {
+        const card = document.createElement("div");
+        card.className = "plan-card";
+
+        const info = document.createElement("div");
+        info.className = "plan-info";
+        const label = document.createElement("div");
+        label.className = "plan-label";
+        label.textContent = plan.label;
+        const duration = document.createElement("div");
+        duration.className = "plan-duration";
+        duration.textContent = `${plan.duration_days} дн.`;
+        info.appendChild(label);
+        info.appendChild(duration);
+
+        const amount = document.createElement("div");
+        amount.className = "plan-amount";
+        amount.textContent = `${plan.amount} ₽`;
+
+        const buyBtn = document.createElement("button");
+        buyBtn.type = "button";
+        buyBtn.className = "plan-buy-btn";
+        buyBtn.textContent = "Оплатить";
+        if (!billingConfigured) {
+            buyBtn.disabled = true;
+            buyBtn.textContent = "Недоступно";
+        }
+        buyBtn.addEventListener("click", () => buyPlan(plan.code, buyBtn));
+
+        card.appendChild(info);
+        card.appendChild(amount);
+        card.appendChild(buyBtn);
+        list.appendChild(card);
+    });
 }
 
 async function loadStatus() {
@@ -227,44 +323,16 @@ async function loadStatus() {
         document.getElementById("planValue").textContent = data.plan || "—";
         document.getElementById("paidUntilValue").textContent = fmtDate(data.paid_until);
         document.getElementById("trialUntilValue").textContent = fmtDate(data.trial_until);
-        document.getElementById("priceValue").textContent = data.standard_price_rub
-            ? `${data.standard_price_rub} ₽ / ${data.subscription_days} дн.`
-            : "не настроено";
 
         if (data.is_test) {
             document.getElementById("testBanner").classList.add("show");
         }
 
-        const payBtn = document.getElementById("payBtn");
-        if (!data.billing_configured) {
-            payBtn.disabled = true;
-            payBtn.textContent = "Оплата временно недоступна";
-        }
+        renderPlans(data.plans || [], data.billing_configured);
     } catch (_) {
         showError("Не удалось загрузить статус подписки.");
     }
 }
-
-document.getElementById("payBtn").addEventListener("click", async () => {
-    const btn = document.getElementById("payBtn");
-    btn.disabled = true;
-    try {
-        const response = await fetch("/api/billing/create-payment", {
-            method: "POST",
-            headers: { "X-CSRF-Token": csrfToken() },
-        });
-        const data = await response.json();
-        if (!response.ok || data.error || !data.payment_url) {
-            showError(data.error || "Не удалось создать платёж. Попробуйте ещё раз.");
-            btn.disabled = false;
-            return;
-        }
-        window.location.href = data.payment_url;
-    } catch (_) {
-        showError("Ошибка соединения. Попробуйте ещё раз.");
-        btn.disabled = false;
-    }
-});
 
 loadStatus();
 </script>

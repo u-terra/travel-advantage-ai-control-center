@@ -40,3 +40,11 @@ class PaymentOrder:
     status: PaymentOrderStatus
     created_at: str
     paid_at: str | None
+    # How many days of access this specific order grants once paid - read
+    # from app.services.plans.PLAN_CATALOG at creation time and frozen onto
+    # the order, so a later catalog change never changes what an
+    # already-created (possibly already-paid) order is worth. Defaults to
+    # 30 for rows created before this column existed (see
+    # PaymentOrderRepository's additive migration) - the same duration
+    # every pre-existing 'standard' order was always sold for.
+    duration_days: int = 30

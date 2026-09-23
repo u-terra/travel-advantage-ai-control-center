@@ -25,6 +25,13 @@ ACTIVE = "active"
 PAST_DUE = "past_due"
 EXPIRED = "expired"
 SUSPENDED = "suspended"
+# Self-service signup, never paid yet - deliberately NOT in
+# GRANTED_ACCESS_STATES (see compute_access_state's PENDING branch): same
+# "no product access" bucket as EXPIRED/PAST_DUE/SUSPENDED for every gate
+# in the app (Web's _subscription_inactive, Telegram's
+# AccessStateMiddleware), just a distinct label so the UI can say "choose
+# a plan" instead of "your subscription expired".
+PENDING = "pending"
 
 # Значения access_state, при которых пользователь получает рабочий
 # Оркестратор - одинаково для Web и Telegram.
@@ -70,6 +77,8 @@ def compute_access_state(
         return PAST_DUE
     if status == SubscriptionStatus.EXPIRED:
         return EXPIRED
+    if status == SubscriptionStatus.PENDING:
+        return PENDING
     if status == SubscriptionStatus.TRIAL:
         return EXPIRED if _is_expired(trial_until, now) else TRIAL_ACTIVE
     # BETA и ACTIVE - оба гранты рабочего доступа, отличаются только planом.

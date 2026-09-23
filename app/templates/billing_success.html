@@ -58,6 +58,8 @@ h1 { font-size: 19px; margin: 0 0 10px; }
 
 p { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin: 0 0 20px; }
 
+.actions { display: flex; flex-direction: column; gap: 10px; }
+
 .btn {
     display: block;
     width: 100%;
@@ -73,6 +75,12 @@ p { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin: 0 0 20p
     background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
     color: white;
 }
+
+.btn-secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+}
 </style>
 </head>
 <body>
@@ -86,7 +94,11 @@ p { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin: 0 0 20p
             Это может занять несколько секунд — RoboKassa подтверждает платёж
             на нашем сервере отдельно от этой страницы.
         </p>
-        <a class="btn" href="/" id="continueBtn" style="display:none;">Перейти в кабинет</a>
+        <div class="actions">
+            <a class="btn" href="/" id="continueBtn" style="display:none;">Перейти в ORCHESTRAVEL</a>
+            <button type="button" class="btn btn-secondary" id="connectTelegramBtn" style="display:none;">Подключить Telegram</button>
+        </div>
+        <p id="telegramLinkText" style="display:none; margin-top: 14px;"></p>
     </div>
 </div>
 
@@ -103,8 +115,38 @@ const icon = document.getElementById("icon");
 const stateBox = document.getElementById("stateBox");
 const stateText = document.getElementById("stateText");
 const continueBtn = document.getElementById("continueBtn");
+const connectTelegramBtn = document.getElementById("connectTelegramBtn");
+const telegramLinkText = document.getElementById("telegramLinkText");
 
 let attempts = 0;
+
+function csrfToken() {
+    return document.cookie.split("; ").find((row) => row.startsWith("ta_csrf="))?.split("=")[1] || "";
+}
+
+async function connectTelegram() {
+    connectTelegramBtn.disabled = true;
+    try {
+        const response = await fetch("/api/telegram/bind-token", {
+            method: "POST",
+            headers: { "X-CSRF-Token": csrfToken() },
+        });
+        const data = await response.json();
+        if (!response.ok || data.error || !data.deep_link) {
+            telegramLinkText.textContent = data.error || "Не удалось создать ссылку. Попробуйте ещё раз.";
+            telegramLinkText.style.display = "block";
+            connectTelegramBtn.disabled = false;
+            return;
+        }
+        window.location.href = data.deep_link;
+    } catch (_) {
+        telegramLinkText.textContent = "Ошибка соединения. Попробуйте ещё раз.";
+        telegramLinkText.style.display = "block";
+        connectTelegramBtn.disabled = false;
+    }
+}
+
+connectTelegramBtn.addEventListener("click", connectTelegram);
 
 async function checkOnce() {
     if (orderId === null) {
@@ -127,9 +169,10 @@ async function checkOnce() {
         if (data.order && data.order.status === "paid") {
             icon.textContent = "✅";
             stateBox.className = "state-box state-confirmed";
-            stateBox.textContent = "Оплата подтверждена";
+            stateBox.textContent = "Доступ активирован";
             stateText.textContent = "Подписка активна — и в веб-кабинете, и в Telegram.";
             continueBtn.style.display = "block";
+            connectTelegramBtn.style.display = "block";
             return;
         }
     } catch (_) {

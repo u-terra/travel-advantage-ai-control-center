@@ -108,6 +108,12 @@ class Settings:
     # Normalized lowercase emails. Empty (unset) = nobody is a platform
     # admin - fail-closed by construction, never hardcoded in code.
     orchestravel_admin_emails: frozenset[str]
+    # Telegram bot @username the "Подключить Telegram" deep link
+    # (t.me/<username>?start=<token>) points at - see app.web_api's POST
+    # /api/telegram/bind-token. Defaults to the real production bot
+    # (already public on /demo and in docs), overridable for local/staging
+    # bots without touching production ENV.
+    orchestravel_bot_username: str
     # Web search MVP (see app.services.web_search) - OFF by default. False
     # (or an unrecognized web_search_provider, or missing provider
     # credentials) makes web_search_service a provider=None no-op:
@@ -255,6 +261,10 @@ def load_settings() -> Settings:
         for email in os.environ.get("ORCHESTRAVEL_ADMIN_EMAILS", "").split(",")
         if email.strip()
     )
+    orchestravel_bot_username = (
+        os.environ.get("TELEGRAM_BOT_USERNAME", "").strip()
+        or "ta_control_center_vassian_bot"
+    )
 
     # Web search MVP - see app.services.web_search. Default "false"/"" means
     # production behaves exactly as before this feature existed until both a
@@ -357,6 +367,7 @@ def load_settings() -> Settings:
         orchestravel_subscription_days=orchestravel_subscription_days,
         orchestravel_public_base_url=orchestravel_public_base_url,
         orchestravel_admin_emails=orchestravel_admin_emails,
+        orchestravel_bot_username=orchestravel_bot_username,
         web_search_enabled=web_search_enabled,
         web_search_provider=web_search_provider,
         yandex_search_api_key=yandex_search_api_key,

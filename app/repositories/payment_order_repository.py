@@ -21,13 +21,14 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspace_payment_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace_id INTEGER NOT NULL,
-    plan TEXT NOT NULL CHECK (plan IN ('standard')),
+    plan TEXT NOT NULL CHECK (plan IN ('standard', 'start', 'full')),
     amount TEXT NOT NULL,
     currency TEXT NOT NULL DEFAULT 'RUB',
     provider TEXT NOT NULL DEFAULT 'robokassa',
     status TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'paid')),
     created_at TEXT NOT NULL,
     paid_at TEXT,
+    duration_days INTEGER NOT NULL DEFAULT 30,
     FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id)
 );
 CREATE INDEX IF NOT EXISTS idx_workspace_payment_orders_workspace
@@ -45,22 +46,90 @@ class PaymentOrderRepository:
             await db.execute("PRAGMA foreign_keys = ON")
             await db.executescript(_SCHEMA)
             await db.commit()
+            await self._migrate_schema(db)
+            await db.commit()
+
+    @staticmethod
+    async def _migrate_schema(db: aiosqlite.Connection) -> None:
+        """Additive migration for a workspace_payment_orders table created
+        before 'start'/'full' plan values or duration_days existed.
+        CREATE TABLE IF NOT EXISTS in _SCHEMA is a no-op against an
+        already-existing table (same situation as every other repository
+        here), so a stored CHECK that only allows plan='standard' needs a
+        rebuild (SQLite can't ALTER a CHECK in place); duration_days alone
+        is a plain additive ADD COLUMN. A no-op on every later startup once
+        the table matches the current schema."""
+        cursor = await db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='workspace_payment_orders'"
+        )
+        row = await cursor.fetchone()
+        needs_rebuild = row is not None and "'start'" not in (row[0] or "")
+
+        if needs_rebuild:
+            legacy_columns_cursor = await db.execute(
+                "PRAGMA table_info(workspace_payment_orders)"
+            )
+            legacy_columns = {r[1] for r in await legacy_columns_cursor.fetchall()}
+            copyable = [
+                c for c in (
+                    "id", "workspace_id", "plan", "amount", "currency", "provider",
+                    "status", "created_at", "paid_at", "duration_days",
+                ) if c in legacy_columns
+            ]
+            column_list = ", ".join(copyable)
+            await db.execute(
+                "ALTER TABLE workspace_payment_orders "
+                "RENAME TO workspace_payment_orders_legacy"
+            )
+            await db.execute(
+                "CREATE TABLE workspace_payment_orders (\n"
+                "    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+                "    workspace_id INTEGER NOT NULL,\n"
+                "    plan TEXT NOT NULL CHECK (plan IN ('standard', 'start', 'full')),\n"
+                "    amount TEXT NOT NULL,\n"
+                "    currency TEXT NOT NULL DEFAULT 'RUB',\n"
+                "    provider TEXT NOT NULL DEFAULT 'robokassa',\n"
+                "    status TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'paid')),\n"
+                "    created_at TEXT NOT NULL,\n"
+                "    paid_at TEXT,\n"
+                "    duration_days INTEGER NOT NULL DEFAULT 30,\n"
+                "    FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id)\n"
+                ")"
+            )
+            await db.execute(
+                f"INSERT INTO workspace_payment_orders ({column_list}) "
+                f"SELECT {column_list} FROM workspace_payment_orders_legacy"
+            )
+            await db.execute("DROP TABLE workspace_payment_orders_legacy")
+            await db.commit()
+
+        cursor = await db.execute("PRAGMA table_info(workspace_payment_orders)")
+        columns = {r[1] for r in await cursor.fetchall()}
+        if "duration_days" not in columns:
+            await db.execute(
+                "ALTER TABLE workspace_payment_orders "
+                "ADD COLUMN duration_days INTEGER NOT NULL DEFAULT 30"
+            )
 
     async def create_order(
         self, *, workspace_id: int, plan: str, amount: str, currency: str = "RUB",
-        provider: str = "robokassa",
+        provider: str = "robokassa", duration_days: int = 30,
     ) -> PaymentOrder:
         """id (the AUTOINCREMENT PK) IS the RoboKassa InvId - callers send
         the returned order.id straight to RoboKassa as InvId, never a
-        separately-generated value."""
+        separately-generated value. duration_days is frozen onto the order
+        at creation time (see app.services.plans.PLAN_CATALOG) so a later
+        catalog change never retroactively changes what an
+        already-created order is worth."""
         now = _now()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA foreign_keys = ON")
             cursor = await db.execute(
                 "INSERT INTO workspace_payment_orders "
-                "(workspace_id, plan, amount, currency, provider, status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'created', ?)",
-                (workspace_id, plan, amount, currency, provider, now),
+                "(workspace_id, plan, amount, currency, provider, status, created_at, duration_days) "
+                "VALUES (?, ?, ?, ?, ?, 'created', ?, ?)",
+                (workspace_id, plan, amount, currency, provider, now, duration_days),
             )
             await db.commit()
             order_id = cursor.lastrowid
@@ -146,6 +215,7 @@ def _from_row(row: aiosqlite.Row) -> PaymentOrder:
         status=PaymentOrderStatus(row["status"]),
         created_at=row["created_at"],
         paid_at=row["paid_at"],
+        duration_days=row["duration_days"],
     )
 
 

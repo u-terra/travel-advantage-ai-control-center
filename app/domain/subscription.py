@@ -38,11 +38,25 @@ class SubscriptionStatus(str, Enum):
     PAST_DUE = "past_due"
     EXPIRED = "expired"
     SUSPENDED = "suspended"
+    # Self-service signup (see app.repositories.partner_repository
+    # .provision_self_service_workspace): a workspace that registered
+    # itself but has never had a successful payment. Grants ZERO product
+    # access (see app.services.access_state.compute_access_state) - the
+    # workspace can log in and reach /billing, nothing else. Never set for
+    # CLI/invite-provisioned partners (those still grandfather in as
+    # 'beta' via SubscriptionRepository.ensure_beta/backfill).
+    PENDING = "pending"
 
 
 class SubscriptionPlan(str, Enum):
     BETA = "beta"
     STANDARD = "standard"
+    # Real starter tariffs (see app.services.plans.PLAN_CATALOG). STANDARD
+    # above is kept as the pre-existing single paid plan value - some
+    # already-paid production workspaces have plan='standard' on disk from
+    # before these two existed, and mark_paid()'s default still targets it.
+    START = "start"
+    FULL = "full"
 
 
 @dataclass(frozen=True)

@@ -36,7 +36,14 @@ class RoboKassaConfig:
     """Server-side-only billing configuration - see app.config.Settings
     for where these come from (ROBOKASSA_* / ORCHESTRAVEL_* env vars).
     Password1/Password2 live only on this object and the two functions
-    below that consume them; nothing else in the app ever needs them."""
+    below that consume them; nothing else in the app ever needs them.
+
+    standard_price_rub/subscription_days are LEGACY (the original
+    single-tier price, before app.services.plans.PLAN_CATALOG existed) -
+    still surfaced by GET /api/billing/status for any old caller, but no
+    longer required for billing to work: real payment creation/activation
+    always prices from PLAN_CATALOG now (see BillingService.create_payment),
+    never from these two fields."""
     merchant_login: str
     password1: str
     password2: str
@@ -47,11 +54,12 @@ class RoboKassaConfig:
 
     @property
     def is_configured(self) -> bool:
-        return bool(
-            self.merchant_login and self.password1 and self.password2
-            and self.standard_price_rub is not None and self.standard_price_rub > 0
-            and self.subscription_days > 0
-        )
+        """Only the three RoboKassa merchant secrets actually gate billing
+        now - the legacy standard_price_rub/subscription_days fields are
+        display-only (see the class docstring) and must never make an
+        otherwise fully-configured merchant account report as
+        "not configured" just because that one legacy env var is unset."""
+        return bool(self.merchant_login and self.password1 and self.password2)
 
 
 def format_amount(amount: Decimal) -> str:

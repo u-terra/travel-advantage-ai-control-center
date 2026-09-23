@@ -157,8 +157,9 @@ def test_create_payment_ignores_a_client_supplied_workspace_id(api) -> None:
 
 
 def test_create_payment_ignores_a_client_supplied_amount(api) -> None:
-    """amount always comes from server-side RoboKassaConfig - there is no
-    request field that could change it."""
+    """amount always comes from the server-side plan catalog
+    (app.services.plans.PLAN_CATALOG) - a client can pick WHICH plan
+    (a small server-approved enum), never an arbitrary amount field."""
     client, web_api, _ = api
 
     response = client.post(
@@ -166,7 +167,28 @@ def test_create_payment_ignores_a_client_supplied_amount(api) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["amount"] == "999.00"
+    assert response.json()["amount"] == "990.00"
+
+
+def test_create_payment_rejects_an_unknown_plan(api) -> None:
+    client, _, _ = api
+
+    response = client.post("/api/billing/create-payment", json={"plan": "made-up-plan"})
+
+    assert response.status_code == 200
+    assert "error" in response.json()
+
+
+def test_create_payment_start_plan_prices_from_the_catalog(api) -> None:
+    client, _, _ = api
+
+    response = client.post("/api/billing/create-payment", json={"plan": "start"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["amount"] == "490.00"
+    assert body["plan"] == "start"
+    assert body["duration_days"] == 14
 
 
 def test_create_payment_response_never_contains_secrets(api) -> None:
@@ -317,6 +339,28 @@ def test_result_callback_does_not_require_a_web_session_or_csrf(api) -> None:
 
     assert response.status_code == 200
     assert response.text == f"OK{order.id}"
+
+
+def test_webhook_activates_the_specific_plan_that_was_paid_for(api) -> None:
+    """create-payment(plan='full') -> ResultURL must activate exactly
+    'full' with its own 1490.00/30-day terms, not the legacy single
+    'standard' tariff and not whatever RoboKassaConfig.subscription_days
+    happens to be."""
+    client, web_api, workspace_id = api
+    create = client.post("/api/billing/create-payment", json={"plan": "full"})
+    order = _run(web_api.payment_order_repository.get_order(create.json()["order_id"]))
+    assert order.plan == "full"
+    assert order.amount == "1490.00"
+    assert order.duration_days == 30
+
+    response = client.post(
+        "/api/billing/robokassa/result", data=_signed_result_form(web_api, order),
+    )
+    assert response.status_code == 200
+
+    status = client.get("/api/billing/status").json()
+    assert status["plan"] == "full"
+    assert status["access_granted"] is True
 
 
 def test_repeated_result_callback_does_not_extend_twice(api) -> None:
