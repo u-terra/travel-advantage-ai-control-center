@@ -72,6 +72,7 @@ from app.repositories.workspace_memory_repository import WorkspaceMemoryReposito
 from app.repositories.web_signal_repository import WebSignalRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.attachment_storage import AttachmentStorage
+from app.services.finops import FinOpsConfig, FinOpsService
 from app.services.attachment_validation import (
     MAX_FILES_PER_UPLOAD,
     MAX_FILE_SIZE_BYTES,
@@ -562,6 +563,25 @@ app.include_router(build_admin_router(
     require_platform_admin=require_platform_admin,
     require_platform_admin_csrf=require_platform_admin_csrf,
 ))
+
+
+_finops_service = FinOpsService(FinOpsConfig(
+    openai_api_key=settings.orchestration_openai_api_key,
+    yandex_search_api_key=settings.yandex_search_api_key,
+))
+
+
+@app.get("/api/finops/status")
+async def finops_status(principal: WebPrincipal = Depends(require_platform_admin)):
+    """Read-only ORCHESTRAVEL FinOps monitor - see app/services/finops.py.
+    Never triggers a top-up or tariff change; a provider with no
+    read-only credentials reports status="unavailable" rather than
+    invented numbers."""
+    reports = _finops_service.check_all()
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "providers": [r.to_dict() for r in reports],
+    }
 
 
 # Fixed-cost dummy hash for login timing - see login() below: without
