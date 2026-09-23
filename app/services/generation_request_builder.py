@@ -135,13 +135,55 @@ def _mentions_source_name(paragraph: str, source_name: str) -> bool:
     return transliterated != name and transliterated in lowered
 
 
+# Bug fix #3 (this fix, live example - Vietnam signal): a summary can be
+# long, non-title-repeat and non-promotional and STILL carry zero usable
+# fact - pure generic travel-marketing description ("The Times опубликовал
+# подборку самых красивых и аутентичных мест Вьетнама... отдельно отмечены
+# живописная природа и старинные исторические центры") names no specific
+# place, date, rule, price or change - just enthusiasm about an unspecified
+# "list". Generating from this produces a post that can only discuss the
+# article itself ("список в пересказе не приведён", "в новости отмечают
+# ...") instead of being one - the same class of leak
+# draft_sanitizer.py's meta-marker scan already cleans up AFTER generation,
+# caught here BEFORE it (content sufficiency, not text cosmetics).
+#
+# Deterministic concreteness signal (no LLM, no phrase list): a genuinely
+# informative sentence about a real place, rule, event or number almost
+# always contains at least one of:
+#  - a digit (a price, percentage, date, warning level, quantity, time);
+#  - a capitalized word OTHER than the first word of its own sentence (a
+#    named place/organization/event mentioned mid-sentence - "Пхукета",
+#    "Краби", "The Times" - as opposed to purely lowercase common-noun
+#    filler like "отмечены живописная природа и исторические центры",
+#    where nothing past the sentence-initial capital is a proper noun at
+#    all). A summary with neither, however long, is generic description,
+#    not fact.
+def _has_mid_sentence_capitalized_word(sentence: str) -> bool:
+    words = sentence.strip().split()
+    for word in words[1:]:
+        core = word.strip("\"'«»().,!?:;…")
+        if core and core[0].isalpha() and core[0].isupper():
+            return True
+    return False
+
+
+def _has_concrete_detail(parts: list[str]) -> bool:
+    joined = " ".join(parts)
+    if any(ch.isdigit() for ch in joined):
+        return True
+    return any(_has_mid_sentence_capitalized_word(sentence) for sentence in parts)
+
+
 def source_content_is_sufficient(title: str, summary: str, source_name: str = "") -> bool:
-    """True if ``summary`` still has enough NEW, non-promotional material
-    to generate a concrete post from after removing title-repeat sentences
-    and any paragraph promoting ``source_name`` itself, else False - callers
-    must fail closed (no analyze_source/generate_draft call) when this
-    returns False. See MIN_USEFUL_SUMMARY_LENGTH's docstring for the live
-    example this guards against."""
+    """True if ``summary`` still has enough NEW, non-promotional, CONCRETE
+    material to generate a real post from after removing title-repeat
+    sentences and any paragraph promoting ``source_name`` itself, else
+    False - callers must fail closed (no analyze_source/generate_draft
+    call) when this returns False. See MIN_USEFUL_SUMMARY_LENGTH's and
+    _has_concrete_detail's docstrings for the two live examples this
+    guards against (a promotional near-duplicate of the title, and a
+    long-but-generic "list of beautiful places" announcement naming
+    nothing specific)."""
     summary = summary or ""
     if not summary.strip():
         return False
@@ -155,7 +197,9 @@ def source_content_is_sufficient(title: str, summary: str, source_name: str = ""
         for sentence in _split_sentences(paragraph):
             if not _repeats_title(sentence, title_words):
                 useful_parts.append(sentence)
-    return len(" ".join(useful_parts)) >= MIN_USEFUL_SUMMARY_LENGTH
+    if len(" ".join(useful_parts)) < MIN_USEFUL_SUMMARY_LENGTH:
+        return False
+    return _has_concrete_detail(useful_parts)
 
 
 # Quality fix (signal -> post): the Artifact/Material's own title was being

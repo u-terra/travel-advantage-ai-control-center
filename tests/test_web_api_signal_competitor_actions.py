@@ -439,7 +439,7 @@ def test_signal_action_fails_closed_when_source_content_is_too_thin(api, monkeyp
         response = client.post("/api/signals/1/actions", json={"action": "post"})
 
     assert response.status_code == 200
-    assert response.json()["error"] == "Недостаточно данных источника для качественного поста."
+    assert response.json()["error"] == "Недостаточно данных в сигнале для качественного поста."
     assert _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10)) == []
 
     events = _run(web_api.operational_event_repository.list_recent_events(limit=200))
@@ -1114,3 +1114,76 @@ def test_signal_action_strips_source_meta_reference_live_example(api, monkeypatc
     assert "по сообщению источника" not in content.lower()
     assert "Туристический поток в Таиланд продолжает расти." in content
     assert "Спрос на отели там уже увеличился." in content
+
+
+# ── Content sufficiency quality gate (live Vietnam example): fail closed
+# BEFORE generation when the signal has no concrete facts, even though it
+# clears the plain-length threshold - and a genuinely concrete signal
+# (Phuket-style travel warning) must still go through ─────────────────────
+
+def test_signal_action_fails_closed_for_the_live_vietnam_signal(api, monkeypatch) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _create_radar_db(radar_db_path, [
+        _radar_row(
+            1, source_id="src-1", category="market_signal",
+            item_title="Вьетнам снова в туристической повестке",
+            item_summary=(
+                "Опубликована подборка самых красивых и аутентичных мест "
+                "страны. Отдельно отмечены живописная природа и старинные "
+                "исторические центры, а список конкретных объектов в "
+                "публикации не приведён."
+            ),
+        ),
+    ])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="src-1", source_name="Турправда",
+    )
+    _sync(web_api)
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("analyze_source/generate_draft must not be called for a signal with no concrete facts")
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", fail_if_called)
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", fail_if_called)
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["material"] is None
+    assert body["error"] == "Недостаточно данных в сигнале для качественного поста."
+    assert _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10)) == []
+
+
+def test_signal_action_still_proceeds_for_the_live_phuket_signal(api, monkeypatch) -> None:
+    client, web_api, db_path, radar_db_path, workspace_id = api
+    _run(web_api.partner_repository.bootstrap_owner_membership(OWNER_ID))
+    _create_radar_db(radar_db_path, [
+        _radar_row(
+            1, source_id="src-1", category="market_signal",
+            item_title="МИД повысил уровень опасности для туристов на Пхукете",
+            item_summary=(
+                "Уровень опасности повышен до 3 из 5 для Пхукета, Краби и "
+                "Самуи. Туристам рекомендуется избегать протестных районов "
+                "и соблюдать комендантский час после 22:00."
+            ),
+        ),
+    ])
+    _add_active_source_subscription(
+        db_path, workspace_id=workspace_id, source_id="src-1", source_name="Турправда",
+    )
+    _sync(web_api)
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "analyze_source", lambda **kw: _fake_analysis())
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", lambda **kw: _fake_draft())
+
+    with patch("app.services.lead_radar._load_recommender", return_value=_fake_recommender()):
+        response = client.post("/api/signals/1/actions", json={"action": "post"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "error" not in body
+    assert body["material"]["artifact_type"] == "post"
+    assert _run(web_api.artifact_repository.list_artifacts(workspace_id, limit=10)) != []

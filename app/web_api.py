@@ -1944,7 +1944,7 @@ async def _create_material_from_web_signal(
                 metadata={"signal_id": f"web:{signal_id}", "action": request.action},
             )
             return {
-                "error": "Недостаточно данных источника для качественного поста.",
+                "error": "Недостаточно данных в сигнале для качественного поста.",
                 "material": None,
             }
         analysis = await asyncio.to_thread(
@@ -2132,7 +2132,7 @@ async def create_material_from_signal(
                 metadata={"signal_id": interpretation_id, "action": request.action},
             )
             return {
-                "error": "Недостаточно данных источника для качественного поста.",
+                "error": "Недостаточно данных в сигнале для качественного поста.",
                 "material": None,
             }
         analysis = await asyncio.to_thread(

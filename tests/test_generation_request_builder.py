@@ -443,3 +443,69 @@ def test_safe_material_title_falls_back_for_truncated_title():
 def test_safe_material_title_falls_back_for_empty_title():
     assert safe_material_title("", fallback="Материал по сигналу") == "Материал по сигналу"
     assert safe_material_title("   ", fallback="Материал по сигналу") == "Материал по сигналу"
+
+
+# --- Quality gate fix (live Vietnam example): a summary can be long,
+# non-title-repeat and non-promotional and STILL carry zero usable fact -
+# pure generic travel-marketing description naming nothing specific.
+# source_content_is_sufficient must reject it (content sufficiency, not
+# post-generation text cleanup) while still accepting a genuinely concrete
+# signal (Phuket-style travel warning with regions/levels/numbers). ---
+
+def test_source_content_is_sufficient_rejects_the_live_vietnam_signal():
+    """Live example: 'Вьетнам снова попал в туристическую повестку: The
+    Times опубликовало подборку самых красивых и аутентичных мест страны.'
+    -> a post that can only discuss the article ('список в пересказе не
+    приведён') instead of being one. No digit, no named place/rule/event -
+    just enthusiasm about an unspecified list."""
+    title = "Вьетнам снова в туристической повестке"
+    summary = (
+        "Опубликована подборка самых красивых и аутентичных мест страны. "
+        "Отдельно отмечены живописная природа и старинные исторические "
+        "центры, а список конкретных объектов в публикации не приведён."
+    )
+    assert len(summary) >= MIN_USEFUL_SUMMARY_LENGTH
+    assert source_content_is_sufficient(title, summary, "Турправда") is False
+
+
+def test_source_content_is_sufficient_accepts_the_live_phuket_signal():
+    """Same shape of check must still let a genuinely concrete signal
+    through: specific regions, a numeric warning level, and a concrete
+    rule/time - exactly what the Vietnam example lacked."""
+    title = "МИД повысил уровень опасности для туристов на Пхукете"
+    summary = (
+        "Уровень опасности повышен до 3 из 5 для Пхукета, Краби и Самуи. "
+        "Туристам рекомендуется избегать протестных районов и соблюдать "
+        "комендантский час после 22:00."
+    )
+    assert source_content_is_sufficient(title, summary, "Турправда") is True
+
+
+def test_source_content_is_sufficient_rejects_generic_filler_even_without_a_brand_mention():
+    """The gate must catch generic-description-only content on its own
+    concreteness signal (digit / mid-sentence proper noun), not rely on
+    the source-name/brand-paragraph removal to accidentally clear it."""
+    title = "Новое направление привлекает туристов"
+    summary = (
+        "Направление вошло в подборку самых популярных мест сезона. "
+        "Путешественники отмечают удобство и разнообразие впечатлений."
+    )
+    assert source_content_is_sufficient(title, summary) is False
+
+
+def test_source_content_is_sufficient_a_digit_alone_is_enough_concreteness():
+    title = "Цены на отдых меняются"
+    summary = (
+        "Стоимость размещения выросла на 12% за последний месяц по "
+        "сравнению с прошлым сезоном для похожих направлений."
+    )
+    assert source_content_is_sufficient(title, summary) is True
+
+
+def test_source_content_is_sufficient_a_named_place_alone_is_enough_concreteness():
+    title = "Новые прямые рейсы"
+    summary = (
+        "Авиакомпания запустила прямые рейсы из Москвы в Дананг впервые "
+        "за несколько лет, что должно упростить поездки туда."
+    )
+    assert source_content_is_sufficient(title, summary) is True
