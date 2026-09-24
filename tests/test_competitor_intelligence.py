@@ -815,6 +815,88 @@ def test_signal_fallback_excludes_russian_bare_engagement_poll():
         run(service.analyze(competitor, ta_affiliated=True))
 
 
+# ── Narrowing fix (live production, competitor_id=6): the relevance gate
+# above still let through ordinary travel content that merely NAMED a
+# product category ("бронируйте отель... выбирайте билеты", "билеты и отели
+# вы найдёте...") or hit an unrelated word ("поездок") - a bare product/
+# service noun is never enough on its own. The gate now requires a genuine
+# business EVENT/mechanic (launch, price/discount/promo change, loyalty
+# mechanic, service/UX update, partnership, policy change), not just a
+# product noun in passing. ──────────────────────────────────────────────────
+def test_signal_fallback_excludes_generic_travel_post_naming_hotel_and_tickets():
+    record = _signal_record(
+        item_title="Сумеречные места",
+        item_summary="Бронируйте отель заранее и выбирайте билеты на самолет для поездки к этим локациям.",
+        item_url="https://www.booking.com/blog/twilight-places",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_excludes_generic_travel_post_naming_tickets_and_hotels():
+    record = _signal_record(
+        item_title="Чемодан: что взять с собой",
+        item_summary="Билеты и отели вы найдёте на нашем сайте перед поездкой.",
+        item_url="https://www.booking.com/blog/suitcase",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_excludes_post_with_incidental_poezd_substring():
+    """Regression for the "поезд" (train) substring wrongly matching inside
+    "поездок"/"поездки" (trip): since bare product nouns are no longer part
+    of the relevance gate at all, this text (mentioning trips, not a genuine
+    business event) must not pass just because it happens to contain that
+    substring."""
+    record = _signal_record(
+        item_title="Два месяца отпуска",
+        item_summary="Идеи для долгих поездок и планирования отпуска в этом году.",
+        item_url="https://www.booking.com/blog/two-months-vacation",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_still_includes_russian_discount_launch_and_loyalty_events():
+    """Control: genuine business-event signals (discount, launch, loyalty
+    mechanic) still pass after narrowing the gate to require an event, not
+    just a product noun."""
+    discount = _signal_record(
+        interpretation_id=1,
+        item_title="Скидка 20% на отели",
+        item_summary="Успейте забронировать по акции до конца месяца.",
+        item_url="https://www.booking.com/blog/discount-hotels",
+    )
+    launch = _signal_record(
+        interpretation_id=2,
+        item_title="Запустили новый поиск и бронирование отелей",
+        item_summary="Новый интерфейс упрощает выбор дат и номеров.",
+        item_url="https://www.booking.com/blog/launched-search",
+    )
+    loyalty = _signal_record(
+        interpretation_id=3,
+        item_title="Участникам программы начисляют бонусы",
+        item_summary="Новые баллы начисляются за каждое бронирование.",
+        item_url="https://www.booking.com/blog/loyalty-bonus",
+    )
+    for record in (discount, launch, loyalty):
+        service, _ = _service_with_signals([record])
+        competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+        result = run(service.analyze(competitor, ta_affiliated=True))
+        assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+        assert result.sources[0].final_url == record.item_url
+
+
 # ── Bug fix (live production, competitor_id=6, a competitor whose direct
 # site fetch is correctly blocked by the site's own anti-bot check): the
 # signal fallback's domain check can never match the product's own Telegram

@@ -135,9 +135,31 @@ _POSITIONING_MARKETING_KEYWORDS = (
     "запуск", "новый продукт", "новый сервис", "новая функция",
     "обновлен", "обновлён", "представил", "запустил",
 )
+# Additional business-EVENT/mechanic groups (price changes, service/UX
+# changes, partnerships, policy/terms changes) - see
+# _signal_is_competitor_relevant's docstring for why these, not
+# _PRODUCT_KEYWORDS/_SERVICE_UX_KEYWORDS, are what the relevance gate checks.
+_PRICE_KEYWORDS = ("price", "pricing", "цена", "цены", "тариф")
+_SERVICE_CHANGE_KEYWORDS = ("update", "updated", "обновил", "обновили", "обновлени")
+_PARTNERSHIP_POLICY_KEYWORDS = (
+    "partnership", "partner", "policy", "terms",
+    "партнёрств", "партнерств", "услови",
+)
 _BUSINESS_RELEVANCE_KEYWORDS: tuple[tuple[str, ...], ...] = (
     _PRODUCT_KEYWORDS, _PROMOTION_KEYWORDS, _LOYALTY_KEYWORDS,
     _SERVICE_UX_KEYWORDS, _POSITIONING_MARKETING_KEYWORDS,
+)
+# The Radar-fallback relevance gate (_signal_is_competitor_relevant) checks
+# ONLY this subset - business EVENTS/mechanics (a launch, a price/discount
+# change, a loyalty mechanic, a partnership, a policy change...), never bare
+# product nouns (_PRODUCT_KEYWORDS/_SERVICE_UX_KEYWORDS: "hotel", "flight",
+# "booking", "app", "service"...). A generic travel post routinely mentions
+# "hotel"/"отель" or "booking"/"бронирование" in passing without saying
+# anything about the competitor's business - see the gate's own docstring
+# for the live production false positives this fixes.
+_BUSINESS_EVENT_KEYWORDS: tuple[tuple[str, ...], ...] = (
+    _PROMOTION_KEYWORDS, _LOYALTY_KEYWORDS, _POSITIONING_MARKETING_KEYWORDS,
+    _PRICE_KEYWORDS, _SERVICE_CHANGE_KEYWORDS, _PARTNERSHIP_POLICY_KEYWORDS,
 )
 
 _OPPORTUNITY_CATEGORIES = (
@@ -520,27 +542,41 @@ def _signal_is_substantive(record: WorkspaceSignalRecord) -> bool:
 
 
 def _signal_is_competitor_relevant(record: WorkspaceSignalRecord) -> bool:
-    """Quality fix (live production example, competitor_id=6): a signal can
-    genuinely match this competitor (brand mention/alias/domain) and be
-    fresh and Radar-substantive (not noise, score>0) while still saying
-    nothing about the competitor AS A BUSINESS - a travel-entertainment post
-    ("этот пеликан объездил весь мир") or a bare engagement poll can score
-    positively on ai_score/ai_category yet carry zero business signal, and
-    would otherwise end up as the sole "evidence" Positioning/Strengths are
-    built from.
+    """Quality fix (live production examples, competitor_id=6): a signal can
+    genuinely match this competitor (brand mention/alias/domain), be fresh
+    and Radar-substantive (not noise, score>0), and STILL say nothing about
+    the competitor AS A BUSINESS - a travel-entertainment post or a bare
+    engagement poll can score positively on ai_score/ai_category yet carry
+    zero business signal, and would otherwise end up as the sole "evidence"
+    Positioning/Strengths are built from.
 
-    Reuses the SAME generic keyword groups already used elsewhere in this
-    module for post-analysis fact classification
-    (_BUSINESS_RELEVANCE_KEYWORDS - products/promotions/loyalty/service_and_
-    ux/positioning-marketing), applied to the raw Radar title/summary
-    instead of LLM-extracted facts, so this gate runs before any LLM call
-    and never duplicates or extends that vocabulary with a brand-specific
-    word. Not a replacement for _signal_matches_competitor's identity check -
-    this only asks whether the matched signal has ANY business substance."""
+    Bare product/service NOUNS (_PRODUCT_KEYWORDS/_SERVICE_UX_KEYWORDS -
+    "hotel"/"отель", "flight"/"перелёт", "booking"/"бронирование",
+    "app"/"приложение"...) are deliberately NOT checked here, even though
+    the same words ARE checked in _matching()'s post-analysis fact
+    classification below - a live false-positive round showed ordinary
+    travel content incidentally mentioning "бронируйте отель... выбирайте
+    билеты" or "билеты и отели вы найдёте..." passing as if it were
+    competitor intelligence purely because it named a product category. A
+    generic noun is CONTEXT, never sufficient on its own.
+
+    Instead this checks for a business EVENT/mechanic
+    (_BUSINESS_EVENT_KEYWORDS - a launch, a new feature, a price/discount/
+    promo change, a loyalty mechanic, a service/UX update, a partnership, a
+    policy/terms change): something actually HAPPENING to the competitor's
+    business, not just a product category being named in passing. Reuses
+    keyword groups already used elsewhere in this module for post-analysis
+    fact classification (promotions/loyalty_mechanics/positioning-marketing)
+    plus a small set of new event-only groups (price/service-change/
+    partnership-policy) - applied to the raw Radar title/summary instead of
+    LLM-extracted facts, so this gate runs before any LLM call. Never
+    extended with a brand-specific word. Not a replacement for
+    _signal_matches_competitor's identity check - this only asks whether the
+    matched signal describes a genuine business event."""
     haystack = f"{record.item_title} {record.item_summary}".lower()
     return any(
         keyword in haystack
-        for group in _BUSINESS_RELEVANCE_KEYWORDS
+        for group in _BUSINESS_EVENT_KEYWORDS
         for keyword in group
     )
 
