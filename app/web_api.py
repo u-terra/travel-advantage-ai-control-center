@@ -131,6 +131,7 @@ from app.services.signal_service import (
 from app.services.robokassa import RoboKassaConfig
 from app.routing.modules import Module
 from app.routing.router import route_text
+from app.routing.safety import SafetyLevel
 from app.services.source_registry import SEED_REGISTRY_PATH
 from app.services.telemetry import record_event
 from app.services.usage_recorder import record_llm_call
@@ -1081,6 +1082,11 @@ class ChatRequest(BaseModel):
     # POST /api/attachments) to bind to this turn's user message. A
     # message can be attachments-only (message == "") but not both empty.
     attachment_ids: list[str] = Field(default_factory=list)
+
+
+class ClientReplyRequest(BaseModel):
+    client_message: str
+    client_name: str = ""
 
 
 @app.on_event("startup")
@@ -4011,6 +4017,118 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         return {
             "error": "Не удалось получить ответ AI. Попробуйте ещё раз."
         }
+
+
+@app.post("/api/client-reply")
+async def create_client_reply(
+    request: ClientReplyRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Web equivalent of Telegram's "💬 Ответить клиенту" button flow
+    (see app.handlers.tasks: AwaitReplySubject -> AwaitTask ->
+    _route_and_dispatch(forced_module=Module.TRAVEL_ASSISTANT) ->
+    _maybe_send_draft's is_client_reply branch) - a separate mode from the
+    free-text Assistant chat (POST /api/chat, left entirely unchanged by
+    this endpoint), matching the same explicit UI separation Telegram's
+    dedicated button already has.
+
+    Reuses the exact same transport-independent pieces Telegram already
+    uses for this, no new prompt, no new LLM provider, no parallel
+    generator: MaterialOrchestrationService.build_client_reply_generation_spec
+    (same objective/constraints Telegram's client-reply draft uses - a
+    reply addressed to the client, never "клиенту можно ответить...", no
+    AI tail, for manual review before sending) + build_provider_generation_
+    request + competitor_llm_provider.generate_draft (same provider Web
+    already uses for material generation, e.g. "Создать материал из
+    сигнала") + strip_assistant_tail.
+
+    Deliberately does NOT create an Artifact or a WorkItem - Telegram's own
+    app.services.reply_sync.ReplyWorkSyncService only does that for the
+    explicit button+new-subject case, not for every client reply either
+    (see its own docstring), so this endpoint is at least as conservative
+    as Telegram already is. Persistence/CRM sync is a separate follow-up
+    task, not required to ship a working client-reply draft."""
+    client_message = request.client_message.strip()
+    if not client_message:
+        return {"error": "Введите сообщение клиента."}
+
+    try:
+        profile = await partner_repository.get_business_profile(principal.workspace_id)
+        ta_affiliated = profile is not None and profile.ta_affiliated
+        user_preferences = await partner_repository.get_user_preferences(
+            principal.workspace_id, principal.telegram_user_id,
+        )
+        # Same KnowledgeBundle type/retrieval build_client_reply_generation_spec
+        # already accepts (app.services.knowledge_service.KnowledgeService),
+        # gated by the same ta_affiliated rule /api/chat already uses above.
+        knowledge_bundle = (
+            await knowledge_service.retrieve(client_message) if ta_affiliated else None
+        )
+        # Same safety-level detection Telegram's route_text()/_maybe_send_draft
+        # already uses to decide whether the Safety constraint is added to
+        # the client-reply spec - not a new safety mechanism.
+        safety_required = route_text(client_message).safety_level is not SafetyLevel.NOT_REQUIRED
+
+        spec = material_orchestration_service.build_client_reply_generation_spec(
+            principal.workspace_id, client_message, profile,
+            safety_required=safety_required,
+            user_preferences=user_preferences,
+            knowledge_bundle=knowledge_bundle,
+        )
+        client_name = request.client_name.strip()
+        if client_name:
+            spec = replace(
+                spec, source_facts={**spec.source_facts, "client_name": client_name},
+            )
+
+        provider_request = build_provider_generation_request(spec, limit=6000)
+        draft = await asyncio.to_thread(
+            competitor_llm_provider.generate_draft,
+            source_text=provider_request.source_text,
+            material_type=provider_request.material_type,
+            output_format=provider_request.output_format,
+            mode="ai",
+        )
+    except Exception:
+        log.exception("create_client_reply: unhandled exception")
+        await record_event(
+            operational_event_repository, module="client_reply", event_type="draft_created",
+            success=False, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+            error_code="unhandled_exception",
+        )
+        return {"error": "Не удалось подготовить ответ клиенту. Попробуйте ещё раз."}
+
+    if draft is None:
+        await record_event(
+            operational_event_repository, module="client_reply", event_type="draft_created",
+            success=False, workspace_id=principal.workspace_id,
+            web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+            error_code="draft_unavailable",
+        )
+        return {"error": "Не удалось подготовить ответ клиенту. Попробуйте ещё раз."}
+
+    reply_text = strip_assistant_tail(draft.text)
+
+    await record_llm_call(
+        usage_ledger_repository,
+        workspace_id=principal.workspace_id,
+        telegram_user_id=principal.telegram_user_id,
+        module="travel_assistant_grounded",
+        provider=competitor_llm_provider.name,
+        usage=draft.usage,
+        status=UsageStatus.SUCCESS,
+    )
+    await record_event(
+        operational_event_repository, module="client_reply", event_type="draft_created",
+        success=True, workspace_id=principal.workspace_id,
+        web_user_id=principal.web_user_id,
+    )
+
+    return {
+        "reply": reply_text,
+        "client_name": client_name or None,
+    }
 
 
 async def _valid_session_context(request: Request):

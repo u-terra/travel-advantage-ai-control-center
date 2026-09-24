@@ -940,6 +940,53 @@ textarea {
     gap: 14px;
 }
 
+/* ---------- client reply (separate mode from Assistant chat) ---------- */
+
+.client-reply-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 560px;
+}
+
+.client-reply-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-top: 10px;
+}
+
+.client-reply-label:first-child { margin-top: 0; }
+
+.client-reply-input,
+.client-reply-textarea {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font: inherit;
+    background: var(--card);
+    color: inherit;
+    resize: vertical;
+}
+
+.client-reply-textarea { min-height: 90px; }
+
+#clientReplySubmit { margin-top: 14px; align-self: flex-start; }
+
+.client-reply-result-wrap {
+    max-width: 700px;
+    margin-top: 28px;
+}
+
+.client-reply-result {
+    white-space: pre-wrap;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    line-height: 1.55;
+}
+
 .competitor-card {
     display: flex;
     flex-direction: column;
@@ -1734,6 +1781,16 @@ textarea {
                 </button>
             </li>
             <li>
+                <button class="nav-item" data-view="client-reply"
+                        data-title="Ответить клиенту" data-subtitle="Черновик личного ответа клиенту для ручной проверки">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    Ответить клиенту
+                </button>
+            </li>
+            <li>
                 <button class="nav-item" data-view="competitors"
                         data-title="Конкуренты" data-subtitle="Competitor Intelligence и мониторинг рынка">
                     <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
@@ -1929,6 +1986,36 @@ textarea {
                                    accept=".jpg,.jpeg,.png,.webp,.pdf,.txt,.md,image/jpeg,image/png,image/webp,application/pdf,text/plain,text/markdown">
                             <button class="send" id="send">Отправить</button>
                         </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-client-reply">
+                <div class="competitors-view">
+                    <div class="competitors-head">
+                        <div class="competitors-head-text">
+                            <h2>Ответить клиенту</h2>
+                            <p>Вставьте сообщение клиента — получите черновик личного ответа для ручной проверки перед отправкой. Отдельный режим, не обычный чат с Ассистентом.</p>
+                        </div>
+                    </div>
+                    <form id="clientReplyForm" class="client-reply-form">
+                        <label class="client-reply-label" for="clientReplyName">Имя клиента (необязательно)</label>
+                        <input type="text" id="clientReplyName" class="client-reply-input"
+                               placeholder="Например: Иван" maxlength="120">
+
+                        <label class="client-reply-label" for="clientReplyMessage">Сообщение клиента</label>
+                        <textarea id="clientReplyMessage" class="client-reply-textarea" rows="4"
+                                  placeholder="Вставьте вопрос или сообщение клиента..." required></textarea>
+
+                        <div id="clientReplyError" class="attachment-error"></div>
+
+                        <button type="submit" class="send" id="clientReplySubmit">Подготовить ответ</button>
+                    </form>
+                    <div id="clientReplyResultWrap" class="client-reply-result-wrap" style="display:none;">
+                        <div class="competitors-head">
+                            <h2>Черновик ответа клиенту — для ручной проверки</h2>
+                        </div>
+                        <div id="clientReplyResult" class="client-reply-result"></div>
                     </div>
                 </div>
             </section>
@@ -5427,6 +5514,61 @@ async function openConversation(item) {
     }
 }
 
+/* ---------- client reply (separate mode, POST /api/client-reply) ---------- */
+/* Deliberately does not touch currentConversationId/chat/addUser/addAssistant -
+   this is not the Assistant chat (see app/web_api.py's create_client_reply
+   docstring for why it's a separate endpoint). */
+
+const clientReplyForm = document.getElementById("clientReplyForm");
+const clientReplyNameInput = document.getElementById("clientReplyName");
+const clientReplyMessageInput = document.getElementById("clientReplyMessage");
+const clientReplyError = document.getElementById("clientReplyError");
+const clientReplySubmit = document.getElementById("clientReplySubmit");
+const clientReplyResultWrap = document.getElementById("clientReplyResultWrap");
+const clientReplyResult = document.getElementById("clientReplyResult");
+
+clientReplyForm.addEventListener("submit", async event => {
+    event.preventDefault();
+
+    const clientMessage = clientReplyMessageInput.value.trim();
+    clientReplyError.textContent = "";
+
+    if (!clientMessage) {
+        clientReplyError.textContent = "Введите сообщение клиента.";
+        return;
+    }
+
+    clientReplySubmit.disabled = true;
+    clientReplySubmit.textContent = "Готовим ответ…";
+    clientReplyResultWrap.style.display = "none";
+
+    try {
+        const response = await fetch("/api/client-reply", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                client_message: clientMessage,
+                client_name: clientReplyNameInput.value.trim(),
+            }),
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            clientReplyError.textContent = data.error || "Не удалось подготовить ответ клиенту. Попробуйте ещё раз.";
+            return;
+        }
+
+        clientReplyResult.textContent = data.reply;
+        clientReplyResultWrap.style.display = "block";
+
+    } catch (_) {
+        clientReplyError.textContent = "Не удалось подготовить ответ клиенту. Попробуйте ещё раз.";
+    } finally {
+        clientReplySubmit.disabled = false;
+        clientReplySubmit.textContent = "Подготовить ответ";
+    }
+});
+
 /* ---------- sidebar navigation ---------- */
 
 function activateView(key) {
@@ -5447,6 +5589,8 @@ function activateView(key) {
 
     if (key === "assistant") {
         message.focus();
+    } else if (key === "client-reply") {
+        clientReplyMessageInput.focus();
     } else if (key === "competitors") {
         loadCompetitors();
     } else if (key === "signals") {
