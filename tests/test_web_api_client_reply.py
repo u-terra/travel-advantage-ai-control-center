@@ -25,6 +25,7 @@ markdown). Skips cleanly when they're not installed.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -287,3 +288,110 @@ def test_client_reply_does_not_create_artifact_or_work_item(api, monkeypatch) ->
 
     materials = client.get("/api/materials").json()["materials"]
     assert materials == []
+
+
+# ── live prod bug: a REAL (large) Business Profile must not truncate the ──
+# ── client's message or the 4aa294e constraints out of the prompt ────────
+
+_LIVE_PROD_CLIENT_QUESTION = (
+    "А зачем мне Travel Advantage, если на Trip.com всё проще и можно "
+    "оплатить российской картой?"
+)
+
+
+def _large_business_profile(workspace_id):
+    from types import MappingProxyType
+    from app.domain.business_profiles import BusinessClaim, BusinessContext, BusinessProfile
+
+    context = BusinessContext(
+        specializations=(
+            "Круизы", "Пляжный отдых", "Экскурсионные туры",
+            "Городские туры", "Горнолыжный отдых",
+        ),
+        destinations=(
+            "Италия", "Турция", "ОАЭ", "Таиланд", "Мальдивы", "Египет", "Греция", "Испания",
+        ),
+        audiences=("Семьи с детьми", "Пары", "Соло-путешественники", "Корпоративные клиенты"),
+        markets=("RU", "CIS"),
+        positioning=MappingProxyType({
+            "statement": (
+                "Мы помогаем клиентам путешествовать выгоднее и с меньшим "
+                "количеством забот, используя закрытую сеть членских цен "
+                "Travel Advantage и персональное сопровождение на каждом "
+                "этапе поездки."
+            ),
+            "value_proposition": (
+                "Закрытые членские цены, Travel Credits за бронирования, "
+                "доступ к эксклюзивным Life Experiences и персональная "
+                "поддержка 24/7 на протяжении всей поездки клиента."
+            ),
+            "differentiators": (
+                "Членские цены", "Travel Credits", "Life Experiences", "Партнёрская программа",
+            ),
+        }),
+        communication=MappingProxyType({
+            "tone": "Тёплый, экспертный, без давления",
+            "style": "Короткие предложения, личное обращение, минимум канцелярита",
+            "preferred_terms": ("членские цены", "Travel Credits", "Life Experiences"),
+            "banned_formulations": ("без давления", "гарантированная скидка"),
+        }),
+        goals=("Рост числа повторных бронирований", "Рост партнёрской сети", "Рост среднего чека"),
+        content_preferences=MappingProxyType({
+            "formats": ("post", "client_message"), "channels": ("telegram", "web"),
+            "topics": ("акции", "направления"),
+        }),
+        public_contacts=MappingProxyType({"website": "https://example.com", "telegram": "@example"}),
+        claims=tuple(
+            BusinessClaim(
+                f"Подтверждённый факт номер {i} про условия, сроки и правила программы Travel Advantage.",
+                "verified", "evidence", "now", "now",
+            )
+            for i in range(6)
+        ) + tuple(
+            BusinessClaim(
+                f"Неподтверждённое утверждение номер {i}, требующее осторожности при использовании в ответе клиенту.",
+                "unverified", None, "now", None,
+            )
+            for i in range(6)
+        ),
+    )
+    return BusinessProfile(
+        1, workspace_id, "Крупное агентство", "agency",
+        "Крупное туристическое агентство с большим объёмом бронирований и партнёрской сетью по всей России.",
+        "usable", 1, 4, context, "now", "now", ta_affiliated=False,
+    )
+
+
+def test_client_reply_with_large_business_profile_keeps_message_and_bans_intact(api, monkeypatch) -> None:
+    """Regression for the live prod bug (diagnosed after commit 4aa294e):
+    with a realistic (large) Business Profile, /api/client-reply must still
+    send the client's full question and every 4aa294e ban/requirement to
+    the provider, within Content Factory's 6000-char hard limit."""
+    client, web_api, _, workspace_id = api
+    monkeypatch.setattr(
+        web_api.partner_repository, "get_business_profile",
+        AsyncMock(return_value=_large_business_profile(workspace_id)),
+    )
+
+    captured = {}
+
+    def fake_generate_draft(**kwargs):
+        captured.update(kwargs)
+        return _fake_draft()
+
+    monkeypatch.setattr(web_api.competitor_llm_provider, "generate_draft", fake_generate_draft)
+
+    response = client.post(
+        "/api/client-reply", json={"client_message": _LIVE_PROD_CLIENT_QUESTION},
+    )
+
+    assert response.status_code == 200
+    request = captured["source_text"]
+    assert len(request) <= 6000
+    assert _LIVE_PROD_CLIENT_QUESTION in request
+    assert "возражени" in request.lower()
+    assert "trip.com действительно" in request.lower()
+    assert "inventory" in request.lower()
+    assert "ota" in request.lower()
+    assert "всегда дешевле" in request.lower()
+    assert "сообщите даты — подберу" in request.lower()

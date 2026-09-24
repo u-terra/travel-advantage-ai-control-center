@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
@@ -9,6 +10,7 @@ from app.services.generation_request_builder import (
     MIN_USEFUL_SUMMARY_LENGTH,
     SOURCE_ANALYSIS_REQUEST_LIMIT,
     SourceAnalysisRequestTooLargeError,
+    build_client_reply_provider_request,
     build_provider_generation_request,
     build_source_analysis_provider_request,
     safe_material_title,
@@ -532,3 +534,143 @@ def test_source_content_is_sufficient_a_named_place_alone_is_enough_concreteness
         "за несколько лет, что должно упростить поездки туда."
     )
     assert source_content_is_sufficient(title, summary) is True
+
+
+# --- Fix 2: build_client_reply_provider_request (client-reply-only) ---
+#
+# Live prod bug (client-reply, follow-up to commit 4aa294e): a REAL (not
+# test-fixture-sized) Business Profile alone pushes _build_prefix() past
+# 6000 chars for a client-reply spec. build_provider_generation_request()
+# then falls back to its raw [:limit] slice (see the investigation tests
+# above) - since CONSTRAINTS is the LAST section of the prefix and the
+# client's own message comes even later (after the whole prefix, via
+# _MARKER), that raw slice silently dropped the OTA/inventory/always-
+# cheaper/default-CTA bans from 4aa294e and the client's message itself.
+
+_LIVE_PROD_CLIENT_QUESTION = (
+    "А зачем мне Travel Advantage, если на Trip.com всё проще и можно "
+    "оплатить российской картой?"
+)
+
+
+def _client_reply_spec(**overrides) -> "GenerationSpec":
+    kwargs = dict(
+        constraints=(
+            "Черновик требует ручной проверки перед отправкой.",
+            "Реальное преимущество конкурента не оспаривай и не "
+            "обесценивай — сначала коротко признай (например: «Да, у "
+            "Trip.com действительно проще оплата»). Не утверждай, что "
+            "Travel Advantage всегда дешевле. Без жаргона «inventory», "
+            "«OTA», «ecosystem», «pipeline», «provider». Не добавляй в "
+            "конец шаблонное «сообщите даты — подберу», если это не "
+            "вытекает из вопроса.",
+        ),
+        untrusted_source_content=_LIVE_PROD_CLIENT_QUESTION,
+    )
+    kwargs.update(overrides)
+    spec = _spec(**kwargs)
+    return replace(spec, artifact_type="client_message")
+
+
+def _huge_secondary_context() -> dict:
+    return {f"fact_{i}": "Подробный проверенный факт " * 20 for i in range(20)}
+
+
+def _claim(text: str, *, verification_status: str = "verified") -> dict:
+    return {
+        "text": text, "verification_status": verification_status,
+        "evidence_reference": None,
+    }
+
+
+def test_client_reply_packer_matches_generic_builder_when_everything_fits():
+    """Common case (small profile, well under budget): identical output to
+    the generic builder - this fix must not change normal-case behavior,
+    only the overflow path."""
+    spec = _client_reply_spec(
+        trusted_business_context={"name": "Travel Business"},
+        verified_claims_allowed=(_claim("Verified claim"),),
+    )
+    via_generic = build_provider_generation_request(spec, limit=6000)
+    via_client_reply = build_client_reply_provider_request(spec, limit=6000)
+    assert via_client_reply == via_generic
+
+
+def test_client_reply_packer_keeps_message_and_constraints_under_budget_pressure():
+    """The core fix: even when secondary context alone would overflow the
+    generic builder into its raw [:limit] fallback, OBJECTIVE, CONSTRAINTS
+    and the client's full message must survive intact, and the result must
+    still respect the limit."""
+    spec = _client_reply_spec(
+        trusted_business_context=_huge_secondary_context(),
+        source_facts=_huge_secondary_context(),
+        verified_claims_allowed=tuple(
+            _claim("Verified fact " * 10 + str(i)) for i in range(20)
+        ),
+        unverified_claims_requiring_caution=tuple(
+            _claim("Unverified fact " * 10 + str(i), verification_status="unverified")
+            for i in range(20)
+        ),
+    )
+    # Prove this scenario really does overflow the generic builder's
+    # protected-content guarantee first, otherwise this test proves nothing:
+    # at limit=6000 the generic raw-slice fallback already drops the
+    # client's message and/or part of CONSTRAINTS.
+    generic = build_provider_generation_request(spec, limit=6000)
+    assert (
+        _LIVE_PROD_CLIENT_QUESTION not in generic.source_text
+        or any(c not in generic.source_text for c in spec.constraints)
+    )
+
+    request = build_client_reply_provider_request(spec, limit=6000)
+    assert len(request.source_text) <= 6000
+    assert _LIVE_PROD_CLIENT_QUESTION in request.source_text
+    for constraint in spec.constraints:
+        assert constraint in request.source_text
+    assert spec.objective in request.source_text
+
+
+def test_client_reply_packer_drops_lowest_priority_secondary_sections_first():
+    """SOURCE FACTS (priority 7) must be dropped before TRUSTED BUSINESS
+    CONTEXT (priority 5) when both can't fit - per this fix's declared
+    priority order (4: personal style/tone, 5: trusted business context,
+    6: verified claims, 7: source facts, 8: audience/unverified claims)."""
+    spec = _client_reply_spec(
+        trusted_business_context={"positioning": "Компактный, но узнаваемый бизнес-контекст."},
+        source_facts=_huge_secondary_context(),
+    )
+    request = build_client_reply_provider_request(spec, limit=6000)
+    assert "[TRUSTED BUSINESS CONTEXT - DATA]" in request.source_text
+    assert "[SOURCE FACTS - DATA]" not in request.source_text
+
+
+def test_client_reply_packer_never_raises_for_an_oversized_spec():
+    """Unlike build_source_analysis_provider_request's fail-closed
+    SourceAnalysisRequestTooLargeError, a client-reply draft must always be
+    produced - the caller has a real person waiting on an answer."""
+    spec = _client_reply_spec(
+        trusted_business_context=_huge_secondary_context(),
+        source_facts=_huge_secondary_context(),
+        untrusted_source_content="Очень длинное сообщение клиента. " * 300,
+    )
+    request = build_client_reply_provider_request(spec, limit=6000)
+    assert len(request.source_text) <= 6000
+
+
+def test_client_reply_packer_truncates_message_only_as_absolute_last_resort():
+    """If OBJECTIVE+CONSTRAINTS+the client's message alone can't fit even
+    with every secondary section dropped (a pathologically long pasted
+    client message, not a large Business Profile), the message - never
+    OBJECTIVE/CONSTRAINTS - is what gets trimmed, using the same shrink
+    loop the generic builder already uses for source content."""
+    spec = _client_reply_spec(untrusted_source_content="Очень длинное сообщение клиента. " * 300)
+    request = build_client_reply_provider_request(spec, limit=1500)
+    assert len(request.source_text) <= 1500
+    for constraint in spec.constraints:
+        assert constraint in request.source_text
+    assert spec.objective in request.source_text
+
+
+def test_client_reply_packer_rejects_a_non_positive_limit():
+    with pytest.raises(ValueError):
+        build_client_reply_provider_request(_client_reply_spec(), limit=0)

@@ -2043,6 +2043,148 @@ def test_client_reply_flow_now_uses_structured_orchestration_with_profile():
     assert "Ответ клиенту" in message.answers[-1][0]
 
 
+# Live prod bug fix: a REAL (not test-fixture-sized) Business Profile alone
+# pushes the generic prefix past 6000 chars for a client-reply spec - the
+# generic build_provider_generation_request() then falls back to a raw
+# [:limit] slice that silently cut off the 4aa294e OTA/inventory/always-
+# cheaper/default-CTA bans (CONSTRAINTS is the LAST section) and the
+# client's own message entirely (comes even later, after the whole
+# prefix). _maybe_send_draft's client-reply branch now uses the dedicated
+# build_client_reply_provider_request packer instead - same one Web's
+# POST /api/client-reply uses (tests/test_web_api_client_reply.py).
+
+def _large_business_profile(workspace_id=42):
+    return BusinessProfile(
+        1, workspace_id, "Крупное агентство", "agency",
+        "Крупное туристическое агентство с большим объёмом бронирований и "
+        "партнёрской сетью по всей России.",
+        "usable", 1, 4,
+        BusinessContext(
+            specializations=(
+                "Круизы", "Пляжный отдых", "Экскурсионные туры",
+                "Городские туры", "Горнолыжный отдых",
+            ),
+            destinations=(
+                "Италия", "Турция", "ОАЭ", "Таиланд", "Мальдивы",
+                "Египет", "Греция", "Испания",
+            ),
+            audiences=(
+                "Семьи с детьми", "Пары", "Соло-путешественники",
+                "Корпоративные клиенты",
+            ),
+            markets=("RU", "CIS"),
+            positioning=MappingProxyType({
+                "statement": (
+                    "Мы помогаем клиентам путешествовать выгоднее и с "
+                    "меньшим количеством забот, используя закрытую сеть "
+                    "членских цен Travel Advantage и персональное "
+                    "сопровождение на каждом этапе поездки."
+                ),
+                "value_proposition": (
+                    "Закрытые членские цены, Travel Credits за "
+                    "бронирования, доступ к эксклюзивным Life Experiences "
+                    "и персональная поддержка 24/7 на протяжении всей "
+                    "поездки клиента."
+                ),
+                "differentiators": (
+                    "Членские цены", "Travel Credits", "Life Experiences",
+                    "Партнёрская программа",
+                ),
+            }),
+            communication=MappingProxyType({
+                "tone": "Тёплый, экспертный, без давления",
+                "style": "Короткие предложения, личное обращение, минимум канцелярита",
+                "preferred_terms": ("членские цены", "Travel Credits", "Life Experiences"),
+                "banned_formulations": ("без давления", "гарантированная скидка"),
+            }),
+            goals=(
+                "Рост числа повторных бронирований", "Рост партнёрской сети",
+                "Рост среднего чека",
+            ),
+            content_preferences=MappingProxyType({
+                "formats": ("post", "client_message"),
+                "channels": ("telegram", "web"), "topics": ("акции", "направления"),
+            }),
+            public_contacts=MappingProxyType({
+                "website": "https://example.com", "telegram": "@example",
+            }),
+            claims=tuple(
+                BusinessClaim(
+                    f"Подтверждённый факт номер {i} про условия, сроки и "
+                    "правила программы Travel Advantage.",
+                    "verified", "evidence", "now", "now",
+                )
+                for i in range(6)
+            ) + tuple(
+                BusinessClaim(
+                    f"Неподтверждённое утверждение номер {i}, требующее "
+                    "осторожности при использовании в ответе клиенту.",
+                    "unverified", None, "now", None,
+                )
+                for i in range(6)
+            ),
+        ),
+        "now", "now",
+    )
+
+
+_LIVE_PROD_CLIENT_QUESTION = (
+    "А зачем мне Travel Advantage, если на Trip.com всё проще и можно "
+    "оплатить российской картой?"
+)
+
+
+def test_client_reply_with_large_business_profile_keeps_message_and_bans_intact():
+    """Regression for the live prod bug: with a realistic (large) Business
+    Profile, the client's full question and every 4aa294e ban/requirement
+    must still reach the provider, and the packed request must stay within
+    Content Factory's 6000-char hard limit.
+
+    Uses the explicit "💬 Ответить клиенту" button entry point
+    (on_task_after_button with forced_module=TRAVEL_ASSISTANT - same as
+    test_stage3b1_travel_assistant_uses_personal_style_and_keeps_safety
+    above), not on_free_text's wording-based informational/client-reply
+    split - that split is orthogonal to this fix (see _is_explicit_client_
+    reply_intent) and this live prod question, asked through the button,
+    always took the true client-reply persona in production."""
+    message = Message(_LIVE_PROD_CLIENT_QUESTION)
+    provider = FakeLLMProvider(draft=ContentDraft("Ответ клиенту", ()))
+    profiles = profile_repository(_large_business_profile())
+    state = State({
+        "forced_module": Module.TRAVEL_ASSISTANT.value, "skip_route_card": True,
+    })
+    run(on_task_after_button(message, state, journal(), provider, context(), profiles))
+
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    assert len(request) <= 6000
+    assert _LIVE_PROD_CLIENT_QUESTION in request
+    assert "возражени" in request.lower()
+    assert "trip.com действительно" in request.lower()
+    assert "inventory" in request.lower()
+    assert "ota" in request.lower()
+    assert "всегда дешевле" in request.lower()
+    assert "сообщите даты — подберу" in request.lower()
+
+
+def test_regular_post_with_large_business_profile_still_uses_generic_builder():
+    """Byte-equivalence guard: the regular Content Factory post flow (not
+    client-reply) must be completely unaffected by this fix - still the
+    plain build_provider_generation_request(), still subject to its raw
+    [:limit] fallback exactly as before. This large profile is big enough
+    to force that fallback, so the assertions below mirror
+    test_generic_builder_can_corrupt_structure_when_prefix_alone_overflows
+    in tests/test_generation_request_builder.py."""
+    message = Message("Напиши пост про раннее бронирование туров")
+    provider = FakeLLMProvider(draft=ContentDraft("Черновик поста", ()))
+    profiles = profile_repository(_large_business_profile())
+    run(on_free_text(message, journal(), provider, context(), profiles))
+
+    request = provider.generate_draft.call_args.kwargs["source_text"]
+    assert len(request) <= 6000
+    # Unchanged existing behavior for this flow - not required to keep the
+    # message/constraints intact the way client-reply now must.
+
+
 def test_stage3b1_content_factory_free_text_uses_personal_style():
     """A. CONTENT_FACTORY legacy/free-text flow: личный стиль текущего
 

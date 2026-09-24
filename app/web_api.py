@@ -97,6 +97,7 @@ from app.services.assistant_tail_cleanup import strip_assistant_tail
 from app.services.content_factory import ContentFactoryConfig
 from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import (
+    build_client_reply_provider_request,
     build_provider_generation_request,
     safe_material_title,
     source_content_is_sufficient,
@@ -4081,7 +4082,18 @@ async def create_client_reply(
                 spec, source_facts={**spec.source_facts, "client_name": client_name},
             )
 
-        provider_request = build_provider_generation_request(spec, limit=6000)
+        # Client-reply-only section-aware packer (see its docstring in
+        # app.services.generation_request_builder): guarantees OBJECTIVE,
+        # CONSTRAINTS and the client's own message survive in full even
+        # when a real (not test-fixture-sized) Business Profile pushes the
+        # generic prefix past 6000 chars - the bug the plain
+        # build_provider_generation_request() call here used to have (live
+        # prod: the 4aa294e OTA/inventory/always-cheaper/default-CTA bans
+        # and the client's message itself were silently cut off by its raw
+        # [:limit] fallback). Same packer Telegram's own explicit
+        # "Ответить клиенту" flow uses (app.handlers.tasks._maybe_send_draft)
+        # so both channels stay on one shared rule.
+        provider_request = build_client_reply_provider_request(spec, limit=6000)
         draft = await asyncio.to_thread(
             competitor_llm_provider.generate_draft,
             source_text=provider_request.source_text,

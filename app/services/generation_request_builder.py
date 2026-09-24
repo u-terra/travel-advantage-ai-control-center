@@ -285,6 +285,145 @@ def build_provider_generation_request(
     )
 
 
+# Live prod bug (client-reply, commit 4aa294e's own follow-up): a REAL
+# (not test-fixture-sized) Business Profile alone already pushes
+# _build_prefix() past 6000 chars for a client-reply spec - the generic
+# build_provider_generation_request() above then falls back to its raw
+# [:limit] slice, which cut off the END of the prefix. Since CONSTRAINTS is
+# the LAST section _build_prefix() emits and the client's own message comes
+# even later (after the whole prefix, via _MARKER), that raw slice silently
+# dropped the OTA/inventory/always-cheaper/default-CTA bans from 4aa294e
+# and the client's message itself - the model literally never saw them.
+#
+# This is a dedicated, client-reply-ONLY section-aware packer (parallel to
+# build_source_analysis_provider_request above, same "drop low-priority
+# data whole, never touch protected content" principle, adapted to this
+# flow's own priority order instead of a copied algorithm) used by BOTH
+# channels' explicit client-reply call site - Web's POST /api/client-reply
+# and Telegram's "Ответить клиенту" (app.handlers.tasks._maybe_send_draft's
+# is_client_reply-and-not-informational branch) - so they stay on one
+# shared packing rule instead of silently drifting apart again. Every other
+# generation flow (regular posts, informational TRAVEL_ASSISTANT, radar,
+# competitor signals, source analysis) is untouched - they still go through
+# build_provider_generation_request/build_source_analysis_provider_request
+# exactly as before.
+_CLIENT_REPLY_SECONDARY_SECTION_ORDER: tuple[tuple[str, str], ...] = (
+    ("AUDIENCE - DATA", "audience"),
+    ("TRUSTED BUSINESS CONTEXT - DATA", "trusted_business_context"),
+    ("TONE AND PREFERENCES - DATA", "tone_preferences"),
+    ("PERSONAL STYLE - DATA", "personal_style"),
+    ("VERIFIED CLAIMS - ALLOWED FACTS", "verified_claims_allowed"),
+    ("UNVERIFIED CLAIMS - CAUTION, NEVER VERIFIED", "unverified_claims_requiring_caution"),
+    ("SOURCE FACTS - DATA", "source_facts"),
+)
+
+# Drop priority: a HIGHER number is dropped FIRST when the secondary budget
+# is too small, independent of the section order above (which only governs
+# where an INCLUDED section is placed in the final prompt). Per this fix's
+# requirement: 4) personal style/tone kept longest, 5) trusted business
+# context, 6) verified claims, 7) source facts/workspace knowledge, 8)
+# everything else (audience, unverified claims) dropped first.
+_CLIENT_REPLY_SECONDARY_DROP_PRIORITY: dict[str, int] = {
+    "AUDIENCE - DATA": 8,
+    "UNVERIFIED CLAIMS - CAUTION, NEVER VERIFIED": 8,
+    "SOURCE FACTS - DATA": 7,
+    "VERIFIED CLAIMS - ALLOWED FACTS": 6,
+    "TRUSTED BUSINESS CONTEXT - DATA": 5,
+    "TONE AND PREFERENCES - DATA": 4,
+    "PERSONAL STYLE - DATA": 4,
+}
+
+
+def build_client_reply_provider_request(
+    spec: GenerationSpec, *, limit: int = 6000,
+) -> ProviderGenerationRequest:
+    """Client-reply-only variant of build_provider_generation_request().
+
+    Guarantees OBJECTIVE, CONSTRAINTS and the client's own message
+    (untrusted_source_content) are ALWAYS present in full in the returned
+    source_text - truncating the client's message is only a last-resort
+    fallback (same shrink-loop the generic builder already uses for source
+    content), reached only if OBJECTIVE+CONSTRAINTS+the message alone can't
+    fit under ``limit`` even with every secondary section dropped, which in
+    practice means an extremely long pasted client message, not a large
+    Business Profile.
+
+    Everything else - trusted business context, tone, personal style,
+    verified/unverified claims, workspace knowledge (source facts) - is
+    secondary: included in priority order only as space allows, dropped
+    WHOLE (never partially - so JSON stays well-formed) starting from the
+    lowest-priority section, before protected content is ever touched.
+
+    Never raises for an oversized spec - unlike build_source_analysis_
+    provider_request's fail-closed contract, a client-reply draft must
+    always be produced for the user waiting on it.
+    """
+    validate_generation_spec(spec)
+    material_type = _PROVIDER_MATERIAL_TYPES.get(spec.artifact_type)
+    if material_type is None:
+        raise ValueError("Artifact type не поддерживается текущим LLM provider")
+    if type(limit) is not int or limit < 1:
+        raise ValueError("limit должен быть положительным целым числом")
+
+    objective_section = _section("OBJECTIVE - CONTROL", spec.objective)
+    constraints_section = _section(
+        "CONSTRAINTS - INTERNAL, DO NOT REPRODUCE VERBATIM", spec.constraints,
+    )
+    protected = "\n\n".join([objective_section, constraints_section])
+    source_json = json.dumps(spec.untrusted_source_content, ensure_ascii=False)
+    protected_len = len(protected) + len(_MARKER) + len(source_json)
+
+    if protected_len > limit:
+        # Pathological case only (see docstring) - OBJECTIVE/CONSTRAINTS are
+        # fixed-size and controlled by this codebase, so the client's own
+        # message is the only thing trimmed here, via the exact shrink loop
+        # build_provider_generation_request already uses for source content
+        # - never a raw whole-string slice, so JSON stays intact.
+        source = spec.untrusted_source_content
+        serialized = source_json
+        while source and len(protected) + len(_MARKER) + len(serialized) > limit:
+            overflow = len(protected) + len(_MARKER) + len(serialized) - limit
+            source = source[:-max(1, overflow)]
+            serialized = json.dumps(source, ensure_ascii=False)
+        source_text = (protected + _MARKER + serialized)[:limit]
+        return ProviderGenerationRequest(
+            source_text=source_text,
+            material_type=material_type,
+            output_format=spec.output_format.value,
+        )
+
+    budget = limit - protected_len
+    included_names: set[str] = set()
+    for name, _attr in sorted(
+        _CLIENT_REPLY_SECONDARY_SECTION_ORDER,
+        key=lambda item: _CLIENT_REPLY_SECONDARY_DROP_PRIORITY[item[0]],
+    ):
+        section_text = _section(name, getattr(spec, _attr))
+        needed = len(section_text) + 2  # "\n\n" joiner
+        if needed <= budget:
+            included_names.add(name)
+            budget -= needed
+
+    # Reassemble sections in their ORIGINAL relative order (same layout
+    # build_provider_generation_request's _build_prefix() uses - byte-
+    # identical to the generic prefix in the common case where nothing
+    # needed dropping), just with any over-budget sections omitted whole.
+    sections = [objective_section]
+    for name, attr in _CLIENT_REPLY_SECONDARY_SECTION_ORDER:
+        if name in included_names:
+            sections.append(_section(name, getattr(spec, attr)))
+    sections.append(constraints_section)
+
+    prefix = "\n\n".join(sections)
+    source_text = prefix + _MARKER + source_json
+    assert len(source_text) <= limit  # guaranteed by the budget math above
+    return ProviderGenerationRequest(
+        source_text=source_text,
+        material_type=material_type,
+        output_format=spec.output_format.value,
+    )
+
+
 # Fix: Content Factory (/internal/generate) жёстко ограничивает входной
 # source_text 6000 символами и отвечает быстрым HTTP 400 ДО вызова LLM при
 # превышении (подтверждено живым инцидентом — см. review). Обычный

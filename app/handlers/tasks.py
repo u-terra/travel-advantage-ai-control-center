@@ -49,7 +49,10 @@ from app.services.action_contract_adapter import build_action_contract
 from app.services.assistant_tail_cleanup import strip_assistant_tail
 from app.services.conversation_state_service import ConversationStateService
 from app.services.daily_actions import DailyActionsService
-from app.services.generation_request_builder import build_provider_generation_request
+from app.services.generation_request_builder import (
+    build_client_reply_provider_request,
+    build_provider_generation_request,
+)
 from app.services.lead_radar import LeadRadarConfig
 from app.services.knowledge_service import KnowledgeBundle
 from app.services.llm.base import LLMProvider
@@ -1229,7 +1232,20 @@ async def _maybe_send_draft(
             spec, source_facts={**spec.source_facts, "web_search": search_context_text},
         )
 
-    provider_request = build_provider_generation_request(spec, limit=6000)
+    # Client-reply-only section-aware packer (see its docstring in
+    # app.services.generation_request_builder) only for the real client-
+    # reply persona (the `else` branch above, build_client_reply_generation_
+    # spec) - regular posts and the informational TRAVEL_ASSISTANT persona
+    # keep using the generic builder exactly as before. Same packer Web's
+    # POST /api/client-reply uses, so both channels stay on one shared rule
+    # instead of drifting apart again (live prod bug: a real Business
+    # Profile pushed the generic prefix past 6000 chars, and its raw
+    # [:limit] fallback silently cut the 4aa294e OTA/inventory/always-
+    # cheaper/default-CTA bans and the client's own message).
+    if is_regular_post or is_informational:
+        provider_request = build_provider_generation_request(spec, limit=6000)
+    else:
+        provider_request = build_client_reply_provider_request(spec, limit=6000)
     draft = await asyncio.to_thread(
         provider.generate_draft,
         source_text=provider_request.source_text,
