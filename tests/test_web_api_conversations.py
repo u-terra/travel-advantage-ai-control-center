@@ -217,20 +217,24 @@ def test_chat_passes_prior_history_to_provider(api, monkeypatch) -> None:
         web_api.chat_provider, "generate", _fake_generate(text="Первый ответ", captured=captured),
     )
 
+    # Plain questions, not "напиши пост"/"сообщение"-style Content Factory
+    # phrasing - see test_web_api_chat_material_parity.py for the free-text
+    # material-intent branch's own coverage; this test is about history
+    # plumbing for the ordinary chat_provider path only.
     conversation_id = client.post("/api/conversations").json()["conversation"]["id"]
     client.post(
-        "/api/chat", json={"message": "Первое сообщение", "conversation_id": conversation_id},
+        "/api/chat", json={"message": "Куда лучше поехать в марте?", "conversation_id": conversation_id},
     )
 
     monkeypatch.setattr(
         web_api.chat_provider, "generate", _fake_generate(text="Второй ответ", captured=captured),
     )
     client.post(
-        "/api/chat", json={"message": "Второе сообщение", "conversation_id": conversation_id},
+        "/api/chat", json={"message": "А в апреле?", "conversation_id": conversation_id},
     )
 
     assert captured["history"] == [
-        {"role": "user", "content": "Первое сообщение"},
+        {"role": "user", "content": "Куда лучше поехать в марте?"},
         {"role": "assistant", "content": "Первый ответ"},
     ]
 

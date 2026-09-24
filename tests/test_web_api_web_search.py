@@ -215,9 +215,20 @@ def test_fallback_official_source_promoted_and_no_missing_notice(api, monkeypatc
 
 def test_search_not_triggered_for_ordinary_content_request(api, monkeypatch) -> None:
     """decide_web_search() still gates the call even when the provider/
-    service is fully enabled and configured."""
+    service is fully enabled and configured.
+
+    "Напиши пост про Индонезию" is itself a Content Factory free-text
+    request (see test_web_api_chat_material_parity.py) - generate_draft is
+    stubbed the same way that file stubs it, chat_provider.generate is left
+    stubbed too in case routing ever changes, but only one of the two is
+    actually expected to be called here."""
     client, web_api, _, _ = api
     monkeypatch.setattr(web_api.chat_provider, "generate", _fake_generate())
+    from app.services.llm.models import ContentDraft
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kw: ContentDraft(text="Пост про Индонезию.", warnings=()),
+    )
 
     fake_provider = _FakeSearchProvider(_search_response("q"))
     monkeypatch.setattr(web_api, "web_search_service", WebSearchService(fake_provider, enabled=True))

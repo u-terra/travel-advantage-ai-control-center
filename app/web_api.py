@@ -7,7 +7,7 @@ import logging
 import secrets
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -93,6 +93,7 @@ from app.services.competitor_intelligence import (
     CompetitorIntelligenceService,
     CompetitorIntelligenceUnavailable,
 )
+from app.services.assistant_tail_cleanup import strip_assistant_tail
 from app.services.content_factory import ContentFactoryConfig
 from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import (
@@ -128,6 +129,8 @@ from app.services.signal_service import (
     sync_web_signals_if_stale,
 )
 from app.services.robokassa import RoboKassaConfig
+from app.routing.modules import Module
+from app.routing.router import route_text
 from app.services.source_registry import SEED_REGISTRY_PATH
 from app.services.telemetry import record_event
 from app.services.usage_recorder import record_llm_call
@@ -3733,17 +3736,178 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         # never resent.
         provider_attachments = await _load_provider_attachments(resolved_attachments)
 
-        try:
-            chat_result = await asyncio.to_thread(
-                chat_provider.generate,
-                message=message,
-                history=history[-12:],
-                knowledge_context=knowledge_context,
-                personal_style=personal_style,
-                workspace_memory=workspace_memory_text,
-                attachments=provider_attachments,
+        # Web/Telegram material-creation parity fix: a free-text request
+        # like "Напиши пост про раннее бронирование" already reached
+        # Telegram's Content Factory (app.handlers.tasks._maybe_send_draft ->
+        # artifact_repository.create_artifact_with_initial_version - see
+        # app.handlers.tasks) and showed up in "Мои материалы", but the same
+        # text typed into Web's /api/chat only ever produced a chat reply via
+        # chat_provider - it was never persisted as an Artifact. Classifying
+        # material intent with the SAME app.routing.router.route_text() the
+        # Telegram router already uses (not a second/looser classifier), and
+        # generating through the SAME MaterialOrchestrationService +
+        # competitor_llm_provider Web already uses for "Создать материал из
+        # сигнала" (see create_material_from_signal above) - no parallel
+        # generator, no parallel LLM provider. A plain question (no
+        # CONTENT_FACTORY match, or an uncertain route) always falls through
+        # to the unchanged chat_provider path below. Excludes signal-intent
+        # questions ("какие сейчас сигналы и идеи для контента?") even
+        # though CONTENT_KEYWORDS' bare "контент" substring also scores
+        # those as CONTENT_FACTORY - those are informational questions about
+        # existing signals (see _is_signal_intent/has_signal_context above,
+        # the pre-existing "Radar in chat" behavior this fix must not
+        # regress), not a command to draft a new post.
+        material_decision = route_text(message) if message else None
+        is_material_intent = (
+            material_decision is not None
+            and material_decision.primary_module is Module.CONTENT_FACTORY
+            and not material_decision.is_uncertain
+            and not _is_signal_intent(message)
+        )
+
+        created_artifact = None
+        if is_material_intent:
+            try:
+                material_spec = material_orchestration_service.build_free_text_generation_spec(
+                    principal.workspace_id, message, business_profile,
+                    user_preferences=preferences,
+                )
+                search_context_text = (
+                    format_search_context(search_response)
+                    if search_response is not None else ""
+                )
+                if search_context_text:
+                    material_spec = replace(
+                        material_spec,
+                        source_facts={
+                            **material_spec.source_facts, "web_search": search_context_text,
+                        },
+                    )
+                material_provider_request = build_provider_generation_request(
+                    material_spec, limit=6000,
+                )
+                material_draft = await asyncio.to_thread(
+                    competitor_llm_provider.generate_draft,
+                    source_text=material_provider_request.source_text,
+                    material_type=material_provider_request.material_type,
+                    output_format=material_provider_request.output_format,
+                    mode="ai",
+                )
+            except Exception:
+                await record_llm_call(
+                    usage_ledger_repository,
+                    workspace_id=principal.workspace_id,
+                    telegram_user_id=principal.telegram_user_id,
+                    module="content_factory_post",
+                    provider=competitor_llm_provider.name,
+                    usage=None,
+                    status=UsageStatus.FAILURE,
+                )
+                await record_event(
+                    operational_event_repository, module="chat", event_type="message",
+                    success=False, workspace_id=principal.workspace_id,
+                    web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+                    latency_ms=int((time.monotonic() - chat_started_at) * 1000),
+                    error_code="provider_error", safe_message="material generation failed",
+                    metadata={"provider": competitor_llm_provider.name},
+                )
+                raise
+
+            if material_draft is None:
+                await record_event(
+                    operational_event_repository, module="materials",
+                    event_type="material_created_from_chat",
+                    success=False, workspace_id=principal.workspace_id,
+                    web_user_id=principal.web_user_id, severity=EventSeverity.INFO,
+                    error_code="draft_unavailable",
+                )
+                return {
+                    "error": "Не удалось подготовить материал. Попробуйте ещё раз.",
+                }
+
+            draft_text = strip_assistant_tail(material_draft.text)
+
+            try:
+                created_artifact, _material_version = (
+                    await artifact_repository.create_artifact_with_initial_version(
+                        principal.workspace_id,
+                        artifact_type=material_spec.artifact_type,
+                        title=safe_material_title(message, fallback="Материал из чата"),
+                        content=draft_text,
+                        generation_note=(
+                            "Web Assistant (free text): "
+                            f"{material_provider_request.material_type}/"
+                            f"{material_provider_request.output_format}"
+                        ),
+                    )
+                )
+            except Exception:
+                # Best-effort bookkeeping only, same policy as Telegram's
+                # equivalent branch (app.handlers.tasks) - a technical
+                # persistence failure must not turn an already-generated
+                # draft into an error for the user; the reply is still shown,
+                # just not linked to a saved Artifact this turn.
+                log.warning(
+                    "chat: free-text material persistence failed", exc_info=True,
+                )
+            else:
+                await record_llm_call(
+                    usage_ledger_repository,
+                    workspace_id=principal.workspace_id,
+                    telegram_user_id=principal.telegram_user_id,
+                    module="content_factory_post",
+                    provider=competitor_llm_provider.name,
+                    usage=material_draft.usage,
+                    status=UsageStatus.SUCCESS,
+                )
+                await record_event(
+                    operational_event_repository, module="materials",
+                    event_type="material_created_from_chat",
+                    success=True, workspace_id=principal.workspace_id,
+                    web_user_id=principal.web_user_id,
+                    metadata={"artifact_id": created_artifact.id},
+                )
+
+            answer = draft_text
+            await record_event(
+                operational_event_repository, module="chat", event_type="message",
+                success=True, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id,
+                latency_ms=int((time.monotonic() - chat_started_at) * 1000),
+                metadata={"provider": competitor_llm_provider.name, "material_created": True},
             )
-        except Exception:
+        else:
+            try:
+                chat_result = await asyncio.to_thread(
+                    chat_provider.generate,
+                    message=message,
+                    history=history[-12:],
+                    knowledge_context=knowledge_context,
+                    personal_style=personal_style,
+                    workspace_memory=workspace_memory_text,
+                    attachments=provider_attachments,
+                )
+            except Exception:
+                await record_llm_call(
+                    usage_ledger_repository,
+                    workspace_id=principal.workspace_id,
+                    telegram_user_id=principal.telegram_user_id,
+                    module="web_chat",
+                    provider="openai",
+                    model="gpt-5.6-terra",
+                    usage=None,
+                    status=UsageStatus.FAILURE,
+                )
+                await record_event(
+                    operational_event_repository, module="chat", event_type="message",
+                    success=False, workspace_id=principal.workspace_id,
+                    web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+                    latency_ms=int((time.monotonic() - chat_started_at) * 1000),
+                    error_code="provider_error", safe_message="chat provider call failed",
+                    metadata={"provider": "openai", "model": "gpt-5.6-terra"},
+                )
+                raise
+
             await record_llm_call(
                 usage_ledger_repository,
                 workspace_id=principal.workspace_id,
@@ -3751,38 +3915,18 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                 module="web_chat",
                 provider="openai",
                 model="gpt-5.6-terra",
-                usage=None,
-                status=UsageStatus.FAILURE,
+                usage=chat_result.usage,
+                status=UsageStatus.SUCCESS,
             )
             await record_event(
                 operational_event_repository, module="chat", event_type="message",
-                success=False, workspace_id=principal.workspace_id,
-                web_user_id=principal.web_user_id, severity=EventSeverity.ERROR,
+                success=True, workspace_id=principal.workspace_id,
+                web_user_id=principal.web_user_id,
                 latency_ms=int((time.monotonic() - chat_started_at) * 1000),
-                error_code="provider_error", safe_message="chat provider call failed",
                 metadata={"provider": "openai", "model": "gpt-5.6-terra"},
             )
-            raise
 
-        await record_llm_call(
-            usage_ledger_repository,
-            workspace_id=principal.workspace_id,
-            telegram_user_id=principal.telegram_user_id,
-            module="web_chat",
-            provider="openai",
-            model="gpt-5.6-terra",
-            usage=chat_result.usage,
-            status=UsageStatus.SUCCESS,
-        )
-        await record_event(
-            operational_event_repository, module="chat", event_type="message",
-            success=True, workspace_id=principal.workspace_id,
-            web_user_id=principal.web_user_id,
-            latency_ms=int((time.monotonic() - chat_started_at) * 1000),
-            metadata={"provider": "openai", "model": "gpt-5.6-terra"},
-        )
-
-        answer = chat_result.text
+            answer = chat_result.text
 
         clean_answer = (
             answer
@@ -3822,7 +3966,10 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
             "answer": clean_answer,
             "answer_html": answer_html,
             "message_id": saved_assistant_message.id if saved_assistant_message is not None else None,
-            "model": "gpt-5.6-terra",
+            "model": (
+                competitor_llm_provider.name if is_material_intent else "gpt-5.6-terra"
+            ),
+            "material_id": created_artifact.id if created_artifact is not None else None,
             "knowledge_used": bool(knowledge_context),
             "knowledge_sources": [
                 {
