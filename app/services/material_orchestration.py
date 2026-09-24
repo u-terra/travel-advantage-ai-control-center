@@ -340,7 +340,21 @@ _FREE_TEXT_CONSTRAINTS = _CONSTRAINTS + (
     _FREE_TEXT_TOPIC_FALLBACK_CONSTRAINT,
 )
 
-_CLIENT_REPLY_OBJECTIVE = "Сформировать короткий личный ответ клиенту в Telegram по его вопросу."
+# Quality fix (live prod test): "А зачем мне Travel Advantage, если на
+# Trip.com всё проще и можно оплатить российской картой?" got a generic,
+# almost-non-answer that drifted into a general OTA description instead of
+# addressing the actual objection. Objective now requires answering the
+# objection first; see _CLIENT_REPLY_CONSTRAINTS below for the rest (real
+# competitor advantage acknowledged, no "always cheaper", no jargon, no
+# default CTA) - kept compact since source_text shares
+# build_provider_generation_request's 6000-char budget with [SOURCE FACTS]/
+# [VERIFIED CLAIMS] (Content Factory's own hard input cap, see that
+# function's docstring).
+_CLIENT_REPLY_OBJECTIVE = (
+    "Сформировать короткий личный ответ клиенту в Telegram по его вопросу. "
+    "Если вопрос — возражение или сравнение с конкурентом, начни с прямой "
+    "реакции на суть возражения, а не с общего рассказа о Travel Advantage."
+)
 
 # Stage 3B1: TRAVEL_ASSISTANT (client reply) больше не обходит structured
 # orchestration через сырой source_text — та же логика приоритета источников
@@ -377,6 +391,23 @@ _CLIENT_REPLY_CONSTRAINTS = (
     "они — более сильный ориентир манеры речи, чем общий тон бренда, если "
     "это не противоречит бизнес-контексту, verified/unverified claims и "
     "правилам выше.",
+    # Quality fix (live prod test, "А зачем мне Travel Advantage, если на
+    # Trip.com всё проще и можно оплатить российской картой?"): не спорить
+    # с реальным преимуществом конкурента, не обесценивать его и не
+    # утверждать общую выгоду без оснований. Держим формулировки компактно
+    # (source_text делит бюджет с [SOURCE FACTS]/[VERIFIED CLAIMS] и жёстко
+    # ограничен build_provider_generation_request(limit=6000) - см. его
+    # докстринг), а не разворачиваем в подробную инструкцию.
+    "Реальное преимущество конкурента (проще оплата, привычнее покупка и "
+    "т.п.) не оспаривай и не обесценивай — сначала коротко признай "
+    "(например: «Да, у Trip.com действительно проще оплата»), затем кратко "
+    "и только по делу — уместные отличия Travel Advantage: закрытые цены "
+    "где доступны, Travel Credits, Life Experiences, доп. сервисы, "
+    "партнёрский доход. Не утверждай, что Travel Advantage всегда дешевле, "
+    "не обещай выгоду без проверки поездки. Без жаргона «inventory», "
+    "«OTA», «ecosystem», «pipeline», «provider» — обычным языком. Ответ "
+    "короткий, готов к отправке как есть, не статья и не обзор рынка; без "
+    "шаблонного «сообщите даты — подберу», если это не вытекает из вопроса.",
 )
 
 # Добавляется к _CLIENT_REPLY_CONSTRAINTS только когда decision.safety_level

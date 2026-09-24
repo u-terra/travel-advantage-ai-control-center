@@ -824,6 +824,112 @@ def test_client_reply_spec_does_not_leak_into_radar_or_regular_post():
     assert radar.constraints == _RADAR_CONSTRAINTS
 
 
+# --- Quality fix: live prod test, "А зачем мне Travel Advantage, если на
+# Trip.com всё проще и можно оплатить российской картой?" got a generic,
+# almost-non-answer that drifted into a general OTA description instead of
+# addressing the actual objection, used internal jargon ("alternative
+# inventory"), barely acknowledged Trip.com's real advantage, and did not
+# explain concretely why Travel Advantage matters to this specific person. ---
+
+def test_client_reply_objective_requires_answering_the_objection_first():
+    from app.services.material_orchestration import _CLIENT_REPLY_OBJECTIVE
+
+    joined = _CLIENT_REPLY_OBJECTIVE.lower()
+    assert "возражение" in joined
+    assert "начни" in joined or "сначала" in joined
+
+
+def test_client_reply_constraints_require_acknowledging_competitor_advantage():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "не оспаривай" in joined or "не спорь" in joined
+    assert "не обесценивай" in joined
+    # The exact acknowledgement pattern from the requirement - the model is
+    # given a concrete example of honestly conceding a real advantage
+    # instead of arguing it away or drowning it in a generic OTA pitch.
+    assert "trip.com действительно проще оплата" in joined
+
+
+def test_client_reply_constraints_list_concrete_differentiators():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "travel credits" in joined
+    assert "life experiences" in joined
+    assert "закрытые цены" in joined or "членские цены" in joined
+    assert "партнёрский доход" in joined
+
+
+def test_client_reply_constraints_forbid_always_cheaper_claims():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "не утверждай, что travel advantage всегда дешевле" in joined
+    assert "не обещай выгоду без проверки" in joined
+
+
+def test_client_reply_constraints_forbid_internal_jargon():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    for term in ("inventory", "ota", "ecosystem", "pipeline", "provider"):
+        assert term in joined, f"missing jargon-ban for {term!r}"
+    # Sanity: the ban itself, not an accidental match inside unrelated text.
+    assert "без жаргона" in joined
+
+
+def test_client_reply_constraints_forbid_default_closing_cta():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "сообщите даты — подберу" in joined
+    assert "не вытекает из вопроса" in joined
+
+
+def test_client_reply_constraints_require_short_human_reply():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "короткий" in joined
+    assert "не статья" in joined or "не консультационная статья" in joined
+
+
+def test_client_reply_quality_fix_does_not_change_safety_or_style_rules():
+    """The safety-gated constraint and the personal-style/anti-AI-tail
+    rules this fix sits alongside must be completely untouched."""
+    from app.services.material_orchestration import _CLIENT_REPLY_SAFETY_CONSTRAINT
+
+    without_safety = client_reply_spec(profile(), safety_required=False)
+    with_safety = client_reply_spec(profile(), safety_required=True)
+    assert _CLIENT_REPLY_SAFETY_CONSTRAINT not in without_safety.constraints
+    assert _CLIENT_REPLY_SAFETY_CONSTRAINT in with_safety.constraints
+
+    joined = " ".join(without_safety.constraints).lower()
+    assert "если хотите, могу" in joined
+    assert "реплика самого пользователя" in joined
+
+
+def test_client_reply_quality_fix_keeps_prompt_within_content_factory_budget():
+    """Quality-fix regression: the new constraints must not push a typical
+    client-reply prompt - here simulated with a bulky [SOURCE FACTS] block,
+    standing in for a populated KnowledgeBundle in production, which
+    already consumes a large share of the shared budget - past
+    build_provider_generation_request's 6000-char Content Factory cap and
+    truncate the client's own message out of the prompt entirely. See that
+    function's docstring for why 6000 is a hard external limit, not
+    adjustable here. (An earlier draft of this fix's constraints did
+    exactly this - caught by this same scenario failing during review.)"""
+    from app.services.generation_request_builder import build_provider_generation_request
+
+    client_message = "А что с возвратом денег при отмене брони?"
+    spec = client_reply_spec(profile())
+    spec = replace(
+        spec,
+        untrusted_source_content=client_message,
+        source_facts={
+            f"fact_{i}": f"Проверенный факт номер {i} про условия, сроки и правила отмены брони."
+            for i in range(10)
+        },
+    )
+    request = build_provider_generation_request(spec, limit=6000)
+    assert client_message in request.source_text
+
+
 def test_radar_constraints_are_unchanged_by_ux_polish():
     # Radar намеренно не трогается на этом этапе — свой отдельный набор
     # constraints с уже существующим анти-хвост-правилом.
