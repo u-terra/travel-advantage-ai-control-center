@@ -103,13 +103,38 @@ def _competitor_domain_alias_source_ids(domain: str) -> frozenset[str]:
 # - factored out here so the pre-selection Radar-fallback relevance gate
 # (_signal_is_competitor_relevant(), against raw Radar title/summary, before
 # any LLM call) reuses the exact same vocabulary instead of a parallel copy.
-# Never edited to add a specific brand/competitor word - see
-# _signal_is_competitor_relevant's own docstring.
-_PRODUCT_KEYWORDS = ("hotel", "flight", "train", "car", "cruise", "tour", "booking")
-_PROMOTION_KEYWORDS = ("deal", "discount", "promo", "coupon", "sale", "offer")
-_LOYALTY_KEYWORDS = ("member", "loyal", "coin", "reward", "tier", "perk")
-_SERVICE_UX_KEYWORDS = ("app", "service", "support", "search", "flex", "ai", "booking")
-_POSITIONING_MARKETING_KEYWORDS = ("launch", "new product", "new service", "new feature", "introduc")
+#
+# Language-bias fix: a large share of Radar sources (Telegram channels
+# especially) publish in Russian, so an English-only keyword list here
+# systematically misses genuinely business-relevant Russian-language
+# signals while still passing English ones - not a brand-specific gap, a
+# language-coverage one. Russian stems added below cover the same five
+# generic categories, nothing narrower or brand-specific (see
+# _signal_is_competitor_relevant's own docstring against loosening this
+# into a Yandex-specific rule).
+#
+# Never edited to add a specific brand/competitor word.
+_PRODUCT_KEYWORDS = (
+    "hotel", "flight", "train", "car", "cruise", "tour", "booking",
+    "отел", "билет", "перелет", "перелёт", "поезд", "тур", "бронир", "аренда", "автомобиль",
+)
+_PROMOTION_KEYWORDS = (
+    "deal", "discount", "promo", "coupon", "sale", "offer",
+    "скид", "акци", "промокод", "предложен", "распродаж",
+)
+_LOYALTY_KEYWORDS = (
+    "member", "loyal", "coin", "reward", "tier", "perk",
+    "бонус", "балл", "кешбэк", "кэшбэк", "уров", "привилег", "участник",
+)
+_SERVICE_UX_KEYWORDS = (
+    "app", "service", "support", "search", "flex", "ai", "booking",
+    "приложен", "сервис", "поддержк", "поиск", "гибк", "бронир", "искусственный интеллект",
+)
+_POSITIONING_MARKETING_KEYWORDS = (
+    "launch", "new product", "new service", "new feature", "introduc",
+    "запуск", "новый продукт", "новый сервис", "новая функция",
+    "обновлен", "обновлён", "представил", "запустил",
+)
 _BUSINESS_RELEVANCE_KEYWORDS: tuple[tuple[str, ...], ...] = (
     _PRODUCT_KEYWORDS, _PROMOTION_KEYWORDS, _LOYALTY_KEYWORDS,
     _SERVICE_UX_KEYWORDS, _POSITIONING_MARKETING_KEYWORDS,

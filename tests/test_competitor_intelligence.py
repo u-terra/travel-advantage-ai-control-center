@@ -738,6 +738,83 @@ def test_signal_fallback_noise_classification_excludes_source_from_evidence(monk
     assert final_urls == ["https://www.booking.com/blog/new-loyalty-tier"]
 
 
+# ── Language-bias fix: the relevance gate above was English-only, so a
+# large share of Radar sources (Telegram channels especially publish in
+# Russian) systematically failed it regardless of genuine business content -
+# not a Yandex-specific gap, a language-coverage one. Russian stems were
+# added to the SAME generic keyword groups (products/promotions/loyalty/
+# service_and_ux/positioning), no brand-specific rule. ─────────────────────
+def test_signal_fallback_includes_russian_promo_post():
+    record = _signal_record(
+        item_title="Скидка 20% на отели этим летом",
+        item_summary="Успейте забронировать по акции до конца месяца.",
+        item_url="https://www.booking.com/blog/skidka-oteli",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://www.booking.com/blog/skidka-oteli"
+
+
+def test_signal_fallback_includes_russian_loyalty_post():
+    record = _signal_record(
+        item_title="Бонусы участникам программы лояльности",
+        item_summary="Новые баллы начисляются за каждое бронирование.",
+        item_url="https://www.booking.com/blog/bonusy-programma",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://www.booking.com/blog/bonusy-programma"
+
+
+def test_signal_fallback_includes_russian_product_ux_post():
+    record = _signal_record(
+        item_title="Обновили поиск и бронирование отелей",
+        item_summary="Новый интерфейс упрощает выбор дат и номеров.",
+        item_url="https://www.booking.com/blog/obnovili-poisk",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://www.booking.com/blog/obnovili-poisk"
+
+
+def test_signal_fallback_excludes_russian_travel_entertainment_post():
+    record = _signal_record(
+        item_title="Этот пеликан объездил весь мир",
+        item_summary="Забавная история о путешествующей птице из зоопарка.",
+        item_url="https://www.booking.com/blog/pelican-story",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_excludes_russian_bare_engagement_poll():
+    record = _signal_record(
+        item_title="Опрос: с кем вы готовы лететь 6 часов?",
+        item_summary="Голосуйте и делитесь мнением в комментариях.",
+        item_url="https://www.booking.com/poll/6-chasov",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
 # ── Bug fix (live production, competitor_id=6, a competitor whose direct
 # site fetch is correctly blocked by the site's own anti-bot check): the
 # signal fallback's domain check can never match the product's own Telegram
