@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -604,6 +604,140 @@ def test_direct_fetch_path_unaffected_by_quality_filter():
     assert len(result.sources) == 4
 
 
+# ── Quality fix (live production, competitor_id=6, "Яндекс Путешествия"):
+# ai_score/ai_category measure general signal usefulness for lead-gen/content
+# ideas, not competitor-business relevance - a travel-entertainment post or a
+# bare engagement poll can score as a genuine, substantive, on-brand match
+# and still say nothing about the competitor as a business. This gate reuses
+# the SAME generic keyword groups already used elsewhere in this module
+# (_BUSINESS_RELEVANCE_KEYWORDS) against the raw Radar title/summary, before
+# any LLM call - no new brand/Yandex-specific words. ─────────────────────────
+def test_signal_fallback_excludes_travel_entertainment_post_without_business_signal():
+    record = _signal_record(
+        item_title="Этот пеликан объездил весь мир",
+        item_summary="Забавная история о путешествующей птице из зоопарка.",
+        item_url="https://www.booking.com/blog/traveling-pelican",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_excludes_bare_engagement_poll_without_business_signal():
+    record = _signal_record(
+        item_title="Опрос: с кем вы готовы лететь 6 часов?",
+        item_summary="Голосуйте и делитесь мнением в комментариях.",
+        item_url="https://www.booking.com/poll/6-hour-flight",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_includes_discount_or_promo_post():
+    record = _signal_record(
+        item_title="Booking.com launches a summer discount campaign",
+        item_summary="Up to 20% off select hotels this month.",
+        item_url="https://www.booking.com/blog/summer-discount",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://www.booking.com/blog/summer-discount"
+
+
+def test_signal_fallback_includes_loyalty_or_bonus_post():
+    record = _signal_record(
+        item_title="Booking.com expands its member reward tiers",
+        item_summary="New perks for loyal customers announced this week.",
+        item_url="https://www.booking.com/blog/reward-tiers",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://www.booking.com/blog/reward-tiers"
+
+
+def test_signal_fallback_includes_booking_or_product_capability_post():
+    record = _signal_record(
+        item_title="Booking.com adds flexible flight search to its app",
+        item_summary="New feature lets travelers compare hotel and flight bundles.",
+        item_url="https://www.booking.com/blog/flexible-search",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://www.booking.com/blog/flexible-search"
+
+
+def test_signal_fallback_noise_classification_excludes_source_from_evidence(monkeypatch):
+    """Backstop, no new LLM call: analyze_source() is already called for
+    every fetched fallback source - if ITS OWN classification says a
+    particular source is noise, that source must not end up in
+    evidence/fresh_signals/opportunities, even though it passed the
+    pre-selection keyword gate (e.g. by mentioning "app" or "search" in a
+    way that turns out, on full-text LLM analysis, to be noise)."""
+    genuine = _signal_record(
+        interpretation_id=1,
+        item_title="Booking.com launches new loyalty tier",
+        item_summary="New Genius tier announced with expanded perks.",
+        item_url="https://www.booking.com/blog/new-loyalty-tier",
+        ai_score=45.0, ai_category="market_signal",
+    )
+    flagged_as_noise = _signal_record(
+        interpretation_id=2,
+        item_title="Booking.com app mentioned in a giveaway post",
+        item_summary="Win a free hotel booking, just like, share and comment.",
+        item_url="https://www.booking.com/blog/giveaway-mention",
+        ai_score=40.0, ai_category="market_signal",
+    )
+    provider = FakeLLMProvider(analysis=_analysis())
+    from app.domain.content_intelligence import MaterialClassification
+
+    provider.analyze_source = Mock(side_effect=[
+        SourceAnalysisPayload(
+            summary=_analysis().summary, key_facts=_analysis().key_facts,
+            disputed_claims=(), audience_value=_analysis().audience_value,
+            target_audiences=_analysis().target_audiences,
+            content_angles=_analysis().content_angles,
+            recommended_formats=(), warnings=(),
+            classification=MaterialClassification.from_raw(kind="competitor_signal"),
+        ),
+        SourceAnalysisPayload(
+            summary="Промо-упоминание без содержательных фактов.", key_facts=(),
+            disputed_claims=(), audience_value="Нет ценности для аудитории.",
+            target_audiences=(), content_angles=(), recommended_formats=(),
+            warnings=(), classification=MaterialClassification.from_raw(kind="noise"),
+        ),
+    ])
+    knowledge = SimpleNamespace(retrieve=AsyncMock(return_value=_knowledge()))
+    stub = _StubSignalRepository([genuine, flagged_as_noise])
+    service = CompetitorIntelligenceService(
+        provider, knowledge, fetcher=_always_failing_fetch,
+        workspace_signal_repository=stub,
+    )
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    final_urls = [s.final_url for s in result.sources]
+    assert final_urls == ["https://www.booking.com/blog/new-loyalty-tier"]
+
+
 # ── Bug fix (live production, competitor_id=6, a competitor whose direct
 # site fetch is correctly blocked by the site's own anti-bot check): the
 # signal fallback's domain check can never match the product's own Telegram
@@ -653,7 +787,7 @@ def test_signal_fallback_matches_known_telegram_alias_for_yandex_travel(monkeypa
         monkeypatch, {_YANDEX_TRAVEL_ALIAS_SOURCE_ID: _YANDEX_TRAVEL_DOMAIN},
     )
     record = _signal_record(
-        item_title="Новые направления на майские",
+        item_title="Новые направления на майские: скидки на hotel booking",
         item_summary="Подборка курортов с прямыми рейсами.",
         item_url="https://t.me/yandex_travel/12652",
         source_name="Telegram Яндекс Путешествия",
@@ -737,7 +871,7 @@ def test_signal_fallback_onetwotrip_domain_match_still_works_unchanged():
     domain-match path for an unrelated competitor (OneTwoTrip, competitor_id
     7 in the live production workspace)."""
     record = _signal_record(
-        item_title="OneTwoTrip запускает новую программу лояльности",
+        item_title="OneTwoTrip запускает новую loyalty программу",
         item_summary="Кэшбэк на билеты и отели.",
         item_url="https://www.onetwotrip.com/blog/loyalty-2026",
     )

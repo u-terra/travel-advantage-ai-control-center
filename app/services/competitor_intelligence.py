@@ -15,6 +15,7 @@ from app.domain.competitor_intelligence import (
     ContentOpportunity,
 )
 from app.domain.competitors import Competitor
+from app.domain.content_intelligence import KIND_NOISE
 from app.domain.usage import UsageStatus
 from app.planner.fetch import FetchedPublicSource, PublicSourceFetchError, fetch_public_source_sync
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
@@ -91,6 +92,29 @@ def _competitor_domain_alias_source_ids(domain: str) -> frozenset[str]:
         source.id for source in registry.all()
         if source.collector_setting(_COMPETITOR_DOMAIN_ALIAS_COLLECTOR_KEY) == domain
     )
+# Generic, brand-agnostic business-relevance keyword groups - what a signal
+# has to be ABOUT for it to say something about a competitor as a business,
+# as opposed to being travel content/entertainment/engagement bait that
+# merely mentions the brand. Each group is the SAME literal keyword tuple
+# already used elsewhere in this module for post-analysis fact
+# classification (the _matching() calls in analyze() for products/
+# promotions/loyalty_mechanics/service_and_ux, and the "новый продукт или
+# сервис" row of _OPPORTUNITY_CATEGORIES for positioning/marketing tactics)
+# - factored out here so the pre-selection Radar-fallback relevance gate
+# (_signal_is_competitor_relevant(), against raw Radar title/summary, before
+# any LLM call) reuses the exact same vocabulary instead of a parallel copy.
+# Never edited to add a specific brand/competitor word - see
+# _signal_is_competitor_relevant's own docstring.
+_PRODUCT_KEYWORDS = ("hotel", "flight", "train", "car", "cruise", "tour", "booking")
+_PROMOTION_KEYWORDS = ("deal", "discount", "promo", "coupon", "sale", "offer")
+_LOYALTY_KEYWORDS = ("member", "loyal", "coin", "reward", "tier", "perk")
+_SERVICE_UX_KEYWORDS = ("app", "service", "support", "search", "flex", "ai", "booking")
+_POSITIONING_MARKETING_KEYWORDS = ("launch", "new product", "new service", "new feature", "introduc")
+_BUSINESS_RELEVANCE_KEYWORDS: tuple[tuple[str, ...], ...] = (
+    _PRODUCT_KEYWORDS, _PROMOTION_KEYWORDS, _LOYALTY_KEYWORDS,
+    _SERVICE_UX_KEYWORDS, _POSITIONING_MARKETING_KEYWORDS,
+)
+
 _OPPORTUNITY_CATEGORIES = (
     ("AI и технологии в travel", (" ai ", "chatgpt", "artificial intelligence", "technology", "digital", "biometric", "esim", "app", "интеллект", "нейросет")),
     ("travel trends", ("trend", "traveler", "traveller", "tourism", "booking data", "тренд")),
@@ -99,7 +123,7 @@ _OPPORTUNITY_CATEGORIES = (
     ("loyalty и promotions", ("loyal", "member", "reward", "coin", "promo", "discount", "deal", "coupon", "sale", "акци", "скидк", "промокод")),
     ("customer UX", ("support", "payment", "cancel", "refund", "search", "flexib", "pay", "alipay", "wechat", "оплат", "поддержк")),
     ("изменение спроса", ("demand", "surge", "growth", "increase", "decrease", "year-on-year", "спрос")),
-    ("новый продукт или сервис", ("launch", "new product", "new service", "new feature", "introduc")),
+    ("новый продукт или сервис", _POSITIONING_MARKETING_KEYWORDS),
 )
 _DEDUP_STOP_WORDS = frozenset({
     "the", "and", "for", "with", "from", "this", "that", "trip", "com",
@@ -267,6 +291,17 @@ class CompetitorIntelligenceService:
             )
             if analysis is None:
                 analysis = _fallback_analysis(source)
+            # Backstop (no new LLM call - reuses the classification the
+            # analyze_source() call above already returns): Content
+            # Intelligence's own generic material classification already
+            # distinguishes a genuine competitor/news/content signal from
+            # "noise" for this exact text. A source the LLM itself flagged
+            # as noise must not become part of Positioning/Strengths/
+            # fresh_signals/opportunities, whichever fetch path it came
+            # from - the keyword gate above only runs for the Radar
+            # fallback and only on the raw, un-analyzed title/summary.
+            if analysis.classification is not None and analysis.classification.kind == KIND_NOISE:
+                continue
             analyses.append((source, analysis))
             evidence.append(CompetitorSourceEvidence(
                 title=source.title or source.final_url,
@@ -309,11 +344,11 @@ class CompetitorIntelligenceService:
             competitor_label=competitor.label,
             analyzed_at=discovered_at,
             positioning=summaries[:2],
-            products=_matching(all_facts, "hotel", "flight", "train", "car", "cruise", "tour", "booking"),
+            products=_matching(all_facts, *_PRODUCT_KEYWORDS),
             destinations_and_categories=_matching(all_facts, "destination", "city", "country", "travel", "hotel", "flight"),
-            promotions=_matching(all_facts, "deal", "discount", "promo", "coupon", "sale", "offer"),
-            loyalty_mechanics=_matching(all_facts, "member", "loyal", "coin", "reward", "tier", "perk"),
-            service_and_ux=_matching(all_facts, "app", "service", "support", "search", "flex", "ai", "booking"),
+            promotions=_matching(all_facts, *_PROMOTION_KEYWORDS),
+            loyalty_mechanics=_matching(all_facts, *_LOYALTY_KEYWORDS),
+            service_and_ux=_matching(all_facts, *_SERVICE_UX_KEYWORDS),
             strengths=tuple(dict.fromkeys((*summaries, *all_facts)))[:5],
             travel_advantage_comparison=ta_facts,
             fresh_signals=tuple(
@@ -366,6 +401,7 @@ class CompetitorIntelligenceService:
             )
             and _signal_is_recent(record.raw_created_at)
             and _signal_is_substantive(record)
+            and _signal_is_competitor_relevant(record)
         ]
         # Quality fix (live production example, competitor_id=6): among
         # several genuinely-matching, genuinely-recent signals, prefer the
@@ -456,6 +492,32 @@ def _signal_is_substantive(record: WorkspaceSignalRecord) -> bool:
     if record.ai_category == _NOISE_CATEGORY:
         return False
     return (record.ai_score or 0) > 0
+
+
+def _signal_is_competitor_relevant(record: WorkspaceSignalRecord) -> bool:
+    """Quality fix (live production example, competitor_id=6): a signal can
+    genuinely match this competitor (brand mention/alias/domain) and be
+    fresh and Radar-substantive (not noise, score>0) while still saying
+    nothing about the competitor AS A BUSINESS - a travel-entertainment post
+    ("этот пеликан объездил весь мир") or a bare engagement poll can score
+    positively on ai_score/ai_category yet carry zero business signal, and
+    would otherwise end up as the sole "evidence" Positioning/Strengths are
+    built from.
+
+    Reuses the SAME generic keyword groups already used elsewhere in this
+    module for post-analysis fact classification
+    (_BUSINESS_RELEVANCE_KEYWORDS - products/promotions/loyalty/service_and_
+    ux/positioning-marketing), applied to the raw Radar title/summary
+    instead of LLM-extracted facts, so this gate runs before any LLM call
+    and never duplicates or extends that vocabulary with a brand-specific
+    word. Not a replacement for _signal_matches_competitor's identity check -
+    this only asks whether the matched signal has ANY business substance."""
+    haystack = f"{record.item_title} {record.item_summary}".lower()
+    return any(
+        keyword in haystack
+        for group in _BUSINESS_RELEVANCE_KEYWORDS
+        for keyword in group
+    )
 
 
 def _signal_is_recent(raw_created_at: str, *, days: int = _SIGNAL_FRESH_DAYS) -> bool:
