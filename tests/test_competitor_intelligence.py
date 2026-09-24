@@ -402,6 +402,11 @@ class _StubSignalRepository:
     def __init__(self, records: list[WorkspaceSignalRecord]) -> None:
         self._records = records
         self.workspace_ids_queried: list[int] = []
+        self.sync_eligible_calls = 0
+
+    async def sync_eligible(self) -> int:
+        self.sync_eligible_calls += 1
+        return 0
 
     async def list_for_workspace(self, workspace_id: int, *, limit: int = 200):
         self.workspace_ids_queried.append(workspace_id)
@@ -431,6 +436,10 @@ def test_direct_fetch_success_leaves_data_origin_as_direct_fetch_unchanged():
     assert result.data_origin == DATA_ORIGIN_DIRECT_FETCH
     assert all(s.origin == DATA_ORIGIN_DIRECT_FETCH for s in result.sources)
     assert stub.workspace_ids_queried == []
+    # A readable direct source means the Radar fallback is never entered at
+    # all, so sync_eligible() (a write against the shared interpretations
+    # table) must not fire on a request that never needed it.
+    assert stub.sync_eligible_calls == 0
 
 
 def test_direct_fetch_fails_but_matching_recent_signal_used_as_fallback():
@@ -452,6 +461,9 @@ def test_direct_fetch_fails_but_matching_recent_signal_used_as_fallback():
     assert result.sources[0].freshness == record.raw_created_at[:10]
     assert stub.workspace_ids_queried == [42]
     assert result.positioning  # LLM analysis still ran over the reused path
+    # direct_fetch failed, so the Radar fallback path was entered -
+    # sync_eligible() must have run before list_for_workspace().
+    assert stub.sync_eligible_calls == 1
 
 
 def test_signal_fallback_matches_by_domain_even_when_label_text_differs():
@@ -766,3 +778,52 @@ def test_independent_workspace_never_receives_another_workspaces_radar_signal(
     # workspace B (the actual subscriber) gets the fallback.
     result_b = run(service.analyze(competitor_b, ta_affiliated=True))
     assert result_b.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+
+
+# ── Bug fix (live production, competitor_id=6, "Яндекс Путешествия"): the
+# subscription and alias config were both correct, but the fallback still
+# raised CompetitorIntelligenceUnavailable, because a fresh Radar row is only
+# visible to WorkspaceSignalRepository.list_for_workspace() once
+# sync_eligible() has materialized it into workspace_signal_interpretations -
+# and unlike app.services.signal_service's sync_and_list_radar_signals(),
+# _relevant_recent_signals() used to call list_for_workspace() directly,
+# so a workspace that had not separately opened "Найти сигналы"/
+# GET /api/signals never saw the row. ──────────────────────────────────────
+def test_analyze_itself_syncs_a_radar_row_nobody_else_has_synced_yet(tmp_path: Path):
+    """End-to-end against the REAL WorkspaceSignalRepository: a Radar row
+    that exists only in the external Radar DB (never synced by any other
+    code path) must still reach the fallback, because analyze() now calls
+    sync_eligible() itself before reading."""
+    app_db, radar_db, workspace_a, _partners, catalog = _radar_setup(tmp_path)
+    source = run(catalog.add_source(workspace_a, "https://skift.com/feed", "monitoring")).source
+
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    _seed_radar_signal(
+        radar_db, source_id=source.id,
+        item_title="Booking.com launches AI trip planner",
+        item_summary="New feature announced this week.",
+        item_url="https://skift.com/booking-ai-planner", created_at=recent,
+    )
+
+    signal_repo = WorkspaceSignalRepository(app_db, radar_db)
+    run(signal_repo.init(None))
+    # Deliberately NOT calling signal_repo.sync_eligible() here - that is
+    # the whole point: the row is fresh in Radar but not yet materialized
+    # into workspace_signal_interpretations by anything.
+
+    competitor_repo = CompetitorRepository(app_db)
+    run(competitor_repo.init())
+    competitor = run(competitor_repo.add_competitor(
+        workspace_a, "https://www.booking.com", label="Booking.com",
+    ))
+
+    service = CompetitorIntelligenceService(
+        FakeLLMProvider(analysis=_analysis()),
+        SimpleNamespace(retrieve=AsyncMock(return_value=_knowledge())),
+        fetcher=_always_failing_fetch, workspace_signal_repository=signal_repo,
+    )
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_RADAR_SIGNAL
+    assert result.sources[0].final_url == "https://skift.com/booking-ai-planner"

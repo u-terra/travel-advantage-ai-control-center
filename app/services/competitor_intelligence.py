@@ -338,6 +338,14 @@ class CompetitorIntelligenceService:
         if self._workspace_signal_repository is None:
             return []
         try:
+            # Same cheap idempotent upsert app.services.signal_service's
+            # sync_and_list_radar_signals() already calls before its own
+            # list_for_workspace() read - without it, a Radar row that
+            # landed after the workspace's last "Найти сигналы"/
+            # GET /api/signals read would sit in the external Radar DB
+            # invisible to this fallback until someone happened to open
+            # that unrelated screen first.
+            await self._workspace_signal_repository.sync_eligible()
             records = await self._workspace_signal_repository.list_for_workspace(
                 competitor.workspace_id, limit=200,
             )
