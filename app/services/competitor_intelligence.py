@@ -365,8 +365,17 @@ class CompetitorIntelligenceService:
                 alias_source_ids=alias_source_ids,
             )
             and _signal_is_recent(record.raw_created_at)
+            and _signal_is_substantive(record)
         ]
-        matched.sort(key=lambda record: record.raw_created_at, reverse=True)
+        # Quality fix (live production example, competitor_id=6): among
+        # several genuinely-matching, genuinely-recent signals, prefer the
+        # most SUBSTANTIVE one, not just the freshest - Radar already scores
+        # every signal (ai_score) via the same classification pipeline used
+        # everywhere else in the product, so a market_signal scored 45
+        # outranks a barely-there content_signal scored 32 even though the
+        # latter happened to land an hour later. Ties (equal score) still
+        # fall back to freshness, same as before this fix.
+        matched.sort(key=lambda record: (record.ai_score or 0, record.raw_created_at), reverse=True)
         return matched[:_MAX_SIGNAL_FALLBACK_SOURCES]
 
 
@@ -431,6 +440,22 @@ def _signal_matches_competitor(
         return False
     haystack = f"{record.item_title} {record.item_summary} {record.source_name}"
     return bool(label_pattern.search(haystack))
+
+
+_NOISE_CATEGORY = "noise"
+
+
+def _signal_is_substantive(record: WorkspaceSignalRecord) -> bool:
+    """Excludes a matching, recent signal that Radar's own classification
+    already flagged as content-free - a giveaway/engagement post scored 0
+    and tagged "noise", or anything scored at or below 0, must not become
+    the sole "evidence" the fallback builds Positioning/Strengths from just
+    because it happens to be recent and mention the right brand. This reuses
+    Radar's own existing ai_score/ai_category classification (no new
+    scoring, no brand/keyword rules of its own)."""
+    if record.ai_category == _NOISE_CATEGORY:
+        return False
+    return (record.ai_score or 0) > 0
 
 
 def _signal_is_recent(raw_created_at: str, *, days: int = _SIGNAL_FRESH_DAYS) -> bool:

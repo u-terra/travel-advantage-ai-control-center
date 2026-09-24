@@ -381,12 +381,17 @@ def _signal_record(
     *, interpretation_id: int = 1, workspace_id: int = 42, item_title: str = "",
     item_summary: str = "", item_url: str = "", source_name: str = "",
     raw_created_at: str | None = None, source_id: str | None = None,
+    ai_score: float | None = 50.0, ai_category: str | None = "market_signal",
 ) -> WorkspaceSignalRecord:
+    """ai_score/ai_category default to a genuinely-substantive signal
+    (see _signal_is_substantive in app.services.competitor_intelligence) so
+    existing tests that don't care about quality-filtering keep passing
+    unchanged; tests exercising that filter pass their own values."""
     when = raw_created_at or (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     return WorkspaceSignalRecord(
         interpretation_id=interpretation_id, workspace_id=workspace_id,
         radar_signal_id=interpretation_id, source_id=source_id, usage_role_snapshot=None,
-        status="new", notes="", ai_score=None, ai_category=None, ai_reason=None,
+        status="new", notes="", ai_score=ai_score, ai_category=ai_category, ai_reason=None,
         suggested_message=None, created_at=when, raw_created_at=when,
         source_type="rss", origin_type="publisher_post", item_title=item_title,
         item_summary=item_summary, item_url=item_url, source_name=source_name,
@@ -494,6 +499,109 @@ def test_signal_fallback_rejects_unrelated_travel_news():
     with pytest.raises(CompetitorIntelligenceUnavailable) as exc_info:
         run(service.analyze(competitor, ta_affiliated=True))
     assert "Свежие источники" in str(exc_info.value)
+
+
+# ── Quality fix (live production, competitor_id=6, "Яндекс Путешествия"):
+# the fallback picked genuinely-matching, genuinely-recent signals purely by
+# recency, so a content-free giveaway/engagement post could outrank (or be
+# the ONLY) evidence Positioning/Strengths were built from. Radar already
+# scores every signal via its own classification pipeline
+# (ai_score/ai_category) - reusing that (no new keyword/brand rules here) to
+# drop noise and rank by substance first, recency second. ─────────────────
+def test_signal_fallback_excludes_noise_category_even_if_only_match():
+    record = _signal_record(
+        item_title="Розыгрыш призов в нашем канале!",
+        item_summary="Участвуйте и выигрывайте.",
+        item_url="https://www.booking.com/promo/giveaway",
+        ai_score=0.0, ai_category="noise",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_excludes_zero_or_negative_score_even_outside_noise_category():
+    record = _signal_record(
+        item_title="Booking.com mentioned in passing",
+        item_summary="",
+        item_url="https://www.booking.com/mention",
+        ai_score=0.0, ai_category="content_signal",
+    )
+    service, _ = _service_with_signals([record])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    with pytest.raises(CompetitorIntelligenceUnavailable):
+        run(service.analyze(competitor, ta_affiliated=True))
+
+
+def test_signal_fallback_prefers_higher_score_over_fresher_lower_score():
+    """A fresher, weaker content_signal (score=32) must not outrank an
+    older, more substantive market_signal (score=45) - live production
+    example: an engagement poll landing after a genuine product-news post
+    about the same competitor must not bump the latter out of the fallback's
+    evidence."""
+    weak_but_fresh = _signal_record(
+        interpretation_id=1,
+        item_title="Опрос: куда вы поедете этим летом?",
+        item_summary="Голосуйте в нашем канале.",
+        item_url="https://www.booking.com/poll",
+        raw_created_at=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        ai_score=32.0, ai_category="content_signal",
+    )
+    strong_but_older = _signal_record(
+        interpretation_id=2,
+        item_title="Booking.com launches new loyalty tier",
+        item_summary="New Genius tier announced with expanded perks.",
+        item_url="https://www.booking.com/blog/new-loyalty-tier",
+        raw_created_at=(datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+        ai_score=45.0, ai_category="market_signal",
+    )
+    service, _ = _service_with_signals([weak_but_fresh, strong_but_older])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.sources[0].final_url == "https://www.booking.com/blog/new-loyalty-tier"
+
+
+def test_signal_fallback_breaks_equal_score_tie_by_freshness():
+    older = _signal_record(
+        interpretation_id=1,
+        item_title="Booking.com expands car rental options",
+        item_summary="New markets added.",
+        item_url="https://www.booking.com/blog/car-rental",
+        raw_created_at=(datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+        ai_score=40.0, ai_category="market_signal",
+    )
+    newer = _signal_record(
+        interpretation_id=2,
+        item_title="Booking.com launches new loyalty tier",
+        item_summary="New Genius tier announced with expanded perks.",
+        item_url="https://www.booking.com/blog/new-loyalty-tier",
+        raw_created_at=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        ai_score=40.0, ai_category="market_signal",
+    )
+    service, _ = _service_with_signals([older, newer])
+    competitor = Competitor(7, 42, "https://www.booking.com", "Booking.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.sources[0].final_url == "https://www.booking.com/blog/new-loyalty-tier"
+
+
+def test_direct_fetch_path_unaffected_by_quality_filter():
+    """The quality filter lives entirely inside the Radar fallback - a
+    readable direct source is completely unaffected, same as before this
+    fix (data_origin, source count and ordering by _candidate_urls)."""
+    service, _, _ = _service()
+    competitor = Competitor(7, 42, "https://nl.trip.com/?locale=nl-nl", "Trip.com", "now")
+
+    result = run(service.analyze(competitor, ta_affiliated=True))
+
+    assert result.data_origin == DATA_ORIGIN_DIRECT_FETCH
+    assert len(result.sources) == 4
 
 
 # ── Bug fix (live production, competitor_id=6, a competitor whose direct
@@ -711,10 +819,11 @@ def test_ta_affiliated_true_and_false_get_identical_signal_fallback_evidence():
 
 def _seed_radar_signal(
     radar_db: Path, *, source_id: str, item_title: str, item_summary: str,
-    item_url: str, created_at: str,
+    item_url: str, created_at: str, ai_score: float | None = 50.0,
+    ai_category: str | None = "market_signal",
 ) -> None:
     with sqlite3.connect(radar_db) as db:
-        db.execute("""CREATE TABLE lead_signals (
+        db.execute("""CREATE TABLE IF NOT EXISTS lead_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT, created_at TEXT,
             source_type TEXT, origin_type TEXT, source_name TEXT, source_url TEXT,
             item_url TEXT UNIQUE, item_title TEXT, item_summary TEXT, published_at TEXT,
@@ -725,9 +834,9 @@ def _seed_radar_signal(
         )""")
         db.execute(
             "INSERT INTO lead_signals(source_id, source_name, created_at, source_type, "
-            "origin_type, item_url, item_title, item_summary) "
-            "VALUES (?, 'Skift', ?, 'rss', 'publisher_post', ?, ?, ?)",
-            (source_id, created_at, item_url, item_title, item_summary),
+            "origin_type, item_url, item_title, item_summary, ai_score, ai_category) "
+            "VALUES (?, 'Skift', ?, 'rss', 'publisher_post', ?, ?, ?, ?, ?)",
+            (source_id, created_at, item_url, item_title, item_summary, ai_score, ai_category),
         )
         db.commit()
 
