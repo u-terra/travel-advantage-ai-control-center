@@ -445,6 +445,28 @@ section { padding: 64px 0; }
 
 .final-cta .btn-ghost:hover { background: var(--bg); }
 
+.qr-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 32px;
+}
+
+.qr-block img {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px;
+    background: #fff;
+}
+
+.qr-caption {
+    margin: 0;
+    font-size: 13.5px;
+    color: var(--text-muted);
+}
+
 .contacts {
     display: flex;
     justify-content: center;
@@ -503,7 +525,7 @@ footer {
 
         <div class="hero-actions">
             <a href="#scenarios" class="btn btn-primary">Посмотреть, как работает</a>
-            <a href="https://t.me/ta_control_center_vassian_bot" target="_blank" rel="noopener" class="btn btn-ghost">Попробовать в Telegram</a>
+            <a href="https://t.me/{{BOT_USERNAME}}" target="_blank" rel="noopener" class="btn btn-ghost">Попробовать в Telegram</a>
         </div>
     </div>
 </header>
@@ -757,6 +779,11 @@ footer {
             <a href="https://t.me/VladCRM" target="_blank" rel="noopener" class="btn btn-ghost">Задать вопрос / Связаться</a>
         </div>
 
+        <div class="qr-block">
+            <img src="/static/demo-qr.svg" width="140" height="140" alt="QR-код на демо ORCHESTRAVEL">
+            <p class="qr-caption">Откройте ORCHESTRAVEL на телефоне</p>
+        </div>
+
         <div class="contacts">
             <span>Telegram: <a href="https://t.me/VladCRM" target="_blank" rel="noopener">@VladCRM</a></span>
             <span>Сайт: <a href="https://vassian.ru" target="_blank" rel="noopener">vassian.ru</a></span>
@@ -765,7 +792,7 @@ footer {
 </section>
 
 <footer>
-    ORCHESTRAVEL — <a href="https://t.me/ta_control_center_vassian_bot" target="_blank" rel="noopener">t.me/ta_control_center_vassian_bot</a>
+    ORCHESTRAVEL — <a href="https://t.me/{{BOT_USERNAME}}" target="_blank" rel="noopener">t.me/{{BOT_USERNAME}}</a>
 </footer>
 
 </body>

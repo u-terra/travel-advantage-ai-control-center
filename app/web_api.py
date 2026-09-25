@@ -4201,10 +4201,22 @@ async def home(request: Request):
 async def demo_page(request: Request):
     """Public marketing/demo page - no session check by design. Renders
     static, pre-scripted scenarios only; touches no tenant/user data,
-    no auth state, and no admin surface."""
-    return Path(
-        "app/templates/demo.html"
-    ).read_text(encoding="utf-8")
+    no auth state, and no admin surface. {{BOT_USERNAME}} is substituted
+    from settings.orchestravel_bot_username (same source POST
+    /api/telegram/bind-token uses) so the page never hardcodes a bot
+    handle that could drift from the real one."""
+    html = Path("app/templates/demo.html").read_text(encoding="utf-8")
+    return html.replace("{{BOT_USERNAME}}", settings.orchestravel_bot_username)
+
+
+@app.get("/static/demo-qr.svg", response_class=Response)
+async def demo_qr_asset(request: Request):
+    """Static QR code pointing at settings.orchestravel_public_base_url +
+    "/demo" - pre-generated offline (see tools/gen_qr.py), not rendered
+    at request time. Single-file route, not a StaticFiles mount: this app
+    serves no other static assets (see attachment_storage comment above)."""
+    svg = Path("app/static/demo-qr.svg").read_bytes()
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 @app.get("/login", response_class=HTMLResponse)
