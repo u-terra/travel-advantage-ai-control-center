@@ -112,7 +112,10 @@ class Settings:
     # (t.me/<username>?start=<token>) points at - see app.web_api's POST
     # /api/telegram/bind-token. Defaults to the real production bot
     # (already public on /demo and in docs), overridable for local/staging
-    # bots without touching production ENV.
+    # bots without touching production ENV. TELEGRAM_BOT_USERNAME is
+    # normalized (leading "@" and surrounding whitespace stripped) so a
+    # copy-pasted "@name" from BotFather still produces a bare username -
+    # every t.me/<username> call site assumes no leading "@".
     orchestravel_bot_username: str
     # Web search MVP (see app.services.web_search) - OFF by default. False
     # (or an unrecognized web_search_provider, or missing provider
@@ -262,7 +265,7 @@ def load_settings() -> Settings:
         if email.strip()
     )
     orchestravel_bot_username = (
-        os.environ.get("TELEGRAM_BOT_USERNAME", "").strip()
+        os.environ.get("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@").strip()
         or "ta_control_center_vassian_bot"
     )
 
