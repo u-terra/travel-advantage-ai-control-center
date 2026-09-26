@@ -81,8 +81,19 @@ def compute_access_state(
         return PENDING
     if status == SubscriptionStatus.TRIAL:
         return EXPIRED if _is_expired(trial_until, now) else TRIAL_ACTIVE
-    # BETA и ACTIVE - оба гранты рабочего доступа, отличаются только planом.
-    return EXPIRED if _is_expired(paid_until, now) else ACTIVE
+    if status in (SubscriptionStatus.BETA, SubscriptionStatus.ACTIVE):
+        return EXPIRED if _is_expired(paid_until, now) else ACTIVE
+    # Fail-closed hardening (production incident: an out-of-date deploy of
+    # this file - missing the PENDING branch above - let a self-service
+    # 'pending' workspace fall through an implicit "else -> ACTIVE" and get
+    # full product access before ever paying). Every SubscriptionStatus
+    # value that means "grant access" is now matched explicitly above; any
+    # status this function does not recognize - today unreachable since the
+    # enum is closed, but exactly the shape of a future status added to
+    # app.domain.subscription without a matching branch here (as happened
+    # once already via a partial/out-of-order deploy) - must never silently
+    # grant access. Baseline is closed, not open.
+    return EXPIRED
 
 
 def _is_expired(expires_at: str | None, now: datetime | None) -> bool:

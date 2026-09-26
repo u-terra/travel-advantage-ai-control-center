@@ -13,6 +13,7 @@ from app.services.access_state import (
     EXPIRED,
     NO_WORKSPACE,
     PAST_DUE,
+    PENDING,
     SUSPENDED,
     TRIAL_ACTIVE,
     compute_access_state,
@@ -121,6 +122,42 @@ def test_is_access_granted() -> None:
     assert is_access_granted(SUSPENDED) is False
     assert is_access_granted(PAST_DUE) is False
     assert is_access_granted(NO_WORKSPACE) is False
+    assert is_access_granted(PENDING) is False
+
+
+# --- pending: self-service signup, never paid yet - ZERO product access ----
+# (production incident this closes: an out-of-date deploy of
+# app/services/access_state.py that predated this branch let 'pending' fall
+# through to an implicit "else -> ACTIVE" default - see compute_access_state's
+# fail-closed hardening below for the structural fix, not just this branch.)
+
+
+def test_pending_grants_no_access_regardless_of_dates() -> None:
+    future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+    assert compute_access_state(SubscriptionStatus.PENDING, None, None) == PENDING
+    assert compute_access_state(SubscriptionStatus.PENDING, future, future) == PENDING
+    assert is_access_granted(compute_access_state(SubscriptionStatus.PENDING, None, None)) is False
+
+
+def test_pending_is_not_active_even_without_paid_until() -> None:
+    """The exact production incident: a fresh self-service signup has
+    paid_until=None - the same "no date = unlimited" shape a real ACTIVE/
+    BETA workspace has. Without an explicit PENDING branch, that shape is
+    indistinguishable from "grandfathered, unlimited access" and the
+    fall-through default would have granted it."""
+    assert compute_access_state(SubscriptionStatus.PENDING, None, None) != ACTIVE
+
+
+# --- fail-closed hardening: an unrecognized status must never grant access --
+
+
+def test_unrecognized_status_value_fails_closed_not_active() -> None:
+    """Defense in depth for the exact bug class the production incident
+    was: a subscription-lifecycle status this function doesn't explicitly
+    branch on (here simulated with a plain str, since SubscriptionStatus
+    itself is a closed enum) must resolve to EXPIRED, never silently fall
+    into the ACTIVE bucket."""
+    assert compute_access_state("some_future_status", None, None) == EXPIRED
 
 
 # --- AccessStateMiddleware: источник - SubscriptionRepository ---------------
