@@ -127,7 +127,7 @@ from app.services.lead_radar import (
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
-from app.services.plan_limits import get_plan_limits, plan_display_name
+from app.services.plan_limits import get_plan_limits, is_quota_counted_material, plan_display_name
 from app.services.plan_quota_service import PlanQuotaService
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
 from app.services.rate_limit import signup_rate_limiter
@@ -1860,7 +1860,7 @@ async def create_material_from_competitor_opportunity(
         # Material quota applies only to a "post" (material) action - a
         # "client_message" here is «Ответить клиенту», explicitly excluded
         # from any business quota (see app.services.plan_quota_service).
-        if request.action == "post":
+        if is_quota_counted_material(request.action):
             quota_decision = await plan_quota_service.check_material_quota(
                 principal.workspace_id
             )
@@ -1917,7 +1917,7 @@ async def create_material_from_competitor_opportunity(
                 f"data_origin={intelligence.data_origin}"
             ),
         )
-        if request.action == "post":
+        if is_quota_counted_material(request.action):
             await plan_quota_service.record_material_created(principal.workspace_id)
 
         await record_event(
@@ -2162,7 +2162,7 @@ async def _create_material_from_web_signal(
         )
         # Material quota applies only to a "post" (material) action - see
         # the identical gate in create_material_from_competitor_opportunity.
-        if request.action == "post":
+        if is_quota_counted_material(request.action):
             quota_decision = await plan_quota_service.check_material_quota(
                 principal.workspace_id
             )
@@ -2215,7 +2215,7 @@ async def _create_material_from_web_signal(
             content=sanitized,
             generation_note=f"Сигнал web-источника: id={signal_id}",
         )
-        if request.action == "post":
+        if is_quota_counted_material(request.action):
             await plan_quota_service.record_material_created(principal.workspace_id)
 
         await record_event(
@@ -2360,7 +2360,7 @@ async def create_material_from_signal(
         )
         # Material quota applies only to a "post" (material) action - see
         # the identical gate in create_material_from_competitor_opportunity.
-        if request.action == "post":
+        if is_quota_counted_material(request.action):
             quota_decision = await plan_quota_service.check_material_quota(
                 principal.workspace_id
             )
@@ -2413,7 +2413,7 @@ async def create_material_from_signal(
             content=sanitized,
             generation_note=f"Сигнал Radar: interpretation_id={interpretation_id}",
         )
-        if request.action == "post":
+        if is_quota_counted_material(request.action):
             await plan_quota_service.record_material_created(principal.workspace_id)
 
         await record_event(

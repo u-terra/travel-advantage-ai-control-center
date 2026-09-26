@@ -173,6 +173,94 @@ def test_competitor_analysis_quota_blocks_analyze_before_the_provider_call(api) 
     spy.assert_not_awaited()  # the expensive LLM-backed call never happened
 
 
+# ── request.action ("post" vs "client_message") drives material quota ──────
+
+
+def _opportunity(competitor_id: int):
+    from app.domain.competitor_intelligence import ContentOpportunity
+    return ContentOpportunity(
+        id="opp-1", competitor_id=competitor_id, topic="Конкурент снизил цены",
+        source_title="Пост конкурента", source_url="https://example.com/post",
+        freshness="сегодня", key_thesis="Конкурент демпингует",
+        audience_value="Клиентам важна цена", own_post_angle="Наш сервис включает поддержку",
+        travel_advantage_link=None,
+    )
+
+
+def test_opportunity_action_post_consumes_material_quota(api, monkeypatch) -> None:
+    client, web_api, workspace_id = api
+    _set_plan(web_api, workspace_id, SubscriptionPlan.STANDARD)
+    competitor = _run(web_api.competitor_repository.add_competitor(
+        workspace_id, "https://rival.example.com",
+    ))
+    opportunity = _opportunity(competitor.id)
+    _run(web_api.competitor_repository.save_intelligence(
+        workspace_id, _intelligence_with(competitor.id, opportunity),
+    ))
+    from app.services.llm.models import ContentDraft
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kwargs: ContentDraft(text="Черновик", warnings=()),
+    )
+
+    response = client.post(
+        f"/api/competitors/{competitor.id}/opportunities/{opportunity.id}/actions",
+        json={"action": "post"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["material"] is not None
+    from app.repositories.plan_usage_repository import MATERIAL_CREATED
+    count = _run(web_api.plan_usage_repository.count_since(
+        workspace_id, MATERIAL_CREATED, "1970-01-01T00:00:00+00:00",
+    ))
+    assert count == 1
+
+
+def test_opportunity_action_client_message_never_consumes_material_quota(api, monkeypatch) -> None:
+    """«Ответить клиенту» (action=client_message) creates a real Artifact
+    too, but must never spend the material quota."""
+    client, web_api, workspace_id = api
+    _set_plan(web_api, workspace_id, SubscriptionPlan.STANDARD)
+    competitor = _run(web_api.competitor_repository.add_competitor(
+        workspace_id, "https://rival.example.com",
+    ))
+    opportunity = _opportunity(competitor.id)
+    _run(web_api.competitor_repository.save_intelligence(
+        workspace_id, _intelligence_with(competitor.id, opportunity),
+    ))
+    from app.services.llm.models import ContentDraft
+    monkeypatch.setattr(
+        web_api.competitor_llm_provider, "generate_draft",
+        lambda **kwargs: ContentDraft(text="Черновик клиенту", warnings=()),
+    )
+
+    response = client.post(
+        f"/api/competitors/{competitor.id}/opportunities/{opportunity.id}/actions",
+        json={"action": "client_message"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["material"] is not None  # the Artifact IS created
+    from app.repositories.plan_usage_repository import MATERIAL_CREATED
+    count = _run(web_api.plan_usage_repository.count_since(
+        workspace_id, MATERIAL_CREATED, "1970-01-01T00:00:00+00:00",
+    ))
+    assert count == 0  # ...but it never spends the material quota
+
+
+def _intelligence_with(competitor_id: int, opportunity):
+    from app.domain.competitor_intelligence import CompetitorIntelligence
+    return CompetitorIntelligence(
+        competitor_id=competitor_id, competitor_label="RivalCo",
+        analyzed_at="2026-01-01T00:00:00+00:00",
+        positioning=(), products=(), destinations_and_categories=(), promotions=(),
+        loyalty_mechanics=(), service_and_ux=(), strengths=(),
+        travel_advantage_comparison=(), fresh_signals=(), sources=(),
+        opportunities=(opportunity,), data_origin="direct_fetch",
+    )
+
+
 def test_competitor_analysis_allowed_under_quota_calls_provider_and_records(api) -> None:
     client, web_api, workspace_id = api
     _set_plan(web_api, workspace_id, SubscriptionPlan.START)

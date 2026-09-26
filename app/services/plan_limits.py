@@ -21,7 +21,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.domain.content import ARTIFACT_TYPES
 from app.domain.subscription import SubscriptionPlan
+
+# Which of app.domain.content.ARTIFACT_TYPES count as a quota-relevant
+# "material" (per the product rule: "1 успешно созданный пользователем
+# материал = 1 единица"). Everything ELSE in ARTIFACT_TYPES ("post",
+# "video_script", "stories", "objection_reply", "faq", "content_plan_item" -
+# checked against the actual domain list, never invented here) is a real
+# user-facing content material and counts. Excluded on purpose:
+#   - "client_message": «Ответить клиенту» / assistant client-reply drafts -
+#     explicitly NOT a material per the product spec, regardless of how
+#     much Content Factory work went into it.
+#   - "other": app.handlers.text_review's "save already-reviewed text"
+#     Artifact - not a Content Factory/material-orchestration generation at
+#     all (no LLM call happens in that save path), so it is not a
+#     "generated material" in the first place.
+# Today only "post" is ever actually produced by any real code path (the
+# rest are schema-reserved for future material types - see
+# app.handlers.materials._ARTIFACT_TYPE_LABELS) - this predicate stays
+# correct without another edit if/when one of them ships.
+_NON_MATERIAL_ARTIFACT_TYPES = frozenset({"client_message", "other"})
+
+
+def is_quota_counted_material(artifact_type: str) -> bool:
+    """True for an Artifact type that must consume 1 unit of the workspace's
+    material quota when successfully created - see
+    app.services.plan_quota_service.check_material_quota/
+    record_material_created, the only intended callers of this predicate."""
+    return artifact_type in ARTIFACT_TYPES and artifact_type not in _NON_MATERIAL_ARTIFACT_TYPES
 
 # Display names shown to users - deliberately just the bare tariff name
 # (matches the UX copy the product spec asks for: "Лимит тарифа STANDARD:

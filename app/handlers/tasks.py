@@ -57,6 +57,7 @@ from app.services.lead_radar import LeadRadarConfig
 from app.services.knowledge_service import KnowledgeBundle
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.plan_limits import is_quota_counted_material
 from app.services.plan_quota_service import PlanQuotaService
 from app.services.reference_resolver import ReferenceResolver, ResolvedActionContext
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
@@ -238,6 +239,7 @@ async def on_reply_subject_received(
     artifact_repository: ArtifactRepository | None = None,
     conversation_state_repository: ConversationStateRepository | None = None,
     reference_resolver: ReferenceResolver | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     """Первый шаг «Ответить клиенту» (v2): «Кому отвечаем?» -> WorkSubject.
 
@@ -266,6 +268,7 @@ async def on_reply_subject_received(
             work_repository=work_repository, artifact_repository=artifact_repository,
             conversation_state_repository=conversation_state_repository,
             reference_resolver=reference_resolver,
+            plan_quota_service=plan_quota_service,
         )
         return
 
@@ -300,6 +303,7 @@ async def on_task_after_button(
     conversation_state_repository: ConversationStateRepository | None = None,
     v2_menu_enabled: bool = False,
     reference_resolver: ReferenceResolver | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     data = await state.get_data()
     forced_raw = data.get("forced_module")
@@ -336,6 +340,7 @@ async def on_task_after_button(
         conversation_state_repository=conversation_state_repository,
         v2_menu_enabled=v2_menu_enabled,
         reference_resolver=reference_resolver,
+        plan_quota_service=plan_quota_service,
     )
 
 
@@ -673,6 +678,7 @@ async def _route_and_dispatch(
     conversation_state_repository: ConversationStateRepository | None = None,
     v2_menu_enabled: bool = False,
     reference_resolver: ReferenceResolver | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     """Общий хвост on_task_after_button и «сообщение вместо имени» в
     on_reply_subject_received: маршрутизация, Journal, показ/скип карточки
@@ -710,6 +716,7 @@ async def _route_and_dispatch(
         conversation_state_repository=conversation_state_repository,
         reply_context=reply_context, state=state, v2_menu_enabled=v2_menu_enabled,
         reference_resolver=reference_resolver,
+        plan_quota_service=plan_quota_service,
     )
 
 
@@ -1196,15 +1203,21 @@ async def _maybe_send_draft(
     user_preferences = await UserStyleService(partner_repository).get(workspace_context)
 
     if is_regular_post:
-        if plan_quota_service is not None:
-            quota_decision = await plan_quota_service.check_material_quota(workspace_id)
-            if not quota_decision.allowed:
-                await message.answer(quota_decision.message)
-                return
         spec = MaterialOrchestrationService().build_free_text_generation_spec(
             workspace_id, decision.task_text, profile,
             user_preferences=user_preferences,
         )
+        # Checked against the shared predicate (app.services.plan_limits.
+        # is_quota_counted_material), not a bare is_regular_post/"post"
+        # comparison - stays correct if this spec ever produces a different
+        # material artifact_type. build_free_text_generation_spec() is pure/
+        # cheap (no LLM call), so checking after it still runs strictly
+        # BEFORE the actual provider.generate_draft() call below.
+        if plan_quota_service is not None and is_quota_counted_material(spec.artifact_type):
+            quota_decision = await plan_quota_service.check_material_quota(workspace_id)
+            if not quota_decision.allowed:
+                await message.answer(quota_decision.message)
+                return
         heading = "📝 Черновик для ручной проверки"
         # UX: multi-item/weekly_plan запросы (несколько дней/постов сразу)
         # реально занимают больше времени в Content Factory (удвоенный
@@ -1380,7 +1393,7 @@ async def _maybe_send_draft(
                 active_module="content_factory", current_task="content_factory_free_text",
                 last_action="generate_content",
             )
-            if plan_quota_service is not None:
+            if plan_quota_service is not None and is_quota_counted_material(spec.artifact_type):
                 await plan_quota_service.record_material_created(workspace_id)
 
     if official_source_missing(search_response):
