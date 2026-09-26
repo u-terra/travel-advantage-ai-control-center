@@ -19,9 +19,12 @@ from decimal import Decimal, InvalidOperation
 
 from app.domain.billing import PaymentOrder
 from app.domain.subscription import SubscriptionPlan, SubscriptionStatus
+from app.repositories.partner_repository import PartnerRepository
 from app.repositories.payment_order_repository import PaymentOrderRepository
 from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.web_auth_repository import WebAuthRepository
+from app.services.owner_payment_notifications import OwnerPaymentNotifier
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan
 from app.services.robokassa import (
     CURRENCY_RUB,
@@ -70,6 +73,9 @@ class BillingService:
         payment_order_repository: PaymentOrderRepository,
         subscription_repository: SubscriptionRepository,
         source_catalog_repository: SourceCatalogRepository | None = None,
+        owner_notifier: OwnerPaymentNotifier | None = None,
+        partner_repository: PartnerRepository | None = None,
+        web_auth_repository: WebAuthRepository | None = None,
     ) -> None:
         self._config = config
         self._orders = payment_order_repository
@@ -79,6 +85,15 @@ class BillingService:
         # unaffected: no source assignment is attempted, same as before
         # this feature existed. See _extend_subscription().
         self._source_catalog = source_catalog_repository
+        # Optional/default-None, same convention as source_catalog_repository
+        # above - owner payment notification (see
+        # app.services.owner_payment_notifications). Every existing caller/
+        # test that doesn't pass these is unaffected: no notification is
+        # ever attempted, same as before this feature existed. See
+        # _notify_owner_of_payment().
+        self._owner_notifier = owner_notifier
+        self._partner_repository = partner_repository
+        self._web_auth_repository = web_auth_repository
 
     async def create_payment(
         self, workspace_id: int, plan_code: str = DEFAULT_PLAN_CODE,
@@ -179,6 +194,16 @@ class BillingService:
 
         if transitioned_now:
             await self._extend_subscription(order)
+            # Best-effort, strictly after activation succeeded - a Telegram
+            # failure here must never affect the ResultOutcome returned
+            # below (see _notify_owner_of_payment's own docstring). Gated on
+            # transitioned_now, exactly like _extend_subscription() above:
+            # mark_paid()'s atomic created->paid UPDATE already guarantees
+            # this branch runs at most once per order, so a replayed
+            # RoboKassa notification for an already-paid order can never
+            # reach this call - the anti-duplicate guarantee is the same
+            # persisted DB transition, not anything kept in process memory.
+            await self._notify_owner_of_payment(order)
         else:
             log.info("billing: replayed ResultURL for already-paid InvId=%s - no-op", inv_id)
 
@@ -227,4 +252,61 @@ class BillingService:
                 log.warning(
                     "billing: assign_default_sources failed for workspace %s",
                     order.workspace_id, exc_info=True,
+                )
+
+    async def _notify_owner_of_payment(self, order: PaymentOrder) -> None:
+        """Best-effort owner notification - payment/subscription activation
+        already fully happened by the time this runs (see the one caller,
+        process_result_callback). Every step here is individually guarded:
+        a lookup failure or a Telegram send failure only ever prevents the
+        notification, never propagates and never affects anything else."""
+        if self._owner_notifier is None:
+            return
+
+        business_name: str | None = None
+        if self._partner_repository is not None:
+            try:
+                profile = await self._partner_repository.get_business_profile(
+                    order.workspace_id
+                )
+                business_name = profile.business_name if profile is not None else None
+            except Exception:
+                log.warning(
+                    "billing: business profile lookup failed for owner "
+                    "notification (order %s)", order.id, exc_info=True,
+                )
+
+        email: str | None = None
+        if self._web_auth_repository is not None:
+            try:
+                email = await self._web_auth_repository.get_primary_email_for_workspace(
+                    order.workspace_id
+                )
+            except Exception:
+                log.warning(
+                    "billing: email lookup failed for owner notification "
+                    "(order %s)", order.id, exc_info=True,
+                )
+
+        try:
+            sent = await self._owner_notifier.notify(
+                order, business_name=business_name, email=email,
+            )
+        except Exception:
+            # notify() itself never raises (see its docstring) - this is
+            # defense in depth only, same policy as assign_default_sources
+            # above: nothing about the payment may ever depend on this.
+            log.warning(
+                "billing: owner payment notification raised unexpectedly "
+                "(order %s)", order.id, exc_info=True,
+            )
+            return
+
+        if sent:
+            try:
+                await self._orders.mark_owner_notified(order.id)
+            except Exception:
+                log.warning(
+                    "billing: failed to persist owner_notified_at for "
+                    "order %s", order.id, exc_info=True,
                 )

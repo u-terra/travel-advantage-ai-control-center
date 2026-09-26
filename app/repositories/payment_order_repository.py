@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS workspace_payment_orders (
     created_at TEXT NOT NULL,
     paid_at TEXT,
     duration_days INTEGER NOT NULL DEFAULT 30,
+    owner_notified_at TEXT,
     FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id)
 );
 CREATE INDEX IF NOT EXISTS idx_workspace_payment_orders_workspace
@@ -74,7 +75,7 @@ class PaymentOrderRepository:
             copyable = [
                 c for c in (
                     "id", "workspace_id", "plan", "amount", "currency", "provider",
-                    "status", "created_at", "paid_at", "duration_days",
+                    "status", "created_at", "paid_at", "duration_days", "owner_notified_at",
                 ) if c in legacy_columns
             ]
             column_list = ", ".join(copyable)
@@ -94,6 +95,7 @@ class PaymentOrderRepository:
                 "    created_at TEXT NOT NULL,\n"
                 "    paid_at TEXT,\n"
                 "    duration_days INTEGER NOT NULL DEFAULT 30,\n"
+                "    owner_notified_at TEXT,\n"
                 "    FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id)\n"
                 ")"
             )
@@ -110,6 +112,18 @@ class PaymentOrderRepository:
             await db.execute(
                 "ALTER TABLE workspace_payment_orders "
                 "ADD COLUMN duration_days INTEGER NOT NULL DEFAULT 30"
+            )
+        if "owner_notified_at" not in columns:
+            # Owner payment notification dedup marker (see
+            # mark_owner_notified/app.services.owner_payment_notifications) -
+            # plain nullable ADD COLUMN, same additive-migration convention
+            # as duration_days above. NULL for every pre-existing row -
+            # never backfilled/guessed, matching this codebase's rule that a
+            # missing value here means "not available", never a fabricated
+            # one.
+            await db.execute(
+                "ALTER TABLE workspace_payment_orders "
+                "ADD COLUMN owner_notified_at TEXT"
             )
 
     async def create_order(
@@ -203,6 +217,26 @@ class PaymentOrderRepository:
         order = await self.get_order(order_id)
         return order, transitioned
 
+    async def mark_owner_notified(self, order_id: int) -> None:
+        """Records that the owner payment notification (see
+        app.services.owner_payment_notifications) was actually delivered -
+        called ONLY after a successful Telegram send, never before and
+        never on failure, so a failed send leaves this NULL and observably
+        retryable later (e.g. by ops tooling querying status='paid' AND
+        owner_notified_at IS NULL) without touching payment/subscription
+        state at all. Not itself the anti-duplicate guard - that guarantee
+        already comes from mark_paid()'s atomic created->paid transition
+        (see BillingService.process_result_callback, the only caller of
+        both): this column exists for auditability and safe manual retry,
+        not for concurrency safety."""
+        now = _now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE workspace_payment_orders SET owner_notified_at=? WHERE id=?",
+                (now, order_id),
+            )
+            await db.commit()
+
 
 def _from_row(row: aiosqlite.Row) -> PaymentOrder:
     return PaymentOrder(
@@ -216,6 +250,7 @@ def _from_row(row: aiosqlite.Row) -> PaymentOrder:
         created_at=row["created_at"],
         paid_at=row["paid_at"],
         duration_days=row["duration_days"],
+        owner_notified_at=row["owner_notified_at"],
     )
 
 

@@ -48,3 +48,11 @@ class PaymentOrder:
     # PaymentOrderRepository's additive migration) - the same duration
     # every pre-existing 'standard' order was always sold for.
     duration_days: int = 30
+    # When the ORCHESTRAVEL owner was successfully notified (Telegram) of
+    # this order's successful payment - see
+    # app.services.owner_payment_notifications and
+    # PaymentOrderRepository.mark_owner_notified. None means "not yet sent"
+    # (either never attempted, or attempted and failed) - never set until
+    # the Telegram API call actually succeeds, so this column doubles as an
+    # honest "still needs a retry" marker, not just a dedup flag.
+    owner_notified_at: str | None = None

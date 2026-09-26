@@ -242,6 +242,23 @@ class WebAuthRepository:
             row = await cursor.fetchone()
         return _binding_from_row(row) if row is not None else None
 
+    async def get_primary_email_for_workspace(self, workspace_id: int) -> str | None:
+        """Best-effort display lookup only (e.g. owner payment notifications,
+        see app.services.owner_payment_notifications) - the earliest-created
+        binding's user email, or None when this workspace has no web-auth
+        binding at all (a Telegram-only workspace, or self-service signup
+        with the binding not yet created). Read-only, no session/auth
+        semantics - never used for anything access-related."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(
+                "SELECT u.email FROM web_auth_bindings b "
+                "JOIN web_auth_users u ON u.id = b.web_user_id "
+                "WHERE b.workspace_id = ? ORDER BY b.id ASC LIMIT 1",
+                (workspace_id,),
+            )).fetchone()
+        return row["email"] if row is not None else None
+
     async def get_binding_by_id(self, binding_id: int) -> WebAuthBinding | None:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

@@ -463,3 +463,250 @@ def test_billing_service_without_source_catalog_repository_still_activates_payme
 
     assert outcome.ok is True
     assert run(subscriptions.get_for_workspace(workspace_id)).status is SubscriptionStatus.ACTIVE
+
+
+# ── owner payment notification ──────────────────────────────────────────────
+# A fake OwnerPaymentNotifier throughout - never a real aiogram.Bot, so none
+# of these tests can ever make a real network call or send a real Telegram
+# message, regardless of ambient BOT_TOKEN/ADMIN_TELEGRAM_ID env.
+
+
+class _RecordingOwnerNotifier:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls: list = []
+        self._fail = fail
+
+    async def notify(self, order, *, business_name, email) -> bool:
+        self.calls.append((order.id, order.plan, business_name, email))
+        return not self._fail
+
+
+def _service_with_owner_notifier(db_path: Path, *, notifier_fails: bool = False):
+    run(PartnerRepository(db_path).init())
+    config = RoboKassaConfig(
+        merchant_login="orchestravel-test", password1="pw1-test", password2="pw2-test",
+        is_test=True, standard_price_rub=Decimal("999.00"), subscription_days=30,
+        public_base_url="https://app.orchestravel.ru",
+    )
+    orders = PaymentOrderRepository(db_path)
+    run(orders.init())
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())
+    notifier = _RecordingOwnerNotifier(fail=notifier_fails)
+    service = BillingService(
+        config=config, payment_order_repository=orders,
+        subscription_repository=subscriptions, owner_notifier=notifier,
+    )
+    return service, orders, subscriptions, notifier
+
+
+def test_successful_start_payment_sends_exactly_one_owner_notification(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, _, notifier = _service_with_owner_notifier(db_path)
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(
+        workspace_id=workspace_id, plan="start", amount="490.00", duration_days=14,
+    ))
+
+    outcome = run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert outcome.ok is True
+    assert notifier.calls == [(order.id, "start", None, None)]
+
+
+def test_successful_standard_payment_sends_exactly_one_owner_notification(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, _, notifier = _service_with_owner_notifier(db_path)
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(
+        workspace_id=workspace_id, plan="standard", amount="990.00", duration_days=30,
+    ))
+
+    run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert notifier.calls == [(order.id, "standard", None, None)]
+
+
+def test_successful_full_payment_sends_one_notification_flagged_full(tmp_path: Path):
+    """The FULL-specific "personal onboarding" note is rendered by
+    build_owner_payment_notification_text (see
+    tests/test_owner_payment_notifications.py) - this only asserts the
+    dedup/call-count contract and that order.plan=="full" reaches the
+    notifier, which is what the message-building test depends on."""
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, _, notifier = _service_with_owner_notifier(db_path)
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(
+        workspace_id=workspace_id, plan="full", amount="1490.00", duration_days=30,
+    ))
+
+    run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert notifier.calls == [(order.id, "full", None, None)]
+
+
+def test_replayed_callback_never_sends_a_second_owner_notification(tmp_path: Path):
+    """RoboKassa is documented to retry ResultURL - the exact scenario this
+    feature must never double-fire for."""
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, _, notifier = _service_with_owner_notifier(db_path)
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+    callback = _signed_callback(order, "pw2-test")
+
+    first = run(service.process_result_callback(**callback))
+    second = run(service.process_result_callback(**callback))
+
+    assert first.ok is True
+    assert second.ok is True
+    assert len(notifier.calls) == 1
+
+
+def test_rejected_payment_never_sends_owner_notification(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, _, notifier = _service_with_owner_notifier(db_path)
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    outcome = run(service.process_result_callback(
+        out_sum=order.amount, inv_id=order.id, signature="0" * 32,
+    ))
+
+    assert outcome.ok is False
+    assert notifier.calls == []
+
+
+def test_pending_unpaid_order_never_sends_owner_notification(tmp_path: Path):
+    """create_payment() (link creation) never calls process_result_callback
+    at all - a created-but-not-yet-paid order must never have triggered a
+    notification in the first place."""
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, _, notifier = _service_with_owner_notifier(db_path)
+    workspace_id = _workspace(db_path)
+    run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    assert notifier.calls == []
+
+
+def test_owner_notification_failure_does_not_break_payment_or_activation(tmp_path: Path):
+    """Telegram send failure must never fail the RoboKassa callback, the
+    payment record, or subscription activation - payment matters more than
+    the notification."""
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, subscriptions, notifier = _service_with_owner_notifier(
+        db_path, notifier_fails=True,
+    )
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    outcome = run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert outcome.ok is True
+    assert run(orders.get_order(order.id)).status.value == "paid"
+    assert run(subscriptions.get_for_workspace(workspace_id)).status is SubscriptionStatus.ACTIVE
+    assert len(notifier.calls) == 1  # attempted exactly once
+
+
+def test_owner_notification_failure_leaves_owner_notified_at_unset_for_retry(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, _, notifier = _service_with_owner_notifier(db_path, notifier_fails=True)
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert run(orders.get_order(order.id)).owner_notified_at is None
+
+
+def test_owner_notification_success_persists_owner_notified_at(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    service, orders, _, notifier = _service_with_owner_notifier(db_path)
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert run(orders.get_order(order.id)).owner_notified_at is not None
+
+
+def test_owner_notifier_raising_unexpectedly_does_not_break_payment(tmp_path: Path):
+    """Defense in depth: even if a notifier implementation violates its own
+    contract and raises, the payment/activation must still succeed."""
+    class _RaisingNotifier:
+        async def notify(self, order, *, business_name, email):
+            raise RuntimeError("boom")
+
+    db_path = tmp_path / "db.sqlite3"
+    run(PartnerRepository(db_path).init())
+    config = RoboKassaConfig(
+        merchant_login="orchestravel-test", password1="pw1-test", password2="pw2-test",
+        is_test=True, standard_price_rub=Decimal("999.00"), subscription_days=30,
+        public_base_url="https://app.orchestravel.ru",
+    )
+    orders = PaymentOrderRepository(db_path)
+    run(orders.init())
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())
+    service = BillingService(
+        config=config, payment_order_repository=orders,
+        subscription_repository=subscriptions, owner_notifier=_RaisingNotifier(),
+    )
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    outcome = run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert outcome.ok is True
+    assert run(subscriptions.get_for_workspace(workspace_id)).status is SubscriptionStatus.ACTIVE
+
+
+def test_billing_service_without_owner_notifier_still_activates_payment(tmp_path: Path):
+    """Backward compatibility: owner_notifier defaults to None - every
+    pre-existing caller/test in this file keeps working unaffected, and
+    no notification is ever attempted."""
+    db_path = tmp_path / "db.sqlite3"
+    workspace_id = _workspace(db_path)
+    service, orders, subscriptions = _service(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    outcome = run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert outcome.ok is True
+    assert run(subscriptions.get_for_workspace(workspace_id)).status is SubscriptionStatus.ACTIVE
+
+
+def test_owner_notification_includes_business_name_and_email_when_available(tmp_path: Path):
+    db_path = tmp_path / "db.sqlite3"
+    run(PartnerRepository(db_path).init())
+    config = RoboKassaConfig(
+        merchant_login="orchestravel-test", password1="pw1-test", password2="pw2-test",
+        is_test=True, standard_price_rub=Decimal("999.00"), subscription_days=30,
+        public_base_url="https://app.orchestravel.ru",
+    )
+    orders = PaymentOrderRepository(db_path)
+    run(orders.init())
+    subscriptions = SubscriptionRepository(db_path)
+    run(subscriptions.init())
+    notifier = _RecordingOwnerNotifier()
+
+    class _FakePartnerRepository:
+        async def get_business_profile(self, workspace_id: int):
+            from types import SimpleNamespace
+            return SimpleNamespace(business_name="Тревел Клуб")
+
+    class _FakeWebAuthRepository:
+        async def get_primary_email_for_workspace(self, workspace_id: int):
+            return "owner@example.com"
+
+    service = BillingService(
+        config=config, payment_order_repository=orders,
+        subscription_repository=subscriptions, owner_notifier=notifier,
+        partner_repository=_FakePartnerRepository(),
+        web_auth_repository=_FakeWebAuthRepository(),
+    )
+    workspace_id = _workspace(db_path)
+    order = run(orders.create_order(workspace_id=workspace_id, plan="standard", amount="999.00"))
+
+    run(service.process_result_callback(**_signed_callback(order, "pw2-test")))
+
+    assert notifier.calls == [(order.id, "standard", "Тревел Клуб", "owner@example.com")]

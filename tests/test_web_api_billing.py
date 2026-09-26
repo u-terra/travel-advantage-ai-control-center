@@ -37,6 +37,14 @@ def _configure_robokassa_env(monkeypatch) -> None:
     monkeypatch.setenv("ROBOKASSA_IS_TEST", "true")
     monkeypatch.setenv("ORCHESTRAVEL_STANDARD_PRICE_RUB", "999.00")
     monkeypatch.setenv("ORCHESTRAVEL_SUBSCRIPTION_DAYS", "30")
+    # A successful ResultURL callback in this file now reaches
+    # BillingService._notify_owner_of_payment (owner Telegram notification)
+    # - a real BOT_TOKEN/ADMIN_TELEGRAM_ID from an ambient .env must never
+    # be picked up here, or these tests would send a REAL Telegram message
+    # to the real owner. Same "dummy-token" convention already used by
+    # every other test file that touches Settings.bot_token in this suite.
+    monkeypatch.setenv("BOT_TOKEN", "dummy-token")
+    monkeypatch.setenv("ADMIN_TELEGRAM_ID", "586249067")
 
 
 @pytest.fixture
@@ -65,6 +73,10 @@ def unconfigured_api(tmp_path, monkeypatch):
     db_path = tmp_path / "journal.sqlite3"
     monkeypatch.setenv("JOURNAL_DB_PATH", str(db_path))
     monkeypatch.setenv("PLANNER_OPENAI_API_KEY", "test-key")
+    # Same isolation as _configure_robokassa_env - never inherit a real
+    # BOT_TOKEN/ADMIN_TELEGRAM_ID from an ambient .env.
+    monkeypatch.setenv("BOT_TOKEN", "dummy-token")
+    monkeypatch.setenv("ADMIN_TELEGRAM_ID", "586249067")
     for name in (
         "ROBOKASSA_MERCHANT_LOGIN", "ROBOKASSA_PASSWORD1", "ROBOKASSA_PASSWORD2",
         "ROBOKASSA_IS_TEST", "ORCHESTRAVEL_STANDARD_PRICE_RUB",
@@ -377,6 +389,89 @@ def test_repeated_result_callback_does_not_extend_twice(api) -> None:
 
     assert first.status_code == 200 and second.status_code == 200
     assert first_paid_until == second_paid_until
+
+
+def test_successful_result_callback_notifies_owner_exactly_once(api) -> None:
+    """End-to-end wiring: app.web_api's real billing_service (constructed
+    with a real OwnerPaymentNotifier over an isolated dummy BOT_TOKEN - see
+    _configure_robokassa_env) actually calls it on a genuine successful
+    activation. The real notifier is swapped for a spy here only to assert
+    the call, never to avoid a real network call - dummy-token already
+    guarantees that (aiogram rejects it before any I/O)."""
+    from unittest.mock import AsyncMock
+
+    client, web_api, workspace_id = api
+    spy = AsyncMock(return_value=True)
+    web_api.billing_service._owner_notifier.notify = spy
+
+    create = client.post("/api/billing/create-payment", json={"plan": "start"})
+    order = _run(web_api.payment_order_repository.get_order(create.json()["order_id"]))
+    response = client.post(
+        "/api/billing/robokassa/result", data=_signed_result_form(web_api, order),
+    )
+
+    assert response.status_code == 200
+    spy.assert_awaited_once()
+    called_order = spy.await_args.args[0]
+    assert called_order.id == order.id
+    assert called_order.plan == "start"
+
+
+def test_replayed_result_callback_never_notifies_owner_twice(api) -> None:
+    from unittest.mock import AsyncMock
+
+    client, web_api, workspace_id = api
+    spy = AsyncMock(return_value=True)
+    web_api.billing_service._owner_notifier.notify = spy
+
+    create = client.post("/api/billing/create-payment")
+    order = _run(web_api.payment_order_repository.get_order(create.json()["order_id"]))
+    form = _signed_result_form(web_api, order)
+
+    client.post("/api/billing/robokassa/result", data=form)
+    client.post("/api/billing/robokassa/result", data=form)
+
+    spy.assert_awaited_once()
+
+
+def test_invalid_result_callback_never_notifies_owner(api) -> None:
+    from unittest.mock import AsyncMock
+
+    client, web_api, workspace_id = api
+    spy = AsyncMock(return_value=True)
+    web_api.billing_service._owner_notifier.notify = spy
+
+    create = client.post("/api/billing/create-payment")
+    order = _run(web_api.payment_order_repository.get_order(create.json()["order_id"]))
+
+    client.post(
+        "/api/billing/robokassa/result",
+        data={"OutSum": order.amount, "InvId": str(order.id), "SignatureValue": "0" * 32},
+    )
+
+    spy.assert_not_awaited()
+
+
+def test_owner_notification_send_failure_does_not_break_the_callback(api) -> None:
+    """Real send failure (mocked False, same as an unreachable Telegram
+    API) must still leave RoboKassa's callback response and the
+    subscription activation completely unaffected."""
+    from unittest.mock import AsyncMock
+
+    client, web_api, workspace_id = api
+    spy = AsyncMock(return_value=False)
+    web_api.billing_service._owner_notifier.notify = spy
+
+    create = client.post("/api/billing/create-payment")
+    order = _run(web_api.payment_order_repository.get_order(create.json()["order_id"]))
+    response = client.post(
+        "/api/billing/robokassa/result", data=_signed_result_form(web_api, order),
+    )
+
+    assert response.status_code == 200
+    assert response.text == f"OK{order.id}"
+    status = client.get("/api/billing/status").json()
+    assert status["access_granted"] is True
 
 
 def test_result_callback_never_logs_secrets(api, caplog) -> None:

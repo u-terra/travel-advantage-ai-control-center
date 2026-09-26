@@ -89,6 +89,7 @@ from app.services.attachment_validation import (
     validate_attachment,
 )
 from app.services.billing_service import BillingNotConfigured, BillingService, UnknownPlanError
+from app.services.owner_payment_notifications import OwnerPaymentNotifier
 from app.services.business_profile_context import (
     BusinessProfileAccessError,
     BusinessProfileService,
@@ -245,6 +246,15 @@ billing_service = BillingService(
     payment_order_repository=payment_order_repository,
     subscription_repository=subscription_repository,
     source_catalog_repository=source_catalog_repository,
+    # Owner Telegram notification after a real successful payment - same
+    # bot token / admin id this project already requires at startup (see
+    # app.config.Settings), no second bot. See
+    # app.services.owner_payment_notifications.
+    owner_notifier=OwnerPaymentNotifier(
+        bot_token=settings.bot_token, admin_telegram_id=settings.admin_telegram_id,
+    ),
+    partner_repository=partner_repository,
+    web_auth_repository=web_auth_repository,
 )
 
 # Beta Control Center (see app/admin_api.py) - telemetry/feedback/audit-log
