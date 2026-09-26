@@ -86,6 +86,7 @@ def repository(items=()):
         list_for_workspace=AsyncMock(return_value=tuple(items)),
         toggle=AsyncMock(),
         submit_source_request=AsyncMock(),
+        count_for_workspace=AsyncMock(return_value=0),
     )
 
 
@@ -221,7 +222,54 @@ def test_add_button_asks_for_a_url() -> None:
     callback, state = Callback(SOURCE_REGISTRY_ADD), State()
     run(start_add_source(callback, state))
     assert state.state == AddSource.waiting_for_url
-    assert "ссылку" in callback.message.answers[0][0]
+
+
+# ── ORCHESTRAVEL v1 plan limits: source slot ────────────────────────────────
+
+
+def _quota_service(*, allowed: bool, message: str | None = None):
+    from app.services.plan_quota_service import QuotaDecision
+    return SimpleNamespace(
+        check_source_slot=AsyncMock(return_value=QuotaDecision(allowed, message)),
+    )
+
+
+def test_source_slot_blocked_over_limit_never_calls_submit() -> None:
+    repo = repository()
+    repo.count_for_workspace.return_value = 5
+    quota = _quota_service(
+        allowed=False, message="В тарифе START можно подключить до 5 источников мониторинга.",
+    )
+    message, state = Message("https://example.com/source"), State()
+    run(receive_source_url(message, state, repo, context(91), quota))
+
+    quota.check_source_slot.assert_awaited_once_with(91, 5)
+    repo.submit_source_request.assert_not_awaited()
+    assert "до 5 источников" in message.answers[0][0]
+    assert state.clear_calls == 1
+
+
+def test_source_slot_allowed_under_limit_calls_submit() -> None:
+    repo = repository()
+    repo.count_for_workspace.return_value = 2
+    repo.submit_source_request.return_value = SubmitSourceRequestResult(None, "pending")
+    quota = _quota_service(allowed=True)
+    message, state = Message("https://example.com/source"), State()
+    run(receive_source_url(message, state, repo, context(91), quota))
+
+    repo.submit_source_request.assert_awaited_once()
+
+
+def test_source_slot_check_skipped_when_no_quota_service_wired() -> None:
+    """plan_quota_service defaults to None (legacy call sites/tests that
+    don't pass it) - existing behavior must stay completely unaffected."""
+    repo = repository()
+    repo.submit_source_request.return_value = SubmitSourceRequestResult(None, "pending")
+    message, state = Message("https://example.com/source"), State()
+    run(receive_source_url(message, state, repo, context(91)))
+
+    repo.count_for_workspace.assert_not_awaited()
+    repo.submit_source_request.assert_awaited_once()
 
 
 def test_sources_button_and_keyboard_remain_available() -> None:

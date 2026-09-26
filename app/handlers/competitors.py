@@ -63,6 +63,7 @@ from app.services.generation_request_builder import build_provider_generation_re
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.plan_quota_service import PlanQuotaService
 from app.services.user_style import UserStyleService
 
 router = Router(name="competitors")
@@ -189,12 +190,25 @@ async def receive_competitor_url(
     state: FSMContext,
     competitor_repository: CompetitorRepository,
     workspace_context: WorkspaceContext | None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     address = (message.text or "").strip()
 
     if workspace_context is None:
         await message.answer(_UNAVAILABLE, reply_markup=v2_back_keyboard())
         return
+
+    if plan_quota_service is not None:
+        current_count = await competitor_repository.count_for_workspace(
+            workspace_context.workspace_id
+        )
+        decision = await plan_quota_service.check_competitor_slot(
+            workspace_context.workspace_id, current_count,
+        )
+        if not decision.allowed:
+            await state.clear()
+            await message.answer(decision.message, reply_markup=active_main_menu(True))
+            return
 
     try:
         await competitor_repository.add_competitor(
@@ -379,10 +393,18 @@ async def _refresh_competitor(
     knowledge_service: KnowledgeService, partner_repository: PartnerRepository,
     usage_ledger_repository: UsageLedgerRepository | None = None,
     workspace_signal_repository: WorkspaceSignalRepository | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     competitor = await _competitor_for_callback(callback, prefix, repository, workspace_context)
     if competitor is None or callback.message is None or workspace_context is None:
         return
+    if plan_quota_service is not None:
+        decision = await plan_quota_service.check_competitor_analysis_quota(
+            workspace_context.workspace_id
+        )
+        if not decision.allowed:
+            await callback.message.answer(decision.message)
+            return
     await callback.message.answer("Собираю публичные источники и готовлю внутренний анализ…")
     # Authoritative + fail-closed: BusinessProfile.ta_affiliated only (see
     # isolation audit) - never business_type/workspace_id/role. Preserves
@@ -399,6 +421,10 @@ async def _refresh_competitor(
         await callback.message.answer(f"Не удалось обновить анализ: {exc}")
         return
     await repository.save_intelligence(workspace_context.workspace_id, intelligence)
+    if plan_quota_service is not None:
+        await plan_quota_service.record_competitor_analysis_completed(
+            workspace_context.workspace_id
+        )
     await callback.message.answer(
         _render_analysis(intelligence), reply_markup=competitor_card_keyboard(competitor.id),
         disable_web_page_preview=True,
@@ -410,11 +436,12 @@ async def analyze_competitor(callback: CallbackQuery, competitor_repository: Com
     workspace_context: WorkspaceContext | None, llm_provider: LLMProvider,
     knowledge_service: KnowledgeService, partner_repository: PartnerRepository,
     usage_ledger_repository: UsageLedgerRepository | None = None,
-    workspace_signal_repository: WorkspaceSignalRepository | None = None) -> None:
+    workspace_signal_repository: WorkspaceSignalRepository | None = None,
+    plan_quota_service: PlanQuotaService | None = None) -> None:
     await callback.answer()
     await _refresh_competitor(callback, COMPETITOR_ANALYZE_PREFIX, competitor_repository,
         workspace_context, llm_provider, knowledge_service, partner_repository,
-        usage_ledger_repository, workspace_signal_repository)
+        usage_ledger_repository, workspace_signal_repository, plan_quota_service)
 
 
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(COMPETITOR_REFRESH_PREFIX))
@@ -422,11 +449,12 @@ async def refresh_competitor(callback: CallbackQuery, competitor_repository: Com
     workspace_context: WorkspaceContext | None, llm_provider: LLMProvider,
     knowledge_service: KnowledgeService, partner_repository: PartnerRepository,
     usage_ledger_repository: UsageLedgerRepository | None = None,
-    workspace_signal_repository: WorkspaceSignalRepository | None = None) -> None:
+    workspace_signal_repository: WorkspaceSignalRepository | None = None,
+    plan_quota_service: PlanQuotaService | None = None) -> None:
     await callback.answer()
     await _refresh_competitor(callback, COMPETITOR_REFRESH_PREFIX, competitor_repository,
         workspace_context, llm_provider, knowledge_service, partner_repository,
-        usage_ledger_repository, workspace_signal_repository)
+        usage_ledger_repository, workspace_signal_repository, plan_quota_service)
 
 
 async def _snapshot(callback: CallbackQuery, prefix: str, repository: CompetitorRepository,
@@ -467,7 +495,8 @@ async def competitor_ideas(callback: CallbackQuery, competitor_repository: Compe
 async def create_from_competitor_opportunity(callback: CallbackQuery,
     competitor_repository: CompetitorRepository, workspace_context: WorkspaceContext | None,
     llm_provider: LLMProvider, partner_repository: PartnerRepository,
-    artifact_repository: ArtifactRepository) -> None:
+    artifact_repository: ArtifactRepository,
+    plan_quota_service: PlanQuotaService | None = None) -> None:
     await callback.answer()
     competitor, data = await _snapshot(callback, COMPETITOR_CREATE_PREFIX, competitor_repository, workspace_context)
     if callback.message is None or competitor is None or workspace_context is None:
@@ -480,6 +509,11 @@ async def create_from_competitor_opportunity(callback: CallbackQuery,
     opportunity = next((x for x in data.opportunities if x.id == parts[1]), None)
     if opportunity is None:
         return
+    if plan_quota_service is not None:
+        decision = await plan_quota_service.check_material_quota(workspace_context.workspace_id)
+        if not decision.allowed:
+            await callback.message.answer(decision.message)
+            return
     profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
     # Stage 3B1 parity: остальные Content Factory flow (material_generation.py,
     # tasks.py) всегда подмешивают личный стиль ТЕКУЩЕГО пользователя через
@@ -519,6 +553,8 @@ async def create_from_competitor_opportunity(callback: CallbackQuery,
             f"data_origin={data.data_origin}"
         ),
     )
+    if plan_quota_service is not None:
+        await plan_quota_service.record_material_created(workspace_context.workspace_id)
     await callback.message.answer(
         "📝 Черновик по content opportunity сохранён в «Мои материалы» — "
         "перед использованием проверьте вручную.\n\n" + sanitized_text
@@ -705,6 +741,7 @@ async def add_competitor_candidate(
     callback: CallbackQuery,
     competitor_repository: CompetitorRepository,
     workspace_context: WorkspaceContext | None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     await callback.answer()
     candidate = await _candidate_for_callback(
@@ -712,6 +749,16 @@ async def add_competitor_candidate(
     )
     if callback.message is None or candidate is None or workspace_context is None:
         return
+    if plan_quota_service is not None:
+        current_count = await competitor_repository.count_for_workspace(
+            workspace_context.workspace_id
+        )
+        decision = await plan_quota_service.check_competitor_slot(
+            workspace_context.workspace_id, current_count,
+        )
+        if not decision.allowed:
+            await callback.message.answer(decision.message)
+            return
     competitor = await competitor_repository.add_competitor(
         workspace_context.workspace_id, candidate.discovered_url, label=candidate.name,
     )

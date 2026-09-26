@@ -139,9 +139,36 @@ h1 { font-size: 19px; margin: 0 0 16px; }
     gap: 12px;
 }
 
+.plan-card { flex-direction: column; align-items: stretch; gap: 8px; }
+.plan-card .plan-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .plan-card .plan-info .plan-label { font-size: 14px; font-weight: 700; }
 .plan-card .plan-info .plan-duration { font-size: 12.5px; color: var(--text-muted); }
 .plan-card .plan-amount { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.plan-features {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+.plan-features li.plan-feature-extra { color: var(--text); font-weight: 600; }
+
+.usage-panel {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 0 14px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+.usage-panel.show { display: flex; }
+.usage-row { font-size: 12.5px; }
+.usage-row .usage-label { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.usage-row .usage-count { font-weight: 600; }
+.usage-bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.usage-bar-fill { height: 100%; background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%); }
+.usage-bar-fill.full { background: var(--danger); }
 
 .plan-buy-btn {
     border: 0;
@@ -216,6 +243,8 @@ h1 { font-size: 19px; margin: 0 0 16px; }
 
         <div class="error-box" id="errorBox"></div>
 
+        <div class="usage-panel" id="usagePanel"></div>
+
         <div class="plans" id="plansList"></div>
 
         <div class="actions">
@@ -268,12 +297,40 @@ async function buyPlan(planCode, btn) {
     }
 }
 
+// FULL's last three benefits are service-level (manual onboarding/ops),
+// not automated technical limits - never a plan_quota_service check, shown
+// here purely as plan-card copy so a buyer sees them before paying (per
+// product spec: "показать пользователю в описании тарифа", nothing more).
+const FULL_SERVICE_FEATURES = [
+    "Первоначальная персональная настройка",
+    "1 корректировка настроек за 30 дней",
+    "Приоритетная поддержка",
+];
+
+function planFeatureLines(plan) {
+    const limits = plan.limits;
+    if (!limits) return [];
+    const lines = [
+        `${limits.materials_limit} материалов / ${limits.competitor_analyses_limit} анализов конкурентов за ${limits.window_days} дн.`,
+        `До ${limits.competitor_slot_limit} конкурентов`,
+        `До ${limits.source_slot_limit} источников мониторинга`,
+        "Web + Telegram, AI-ассистент, сигналы, «Ответить клиенту»",
+    ];
+    if (plan.code === "full") {
+        lines.push(...FULL_SERVICE_FEATURES);
+    }
+    return lines;
+}
+
 function renderPlans(plans, billingConfigured) {
     const list = document.getElementById("plansList");
     list.innerHTML = "";
     plans.forEach((plan) => {
         const card = document.createElement("div");
         card.className = "plan-card";
+
+        const top = document.createElement("div");
+        top.className = "plan-top";
 
         const info = document.createElement("div");
         info.className = "plan-info";
@@ -290,6 +347,20 @@ function renderPlans(plans, billingConfigured) {
         amount.className = "plan-amount";
         amount.textContent = `${plan.amount} ₽`;
 
+        top.appendChild(info);
+        top.appendChild(amount);
+
+        const features = document.createElement("ul");
+        features.className = "plan-features";
+        planFeatureLines(plan).forEach((text, index) => {
+            const item = document.createElement("li");
+            item.textContent = text;
+            if (plan.code === "full" && index >= 4) {
+                item.className = "plan-feature-extra";
+            }
+            features.appendChild(item);
+        });
+
         const buyBtn = document.createElement("button");
         buyBtn.type = "button";
         buyBtn.className = "plan-buy-btn";
@@ -300,11 +371,51 @@ function renderPlans(plans, billingConfigured) {
         }
         buyBtn.addEventListener("click", () => buyPlan(plan.code, buyBtn));
 
-        card.appendChild(info);
-        card.appendChild(amount);
+        card.appendChild(top);
+        card.appendChild(features);
         card.appendChild(buyBtn);
         list.appendChild(card);
     });
+}
+
+function usageRow(label, used, limit) {
+    const row = document.createElement("div");
+    row.className = "usage-row";
+    const labelLine = document.createElement("div");
+    labelLine.className = "usage-label";
+    const name = document.createElement("span");
+    name.textContent = label;
+    const count = document.createElement("span");
+    count.className = "usage-count";
+    count.textContent = `${used} / ${limit}`;
+    labelLine.appendChild(name);
+    labelLine.appendChild(count);
+    const bar = document.createElement("div");
+    bar.className = "usage-bar";
+    const fill = document.createElement("div");
+    const ratio = limit > 0 ? Math.min(1, used / limit) : 0;
+    fill.className = "usage-bar-fill" + (used >= limit ? " full" : "");
+    fill.style.width = `${Math.round(ratio * 100)}%`;
+    bar.appendChild(fill);
+    row.appendChild(labelLine);
+    row.appendChild(bar);
+    return row;
+}
+
+function renderUsage(usage) {
+    const panel = document.getElementById("usagePanel");
+    panel.innerHTML = "";
+    if (!usage) {
+        panel.classList.remove("show");
+        return;
+    }
+    panel.classList.add("show");
+    panel.appendChild(usageRow("Материалы", usage.materials_used, usage.materials_limit));
+    panel.appendChild(usageRow(
+        "Анализы конкурентов", usage.competitor_analyses_used, usage.competitor_analyses_limit,
+    ));
+    panel.appendChild(usageRow("Конкуренты", usage.competitors_used, usage.competitors_limit));
+    panel.appendChild(usageRow("Источники", usage.sources_used, usage.sources_limit));
 }
 
 async function loadStatus() {
@@ -329,6 +440,7 @@ async function loadStatus() {
         }
 
         renderPlans(data.plans || [], data.billing_configured);
+        renderUsage(data.usage || null);
     } catch (_) {
         showError("Не удалось загрузить статус подписки.");
     }

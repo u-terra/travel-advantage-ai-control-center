@@ -234,6 +234,19 @@ class SourceCatalogRepository:
                 (workspace_id, source.id, int(source.enabled), now, now),
             )
 
+    async def count_for_workspace(self, workspace_id: int) -> int:
+        """Total sources connected to this workspace (enabled + disabled -
+        toggling off is not disconnecting) - the plan-limits slot check
+        (app.services.plan_quota_service.check_source_slot) needs this real
+        count, not list_for_workspace()'s already-joined-and-ordered rows."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM workspace_source_subscriptions WHERE workspace_id = ?",
+                (workspace_id,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
     async def list_for_workspace(self, workspace_id: int) -> tuple[WorkspaceSource, ...]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row

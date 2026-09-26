@@ -75,6 +75,7 @@ from app.services.draft_sanitizer import sanitize_draft_text
 from app.services.generation_request_builder import build_provider_generation_request
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.plan_quota_service import PlanQuotaService
 from app.services.user_style import UserStyleService
 from app.services.web_search.service import WebSearchService
 from app.services.web_signal_collector import format_web_signals_block
@@ -674,6 +675,7 @@ async def on_radar_content_selected(
     partner_repository: PartnerRepository,
     artifact_repository: ArtifactRepository,
     conversation_state_repository: ConversationStateRepository | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     # F2A button->ActionContract pilot: the callback_data is deterministically
     # translated into a validated ActionContract before anything else runs.
@@ -757,6 +759,16 @@ async def on_radar_content_selected(
         analysis=analysis,
         user_preferences=user_preferences,
     )
+    if plan_quota_service is not None:
+        decision = await plan_quota_service.check_material_quota(
+            workspace_context.workspace_id
+        )
+        if not decision.allowed:
+            await callback.answer("Готовлю черновик…")
+            if callback.message is not None:
+                await callback.message.edit_reply_markup(reply_markup=None)
+                await callback.message.answer(decision.message)
+            return
     request = build_provider_generation_request(spec)
     task_text = f"Radar draft: {signal.title}"
 
@@ -843,6 +855,8 @@ async def on_radar_content_selected(
         await callback.message.answer(_RADAR_ARTIFACT_FAILURE)
         await callback.message.answer(draft_text, reply_markup=v2_back_keyboard())
         return
+    if plan_quota_service is not None:
+        await plan_quota_service.record_material_created(workspace_context.workspace_id)
 
     await ConversationStateService(conversation_state_repository).record_artifact(
         workspace_context.workspace_id, workspace_context.telegram_user_id, artifact.id,

@@ -162,6 +162,19 @@ class CompetitorRepository:
             rows = await cursor.fetchall()
         return [_from_row(row) for row in rows]
 
+    async def count_for_workspace(self, workspace_id: int) -> int:
+        """Total saved competitors for this workspace, uncapped by
+        list_for_workspace()'s display `limit` - the plan-limits slot check
+        (app.services.plan_quota_service.check_competitor_slot) needs the
+        real count, not a UI-page-sized sample."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM competitors WHERE workspace_id = ?",
+                (workspace_id,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
     async def get_for_workspace(
         self, workspace_id: int, competitor_id: int,
     ) -> Competitor | None:

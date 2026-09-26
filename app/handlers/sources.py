@@ -30,6 +30,7 @@ from app.keyboards import (
 from app.domain.partners import WorkspaceContext
 from app.domain.sources import WorkspaceSource
 from app.repositories.source_catalog_repository import SourceCatalogRepository
+from app.services.plan_quota_service import PlanQuotaService
 from app.services.source_registry import SourceRegistryError
 from app.services.source_registry_store import (
     SourceAddressError,
@@ -194,12 +195,25 @@ async def receive_source_url(
     state: FSMContext,
     source_catalog_repository: SourceCatalogRepository,
     workspace_context: WorkspaceContext | None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     address = (message.text or "").strip()
 
     if workspace_context is None:
         await message.answer(_UNAVAILABLE, reply_markup=v2_back_keyboard())
         return
+
+    if plan_quota_service is not None:
+        current_count = await source_catalog_repository.count_for_workspace(
+            workspace_context.workspace_id
+        )
+        decision = await plan_quota_service.check_source_slot(
+            workspace_context.workspace_id, current_count,
+        )
+        if not decision.allowed:
+            await state.clear()
+            await message.answer(decision.message, reply_markup=active_main_menu(True))
+            return
 
     try:
         result = await source_catalog_repository.submit_source_request(

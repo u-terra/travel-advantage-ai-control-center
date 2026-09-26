@@ -56,6 +56,11 @@ from app.repositories.source_catalog_repository import (
     SourceCatalogMigrationError,
     SourceCatalogRepository,
 )
+from app.repositories.plan_usage_repository import (
+    COMPETITOR_ANALYSIS_COMPLETED,
+    MATERIAL_CREATED,
+    PlanUsageRepository,
+)
 from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.telegram_bind_token_repository import TelegramBindTokenRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
@@ -122,6 +127,8 @@ from app.services.lead_radar import (
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.plan_limits import get_plan_limits, plan_display_name
+from app.services.plan_quota_service import PlanQuotaService
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
 from app.services.rate_limit import signup_rate_limiter
 from app.services.signal_service import (
@@ -201,6 +208,11 @@ web_auth_repository = WebAuthRepository(settings.journal_db_path)
 # subscription_repository.resolve_access_state() with no channel-specific
 # logic in between.
 subscription_repository = SubscriptionRepository(settings.journal_db_path)
+# ORCHESTRAVEL v1 plan limits - same Journal DB instance as everything else
+# here, single service shared by every endpoint below that needs a quota
+# decision. See app.services.plan_limits/plan_quota_service.
+plan_usage_repository = PlanUsageRepository(settings.journal_db_path)
+plan_quota_service = PlanQuotaService(subscription_repository, plan_usage_repository)
 
 # RoboKassa billing - see app.services.robokassa / app.services.billing_service.
 # robokassa_config.is_configured is False (billing endpoints answer "not
@@ -892,15 +904,80 @@ async def get_me(principal: WebPrincipal = Depends(get_current_principal)):
 # workspace but its own.
 
 
+def _plan_limits_payload(plan_code: str) -> dict | None:
+    """ORCHESTRAVEL v1 plan limits, read from the single source of truth
+    (app.services.plan_limits) - never duplicated/hardcoded here."""
+    limits = get_plan_limits(plan_code)
+    if limits is None:
+        return None
+    return {
+        "materials_limit": limits.materials_limit,
+        "competitor_analyses_limit": limits.competitor_analyses_limit,
+        "window_days": limits.window_days,
+        "competitor_slot_limit": limits.competitor_slot_limit,
+        "source_slot_limit": limits.source_slot_limit,
+    }
+
+
+async def _current_plan_usage(workspace_id: int, plan_code: str | None) -> dict | None:
+    """Current-usage counters for the workspace's OWN active plan - None
+    when the plan has no enforced limits (legacy/beta/unknown), so the
+    billing UI shows plan cards without a usage panel for those workspaces.
+    """
+    limits = get_plan_limits(plan_code) if plan_code is not None else None
+    if limits is None:
+        return None
+    since = (
+        datetime.now(timezone.utc) - timedelta(days=limits.window_days)
+    ).isoformat()
+    # Best-effort, same fail-open convention as app.services.finops: a
+    # read-only usage-display panel must never break /api/billing/status
+    # itself - a workspace whose source_catalog/competitors tables aren't
+    # provisioned yet (e.g. no owner workspace at startup) just shows 0
+    # instead of a 500.
+    try:
+        materials_used = await plan_usage_repository.count_since(
+            workspace_id, MATERIAL_CREATED, since,
+        )
+    except Exception:
+        materials_used = 0
+    try:
+        analyses_used = await plan_usage_repository.count_since(
+            workspace_id, COMPETITOR_ANALYSIS_COMPLETED, since,
+        )
+    except Exception:
+        analyses_used = 0
+    try:
+        competitors_used = await competitor_repository.count_for_workspace(workspace_id)
+    except Exception:
+        competitors_used = 0
+    try:
+        sources_used = await source_catalog_repository.count_for_workspace(workspace_id)
+    except Exception:
+        sources_used = 0
+    return {
+        "window_days": limits.window_days,
+        "materials_used": materials_used,
+        "materials_limit": limits.materials_limit,
+        "competitor_analyses_used": analyses_used,
+        "competitor_analyses_limit": limits.competitor_analyses_limit,
+        "competitors_used": competitors_used,
+        "competitors_limit": limits.competitor_slot_limit,
+        "sources_used": sources_used,
+        "sources_limit": limits.source_slot_limit,
+    }
+
+
 @app.get("/api/billing/status")
 async def billing_status(principal: WebPrincipal = Depends(get_current_principal)):
     subscription = await subscription_repository.get_for_workspace(principal.workspace_id)
     access_state = await subscription_repository.resolve_access_state(principal.workspace_id)
+    plan_code = subscription.plan.value if subscription is not None else None
     return {
         "access_state": access_state,
         "access_granted": is_access_granted(access_state),
         "status": subscription.status.value if subscription is not None else None,
-        "plan": subscription.plan.value if subscription is not None else None,
+        "plan": plan_code,
         "paid_until": subscription.paid_until if subscription is not None else None,
         "trial_until": subscription.trial_until if subscription is not None else None,
         "billing_configured": robokassa_config.is_configured,
@@ -916,9 +993,13 @@ async def billing_status(principal: WebPrincipal = Depends(get_current_principal
             {
                 "code": plan.code, "label": plan.label,
                 "amount": str(plan.amount), "duration_days": plan.duration_days,
+                "limits": _plan_limits_payload(plan.code),
             }
             for plan in list_plans()
         ],
+        # Current usage against the workspace's OWN active plan - None for
+        # legacy/beta/no-subscription workspaces (see _current_plan_usage).
+        "usage": await _current_plan_usage(principal.workspace_id, plan_code),
     }
 
 
@@ -1094,6 +1175,7 @@ class ClientReplyRequest(BaseModel):
 async def startup() -> None:
     await knowledge_repository.init()
     await usage_ledger_repository.init()
+    await plan_usage_repository.init()
     await competitor_repository.init()
     await partner_repository.init()
     await workspace_memory_repository.init()
@@ -1575,6 +1657,12 @@ async def add_competitor_endpoint(
     re-checked against workspace_memberships on every request by
     get_current_principal) - never from the request body, so a client
     can't add a competitor into someone else's workspace."""
+    current_count = await competitor_repository.count_for_workspace(principal.workspace_id)
+    quota_decision = await plan_quota_service.check_competitor_slot(
+        principal.workspace_id, current_count,
+    )
+    if not quota_decision.allowed:
+        return {"error": quota_decision.message, "competitor": None}
     try:
         competitor = await competitor_repository.add_competitor(
             principal.workspace_id, request.url, label=request.label,
@@ -1666,6 +1754,12 @@ async def analyze_competitor_endpoint(
         if competitor is None:
             return {"error": "Конкурент не найден.", "competitor": None, "intelligence": None}
 
+        quota_decision = await plan_quota_service.check_competitor_analysis_quota(
+            principal.workspace_id
+        )
+        if not quota_decision.allowed:
+            return {"error": quota_decision.message, "competitor": None, "intelligence": None}
+
         ta_affiliated = await _is_ta_affiliated(principal.workspace_id)
         try:
             intelligence = await competitor_intelligence_service.analyze(
@@ -1681,6 +1775,7 @@ async def analyze_competitor_endpoint(
             return {"error": str(exc), "competitor": None, "intelligence": None}
 
         await competitor_repository.save_intelligence(principal.workspace_id, intelligence)
+        await plan_quota_service.record_competitor_analysis_completed(principal.workspace_id)
         await record_event(
             operational_event_repository, module="competitors", event_type="analyze",
             success=True, workspace_id=principal.workspace_id,
@@ -1762,6 +1857,16 @@ async def create_material_from_competitor_opportunity(
             },
         )
 
+        # Material quota applies only to a "post" (material) action - a
+        # "client_message" here is «Ответить клиенту», explicitly excluded
+        # from any business quota (see app.services.plan_quota_service).
+        if request.action == "post":
+            quota_decision = await plan_quota_service.check_material_quota(
+                principal.workspace_id
+            )
+            if not quota_decision.allowed:
+                return {"error": quota_decision.message, "material": None}
+
         profile = await partner_repository.get_business_profile(principal.workspace_id)
         user_preferences = await partner_repository.get_user_preferences(
             principal.workspace_id, principal.telegram_user_id,
@@ -1812,6 +1917,8 @@ async def create_material_from_competitor_opportunity(
                 f"data_origin={intelligence.data_origin}"
             ),
         )
+        if request.action == "post":
+            await plan_quota_service.record_material_created(principal.workspace_id)
 
         await record_event(
             operational_event_repository, module="materials",
@@ -2053,6 +2160,14 @@ async def _create_material_from_web_signal(
             analysis=analysis, user_preferences=user_preferences,
             artifact_type=request.action,
         )
+        # Material quota applies only to a "post" (material) action - see
+        # the identical gate in create_material_from_competitor_opportunity.
+        if request.action == "post":
+            quota_decision = await plan_quota_service.check_material_quota(
+                principal.workspace_id
+            )
+            if not quota_decision.allowed:
+                return {"error": quota_decision.message, "material": None}
         # Bug fix (production radar:22378/22379, "content_factory: request
         # failed"): Content Factory's /internal/generate hard-caps source_text
         # at 6000 chars and returns HTTP 400 above that (see
@@ -2100,6 +2215,8 @@ async def _create_material_from_web_signal(
             content=sanitized,
             generation_note=f"Сигнал web-источника: id={signal_id}",
         )
+        if request.action == "post":
+            await plan_quota_service.record_material_created(principal.workspace_id)
 
         await record_event(
             operational_event_repository, module="materials",
@@ -2241,6 +2358,14 @@ async def create_material_from_signal(
             analysis=analysis, user_preferences=user_preferences,
             artifact_type=request.action,
         )
+        # Material quota applies only to a "post" (material) action - see
+        # the identical gate in create_material_from_competitor_opportunity.
+        if request.action == "post":
+            quota_decision = await plan_quota_service.check_material_quota(
+                principal.workspace_id
+            )
+            if not quota_decision.allowed:
+                return {"error": quota_decision.message, "material": None}
         # Bug fix (production radar:22378/22379, "content_factory: request
         # failed"): Content Factory's /internal/generate hard-caps source_text
         # at 6000 chars and returns HTTP 400 above that (see
@@ -2288,6 +2413,8 @@ async def create_material_from_signal(
             content=sanitized,
             generation_note=f"Сигнал Radar: interpretation_id={interpretation_id}",
         )
+        if request.action == "post":
+            await plan_quota_service.record_material_created(principal.workspace_id)
 
         await record_event(
             operational_event_repository, module="materials",
@@ -3590,6 +3717,21 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
         competitor = await _requested_competitor(principal.workspace_id, message)
 
         if competitor is not None:
+            competitor_quota_decision = await plan_quota_service.check_competitor_analysis_quota(
+                principal.workspace_id
+            )
+            if not competitor_quota_decision.allowed:
+                knowledge_context = "\n\n".join(
+                    part for part in (
+                        knowledge_context,
+                        "=== COMPETITOR INTELLIGENCE ===\n"
+                        f"{competitor_quota_decision.message} "
+                        "Не выдавай общие знания модели за свежие данные.",
+                    )
+                    if part
+                )
+                competitor = None
+        if competitor is not None:
             try:
                 intelligence = await competitor_intelligence_service.analyze(
                     competitor, ta_affiliated=ta_affiliated,
@@ -3598,6 +3740,9 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                 await competitor_repository.save_intelligence(
                     principal.workspace_id,
                     intelligence,
+                )
+                await plan_quota_service.record_competitor_analysis_completed(
+                    principal.workspace_id
                 )
 
                 knowledge_context = "\n\n".join(
@@ -3774,6 +3919,11 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
 
         created_artifact = None
         if is_material_intent:
+            material_quota_decision = await plan_quota_service.check_material_quota(
+                principal.workspace_id
+            )
+            if not material_quota_decision.allowed:
+                return {"error": material_quota_decision.message}
             try:
                 material_spec = material_orchestration_service.build_free_text_generation_spec(
                     principal.workspace_id, message, business_profile,
@@ -3858,6 +4008,7 @@ async def chat(request: ChatRequest, principal: WebPrincipal = Depends(require_c
                     "chat: free-text material persistence failed", exc_info=True,
                 )
             else:
+                await plan_quota_service.record_material_created(principal.workspace_id)
                 await record_llm_call(
                     usage_ledger_repository,
                     workspace_id=principal.workspace_id,

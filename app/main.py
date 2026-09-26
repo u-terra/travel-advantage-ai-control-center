@@ -24,6 +24,7 @@ from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.repositories.partner_repository import PartnerRepository
+from app.repositories.plan_usage_repository import PlanUsageRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.repositories.subscription_repository import SubscriptionRepository
@@ -38,6 +39,7 @@ from app.services.lead_radar import LeadRadarConfig
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
 from app.services.llm.factory import create_llm_provider
+from app.services.plan_quota_service import PlanQuotaService
 from app.services.reference_resolver import ReferenceResolver
 from app.services.source_registry import SEED_REGISTRY_PATH
 from app.services.web_search.factory import create_web_search_service
@@ -73,6 +75,7 @@ def _build_dispatcher(
     telegram_bind_token_repository: TelegramBindTokenRepository | None = None,
     web_search_service: WebSearchService | None = None,
     web_signal_repository: WebSignalRepository | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -158,6 +161,7 @@ def _build_dispatcher(
     # default-None like every other dependency here, so existing callers/
     # tests are unaffected.
     dp["web_signal_repository"] = web_signal_repository
+    dp["plan_quota_service"] = plan_quota_service
     return dp
 
 
@@ -234,6 +238,16 @@ async def _async_main() -> None:
 
     subscription_repository = SubscriptionRepository(settings.journal_db_path)
     await subscription_repository.init()
+
+    # ORCHESTRAVEL v1 plan limits - see app.services.plan_limits (single
+    # source of truth for the START/STANDARD/FULL numbers) and
+    # app.services.plan_quota_service (the allow/deny decision). Own table
+    # in the same Journal DB as usage_ledger_repository/subscription_repository,
+    # deliberately not reusing usage_events - see plan_usage_repository's
+    # docstring for why a raw LLM-call ledger can't be a business quota.
+    plan_usage_repository = PlanUsageRepository(settings.journal_db_path)
+    await plan_usage_repository.init()
+    plan_quota_service = PlanQuotaService(subscription_repository, plan_usage_repository)
 
     # Telegram-connect deep-link tokens - see app.web_api's POST
     # /api/telegram/bind-token and app.handlers.start's /start <token>
@@ -323,6 +337,7 @@ async def _async_main() -> None:
         telegram_bind_token_repository=telegram_bind_token_repository,
         web_search_service=web_search_service,
         web_signal_repository=web_signal_repository,
+        plan_quota_service=plan_quota_service,
     )
 
     await dp.start_polling(bot)

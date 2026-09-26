@@ -57,6 +57,7 @@ from app.services.lead_radar import LeadRadarConfig
 from app.services.knowledge_service import KnowledgeBundle
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.plan_quota_service import PlanQuotaService
 from app.services.reference_resolver import ReferenceResolver, ResolvedActionContext
 from app.services.reply_sync import ReplyBridgeContext, ReplyWorkSyncService
 from app.services.usage_recorder import record_llm_call
@@ -401,6 +402,7 @@ async def on_free_text(
     reference_resolver: ReferenceResolver | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
     web_search_service: WebSearchService | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     task_text = (message.text or "").strip()
     if not task_text:
@@ -481,6 +483,7 @@ async def on_free_text(
         reference_resolver=reference_resolver,
         usage_ledger_repository=usage_ledger_repository,
         web_search_service=web_search_service,
+        plan_quota_service=plan_quota_service,
     )
     await record_turn(
         state, role="assistant",
@@ -726,6 +729,7 @@ async def _maybe_send_module_result(
     reference_resolver: ReferenceResolver | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
     web_search_service: WebSearchService | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> bool:
     # Slice 1: one turn-local retrieval after the existing route decision and
     # before any generation.  Known non-KB modules bypass even the resolver;
@@ -813,6 +817,7 @@ async def _maybe_send_module_result(
         knowledge_bundle=knowledge_bundle,
         usage_ledger_repository=usage_ledger_repository,
         web_search_service=web_search_service,
+        plan_quota_service=plan_quota_service,
     )
     return False
 
@@ -1131,6 +1136,7 @@ async def _maybe_send_draft(
     knowledge_bundle: KnowledgeBundle | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
     web_search_service: WebSearchService | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     workspace_id = workspace_context.workspace_id
     # Radar UX / free-text fix: раньше сюда дополнительно требовалось буквальное
@@ -1190,6 +1196,11 @@ async def _maybe_send_draft(
     user_preferences = await UserStyleService(partner_repository).get(workspace_context)
 
     if is_regular_post:
+        if plan_quota_service is not None:
+            quota_decision = await plan_quota_service.check_material_quota(workspace_id)
+            if not quota_decision.allowed:
+                await message.answer(quota_decision.message)
+                return
         spec = MaterialOrchestrationService().build_free_text_generation_spec(
             workspace_id, decision.task_text, profile,
             user_preferences=user_preferences,
@@ -1369,6 +1380,8 @@ async def _maybe_send_draft(
                 active_module="content_factory", current_task="content_factory_free_text",
                 last_action="generate_content",
             )
+            if plan_quota_service is not None:
+                await plan_quota_service.record_material_created(workspace_id)
 
     if official_source_missing(search_response):
         # Deterministic, non-LLM caveat - see

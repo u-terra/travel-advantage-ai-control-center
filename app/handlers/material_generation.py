@@ -29,6 +29,7 @@ from app.services.generation_request_builder import (
     build_source_analysis_provider_request,
 )
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.plan_quota_service import PlanQuotaService
 from app.services.usage_recorder import record_llm_call
 from app.services.user_style import UserStyleService
 from app.services.llm.base import LLMProvider
@@ -153,6 +154,7 @@ async def generate_source_material(
     partner_repository: PartnerRepository,
     conversation_state_repository: ConversationStateRepository | None = None,
     usage_ledger_repository: UsageLedgerRepository | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
 ) -> None:
     data = (callback.data or "").removeprefix(SOURCE_MATERIAL_FORMAT_PREFIX)
     parts = data.split(":")
@@ -196,6 +198,13 @@ async def generate_source_material(
         log.warning("material_generation: source analysis request too large")
         await callback.message.answer(_FAILURE)
         return
+    if plan_quota_service is not None:
+        decision = await plan_quota_service.check_material_quota(
+            workspace_context.workspace_id
+        )
+        if not decision.allowed:
+            await callback.message.answer(decision.message or _FAILURE)
+            return
     draft = await asyncio.to_thread(
         llm_provider.generate_draft,
         source_text=request.source_text,
@@ -235,6 +244,8 @@ async def generate_source_material(
             reply_markup = v2_back_keyboard() if index == len(messages) - 1 else None
             await callback.message.answer(text, reply_markup=reply_markup)
         return
+    if plan_quota_service is not None:
+        await plan_quota_service.record_material_created(workspace_context.workspace_id)
     # F2A: record real progress into Working State - additive/best-effort,
     # see app.services.conversation_state_service. The artifact above is
     # already saved and shown to the user regardless of whether this
