@@ -11,6 +11,13 @@ from app.repositories.knowledge_repository import KnowledgeRepository
 _TOKEN_RE = re.compile(r"[0-9a-zа-яё]+", re.IGNORECASE)
 _COMPLIANCE_TYPES = {"compliance_rule", "staleness_compliance_rule", "sponsor_compliance_rule"}
 
+# Shared between _retrieval_policy() (gates mwr.member_vs_ambassador as a
+# REQUIRED item) and _filter_contextual_false_positives() (gates it as a
+# WEAK search_text() match too - see the live prod bug comment at both call
+# sites below). "partner" is the canonicalized form of "партнёр"/"партнер"
+# (see _canonical_token) - query at this point is already normalized.
+_AMBASSADOR_ROLE_INTENT_STEMS = ("ambassador", "амбассадор", "partner", "регистрац", "роль")
+
 
 @dataclass(frozen=True)
 class SourceReference:
@@ -175,7 +182,22 @@ def _retrieval_policy(
     # "член" covers "членство"/"членский", separate from "клуб"/"подписк".
     membership_intent = any(stem in query for stem in ("член", "клуб", "подписк"))
     if membership_intent:
-        required.extend(("ta.membership", "ta.membership.cancellation", "mwr.member_vs_ambassador"))
+        required.extend(("ta.membership", "ta.membership.cancellation"))
+    # Live prod bug (follow-up to the one above): a plain membership-value
+    # objection ("Зачем платить за членство каждый месяц, если я и без
+    # клуба могу сам бронировать отели?") used to ALSO require
+    # mwr.member_vs_ambassador unconditionally - the answer drifted into
+    # "you can register as Ambassador without a travel service"/
+    # Compensation Plan, which has nothing to do with the actual question
+    # (membership value/cancellation, not the Member-vs-Ambassador role
+    # distinction). That item is now required only on its OWN, explicit
+    # ambassador/partner-role intent - never just because membership_intent
+    # fired. "partner" here is the CANONICALIZED form (see _canonical_token
+    # above: "партнёр"/"партнер" -> "partner") - query at this point is
+    # already normalized, so the raw Cyrillic spelling would never match.
+    ambassador_role_intent = any(stem in query for stem in _AMBASSADOR_ROLE_INTENT_STEMS)
+    if ambassador_role_intent:
+        required.append("mwr.member_vs_ambassador")
     # Same live prod bug, other half: a genuine booking question ("Почему
     # бронирование после оплаты pending?") must keep matching this rule
     # unchanged - only suppressed when membership_intent is ALSO explicit,
@@ -360,6 +382,18 @@ def _filter_contextual_false_positives(
         excluded.update(("mwr.team_structures", "ta.dual_team_income"))
     if "ruby" in query and any(word in query for word in ("язык", "programming", "программир")):
         excluded.update(("ta.builder_bonus", "ta.dual_team_income", "ta.rank_qualification"))
+    # Live prod bug (follow-up): search_text()'s generic "tag in query"
+    # scoring (app/repositories/knowledge_repository.py) gives
+    # mwr.member_vs_ambassador a weak match on ANY query containing
+    # "membership" ("members" tag is a substring of that token) - e.g. a
+    # plain "Зачем платить за членство..." objection, with zero ambassador/
+    # partner/registration/role intent of its own. _retrieval_policy()
+    # already never adds this item to `required` in that case; this filter
+    # closes the same hole for the WEAK search_text() match merged in
+    # alongside it, so a plain membership-value question never drifts into
+    # Ambassador-registration/Compensation Plan facts.
+    if not any(stem in query for stem in _AMBASSADOR_ROLE_INTENT_STEMS):
+        excluded.add("mwr.member_vs_ambassador")
     return [item for item in items if item.stable_key not in excluded]
 
 

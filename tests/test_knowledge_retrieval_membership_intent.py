@@ -11,8 +11,7 @@ booking is only mentioned inside a comparison.
 
 Fixed by:
 - a minimal membership_intent stem check in _retrieval_policy() that adds
-  ta.membership/ta.membership.cancellation/mwr.member_vs_ambassador as
-  required items;
+  ta.membership/ta.membership.cancellation as required items;
 - suppressing the "booking" in query -> required booking-backend rule when
   membership_intent is also explicit (a genuine booking-only question keeps
   matching it unchanged);
@@ -20,6 +19,14 @@ Fixed by:
   in app.repositories.knowledge_repository._SEARCH_TOKEN_ALIASES, so the
   free-text search_text() fallback can also find these items by their
   existing "membership" tag.
+
+Follow-up prod bug (same question class): membership_intent ALSO
+unconditionally required mwr.member_vs_ambassador - the answer then drifted
+into "you can register as Ambassador without a travel service"/Compensation
+Plan, irrelevant to a plain membership-value objection. mwr.member_vs_
+ambassador is now required only on its own, separate ambassador_role_intent
+(ambassador/амбассадор/partner/регистрац/роль) - never just because
+membership_intent fired.
 """
 
 from __future__ import annotations
@@ -82,7 +89,13 @@ def test_membership_objection_question_gets_membership_facts_not_booking_core(
     bundle_keys = keys(bundle)
     assert "ta.membership" in bundle_keys
     assert "ta.membership.cancellation" in bundle_keys
-    assert "mwr.member_vs_ambassador" in bundle_keys
+
+    # Live prod bug (follow-up): this plain membership-value question has no
+    # ambassador/partner/registration/role intent of its own - the answer
+    # must not drift into "register as Ambassador without a travel service"/
+    # Compensation Plan. mwr.member_vs_ambassador is a DIFFERENT topic (the
+    # Member vs Ambassador role distinction) and must not be required here.
+    assert "mwr.member_vs_ambassador" not in bundle_keys
 
     # The booking-backend items must not be part of the REQUIRED core for
     # this question - search_text() may still surface them as a weak
@@ -165,3 +178,41 @@ def test_membership_intent_suppresses_only_the_generic_booking_catch_all(
     bundle_keys = keys(bundle)
     assert "ta.membership" in bundle_keys
     assert "ta.booking_status_inventory" not in bundle_keys
+
+
+# --- Regression guard: member_vs_ambassador requires its own, separate intent
+
+
+def test_production_membership_question_does_not_pull_in_ambassador_registration(
+    tmp_path: Path,
+) -> None:
+    """The exact production report, second half: a plain membership-value
+    objection must not drag Ambassador-registration/Compensation Plan facts
+    into the required core - that is a different topic (the Member vs
+    Ambassador role distinction), not what was asked."""
+    knowledge = service(tmp_path)
+    bundle = run(knowledge.retrieve(_PRODUCTION_QUESTION))
+
+    bundle_keys = keys(bundle)
+    assert "mwr.member_vs_ambassador" not in bundle_keys
+
+    bundle_fact_keys = fact_stable_keys(bundle)
+    assert "mwr.ambassador.registration_without_travel_service" not in bundle_fact_keys
+    assert "mwr.membership.not_mandatory_for_ambassador_registration" not in bundle_fact_keys
+    assert "mwr.member_vs_ambassador.distinct_roles" not in bundle_fact_keys
+
+
+def test_ambassador_role_intent_still_requires_member_vs_ambassador(
+    tmp_path: Path,
+) -> None:
+    """Requirement (4): an explicit ambassador/partner/registration/role
+    question must still get mwr.member_vs_ambassador - only the blanket
+    membership_intent trigger was removed, not the item itself."""
+    knowledge = service(tmp_path)
+    for question in (
+        "Чем Member отличается от Lifestyle Ambassador?",
+        "Можно ли зарегистрироваться как ambassador без travel membership?",
+        "Какая роль у партнёра в этой программе?",
+    ):
+        bundle = run(knowledge.retrieve(question))
+        assert "mwr.member_vs_ambassador" in keys(bundle), question
