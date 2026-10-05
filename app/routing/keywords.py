@@ -165,6 +165,28 @@ REWRITE_ACTION_KEYWORDS: tuple[str, ...] = (
     "сделай уникальным", "сделать уникальным",
 )
 
+# Live prod bug: "короче и мягче" / "ещё вариант" / "деловее" sent right
+# after the bot's own generated client-reply draft (not a pasted post - the
+# user has nothing to paste, they are asking to revise what the BOT just
+# wrote) do not describe any rewrite ACTION on their own ("короче" is an
+# adjective/adverb, not an imperative verb like "сократи") and must not be
+# folded into REWRITE_ACTION_KEYWORDS: that list's own has_rewrite_action
+# gate (see app/routing/router.py) specifically scopes Safety-keyword
+# detection to a LEADING instruction, on the assumption the rest of the
+# message is pasted third-party source material to transform - that
+# assumption is wrong here, there is no pasted material, only the bot's own
+# prior turn. Kept as a separate, narrow list consumed only by
+# app.handlers.tasks' assistant-response follow-up recovery (not by
+# route_text() at all), so it never changes what REWRITE_ACTION_KEYWORDS
+# means for the existing pasted-post rewrite scenario.
+RESPONSE_REVISION_KEYWORDS: tuple[str, ...] = (
+    "короче",
+    "мягче",
+    "деловее",
+    "без давления",
+    "ещё вариант", "другой вариант",
+)
+
 PACKAGING_KEYWORDS: tuple[str, ...] = (
     "инструкц",
     "гайд",

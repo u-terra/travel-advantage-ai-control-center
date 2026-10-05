@@ -41,7 +41,11 @@ from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.work_repository import WorkRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
-from app.routing.keywords import ASSISTANT_INTENT_KEYWORDS, REWRITE_ACTION_KEYWORDS
+from app.routing.keywords import (
+    ASSISTANT_INTENT_KEYWORDS,
+    RESPONSE_REVISION_KEYWORDS,
+    REWRITE_ACTION_KEYWORDS,
+)
 from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
@@ -384,6 +388,147 @@ async def _recover_rewrite_source_text(state: FSMContext | None, task_text: str)
     return f"{previous.text}\n\n{task_text}"
 
 
+# Live prod bug: a bare follow-up like "короче и мягче", "ещё вариант" or a
+# one-word "да" sent in reply to the bot's own suggestion ("Если хотите, я
+# могу сформулировать это ещё короче и мягче...") carries none of
+# route_text()'s keywords - it is uncertain route (Module.ORCHESTRATOR) even
+# though the previous turn already resolved a real module. Unlike the
+# rewrite-recovery above (which only fires for an explicit rewrite verb and
+# rewrites task_text itself), this case has no action verb route_text() could
+# ever learn - the only honest signal is "the user is continuing the exchange
+# the bot just had", which is exactly what recent_turns()/record_turn()
+# already capture and what reply_to_message makes explicit.
+#
+# Two independent, narrow signals, either is enough on its own:
+#   - message is a Telegram reply to the bot's own previous message (an
+#     explicit, user-driven continuation signal, independent of text length);
+#   - task_text itself is short (a real new task of its own would normally
+#     still trip a routing keyword - route_text() already being uncertain is
+#     itself evidence this is not that - the length cap only guards against
+#     a long, keyword-free ramble coincidentally following an assistant turn).
+#
+# Either way, the *module to continue* must come from the single most recent
+# assistant turn, and only if that turn itself resolved a real module -
+# Module.ORCHESTRATOR (the uncertain-route turn itself still gets recorded
+# with that module, see record_turn() call in on_free_text) must not be
+# treated as "known", and we deliberately do not search further back: a
+# short ambiguous reply continues the LAST thing the bot said, never an
+# older module from several turns ago.
+_SHORT_FOLLOWUP_MAX_LEN = 60
+
+
+def _is_reply_to_bot_message(message: Message) -> bool:
+    reply = getattr(message, "reply_to_message", None)
+    if reply is None:
+        return False
+    bot_id = getattr(getattr(message, "bot", None), "id", None)
+    reply_sender_id = getattr(getattr(reply, "from_user", None), "id", None)
+    return bot_id is not None and reply_sender_id == bot_id
+
+
+async def _last_real_assistant_turn(state: FSMContext | None):
+    """Most recent assistant turn, but only if it resolved a real module -
+    Module.ORCHESTRATOR (the uncertain-route turn itself is still recorded
+    with that module, see record_turn() call in on_free_text) must never
+    count as "known", and this deliberately never looks further back: a
+    follow-up continues the LAST thing the bot said, never an older module
+    from several turns ago."""
+    for turn in reversed(await recent_turns(state)):
+        if turn.role != "assistant":
+            continue
+        if not turn.module or turn.module == Module.ORCHESTRATOR.value:
+            return None
+        return turn
+    return None
+
+
+async def _recover_follow_up_module(
+    state: FSMContext | None, message: Message, task_text: str,
+) -> Module | None:
+    is_reply_to_bot = _is_reply_to_bot_message(message)
+    # A bare confirmation word ("да") is too weak a signal to continue
+    # anything on length alone - see _recover_assistant_response_follow_up's
+    # docstring/requirement 6: it is only ever trusted together with an
+    # explicit Telegram reply to the bot. Every OTHER short phrase keeps the
+    # original length-only heuristic unchanged.
+    is_qualifying_follow_up = is_reply_to_bot or (
+        len(task_text) <= _SHORT_FOLLOWUP_MAX_LEN and not _is_bare_confirmation(task_text)
+    )
+    if not is_qualifying_follow_up:
+        return None
+    turn = await _last_real_assistant_turn(state)
+    if turn is None:
+        return None
+    try:
+        return Module(turn.module)
+    except ValueError:
+        return None
+
+
+# Live prod bug, follow-up half of the routing fix above: once
+# _recover_follow_up_module correctly resolves the module again ("короче и
+# мягче" -> Module.TRAVEL_ASSISTANT instead of is_uncertain), task_text
+# itself was still the bare "короче и мягче" - meaningless as a standalone
+# question. reference_resolver.resolve(question=decision.task_text, ...)
+# then found no relevant knowledge, and the user got "🧭 Ответ — сверьте
+# актуальность... нет подтверждённых данных" instead of an actual revision
+# of the bot's own previous reply.
+#
+# _recover_rewrite_source_text (above) looks structurally identical but
+# solves a DIFFERENT case - it recovers the last USER turn (the pasted post
+# someone asked to rewrite). Here there is nothing pasted - the thing to
+# revise is the bot's OWN last draft, an assistant turn, so a separate
+# function is needed; the amount of session.get_data()/recent_turns() work
+# is the same, no new storage.
+#
+# Deliberately narrow trigger, not the generic "any short text"
+# _SHORT_FOLLOWUP_MAX_LEN heuristic _recover_follow_up_module uses: RESPONSE_
+# REVISION_KEYWORDS below has explicitly recognizable revision phrases
+# ("короче", "мягче", "деловее", "без давления", "ещё вариант"/"другой
+# вариант"), and a bare one-word "да" is only ever trusted when
+# is_reply_to_bot is also true (an explicit Telegram reply to the bot's own
+# offer, e.g. "Если хотите, сделаю короче...") - a standalone "да" with no
+# such signal must stay unresolved and fall through to the existing
+# fail-safe is_uncertain path, same as before this fix.
+_BARE_CONFIRMATION_WORDS = frozenset({"да"})
+
+
+def _is_bare_confirmation(text: str) -> bool:
+    return text.strip().lower().rstrip("!.") in _BARE_CONFIRMATION_WORDS
+
+
+def _looks_like_response_revision_followup(text: str) -> bool:
+    lowered = text.strip().lower()
+    return any(keyword in lowered for keyword in RESPONSE_REVISION_KEYWORDS)
+
+
+async def _recover_assistant_response_follow_up(
+    state: FSMContext | None, message: Message, task_text: str,
+) -> tuple[Module, str] | None:
+    """Returns (module, new_task_text) when task_text is recognizable as a
+    request to revise the bot's own last reply, splicing that reply's real
+    text in front of the new instruction - same splice shape as
+    _recover_rewrite_source_text's `f"{previous.text}\\n\\n{task_text}"`,
+    just sourced from the last assistant turn instead of the last user turn.
+    Returns None otherwise (including when no prior real module/text is
+    available), leaving the caller free to fall back to
+    _recover_follow_up_module for the generic routing-only case."""
+    is_revision_phrase = _looks_like_response_revision_followup(task_text)
+    is_trusted_confirmation = (
+        _is_bare_confirmation(task_text) and _is_reply_to_bot_message(message)
+    )
+    if not is_revision_phrase and not is_trusted_confirmation:
+        return None
+    turn = await _last_real_assistant_turn(state)
+    if turn is None or not turn.text.strip():
+        return None
+    try:
+        module = Module(turn.module)
+    except ValueError:
+        return None
+    return module, f"{turn.text}\n\n{task_text}"
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_free_text(
     message: Message,
@@ -455,6 +600,19 @@ async def on_free_text(
 
     task_text = await _recover_rewrite_source_text(state, task_text)
     decision = route_text(task_text)
+    force_client_reply = False
+    if decision.is_uncertain:
+        recovered_response = await _recover_assistant_response_follow_up(
+            state, message, task_text,
+        )
+        if recovered_response is not None:
+            recovered_module, task_text = recovered_response
+            decision = route_for_button(recovered_module, task_text)
+            force_client_reply = True
+        else:
+            recovered_module = await _recover_follow_up_module(state, message, task_text)
+            if recovered_module is not None:
+                decision = route_for_button(recovered_module, task_text)
     await journal.add(
         workspace_context.workspace_id,
         task_text=task_text,
@@ -472,7 +630,7 @@ async def on_free_text(
         await message.answer(
             build_card(decision), reply_markup=active_main_menu(v2_menu_enabled)
         )
-    knowledge_controlled = await _maybe_send_module_result(
+    knowledge_controlled, draft_text = await _maybe_send_module_result(
         message, decision, llm_provider,
         workspace_context, partner_repository,
         # F2B: on_free_text (plain typed text, no button) previously never
@@ -489,10 +647,18 @@ async def on_free_text(
         usage_ledger_repository=usage_ledger_repository,
         web_search_service=web_search_service,
         plan_quota_service=plan_quota_service,
+        force_client_reply=force_client_reply,
     )
+    # Live prod bug (follow-up half 2): a short revision like "короче и
+    # мягче" only gets anything real to work with next time if THIS turn's
+    # assistant text is the actual draft the user just saw, not a technical
+    # label - see _recover_assistant_response_follow_up above. Falls back to
+    # the previous label for every branch that never produced a draft
+    # (Safety/Packaging/uncertain/knowledge-blocked) - those have nothing
+    # useful to splice into a later follow-up anyway.
     await record_turn(
         state, role="assistant",
-        text=f"[{decision.primary_module.value}] ответ отправлен",
+        text=draft_text if draft_text else f"[{decision.primary_module.value}] ответ отправлен",
         module=decision.primary_module.value,
     )
     if knowledge_controlled:
@@ -737,7 +903,8 @@ async def _maybe_send_module_result(
     usage_ledger_repository: UsageLedgerRepository | None = None,
     web_search_service: WebSearchService | None = None,
     plan_quota_service: PlanQuotaService | None = None,
-) -> bool:
+    force_client_reply: bool = False,
+) -> tuple[bool, str | None]:
     # Slice 1: one turn-local retrieval after the existing route decision and
     # before any generation.  Known non-KB modules bypass even the resolver;
     # Planner is handled earlier in on_free_text and never reaches this point
@@ -757,28 +924,28 @@ async def _maybe_send_module_result(
         except Exception:
             log.warning("reference_resolver: unexpected failure", exc_info=True)
             await message.answer(_KNOWLEDGE_UNAVAILABLE_MESSAGE)
-            return True
+            return True, None
         if resolved.need_knowledge and resolved.knowledge_bundle is None:
             await message.answer(_KNOWLEDGE_UNAVAILABLE_MESSAGE)
-            return True
+            return True, None
         if resolved.needs_clarification:
             await message.answer(_knowledge_clarification_message(resolved))
-            return True
+            return True, None
         if resolved.requires_current_source:
             await message.answer(_CURRENT_SOURCE_REQUIRED_MESSAGE)
-            return True
+            return True, None
         if resolved.need_knowledge:
             knowledge_bundle = resolved.knowledge_bundle
 
     if decision.primary_module is Module.SAFETY_LAYER:
         await _send_text_check(message, decision, provider)
-        return False
+        return False, None
 
     if decision.primary_module is Module.PARTNER_PACKAGING:
         await _send_partner_package(
             message, decision, workspace_context.workspace_id, partner_repository,
         )
-        return False
+        return False, None
 
     # Prod bug: в v2 UI карточка маршрута («📌 Карточка маршрута», содержащая
     # предупреждение "Маршрут не определён уверенно") не показывается
@@ -812,11 +979,11 @@ async def _maybe_send_module_result(
                         offer_message.chat.id, offer_message.message_id,
                     ),
                 })
-            return False
+            return False, None
         await message.answer(_UNCERTAIN_ROUTE_MESSAGE)
-        return False
+        return False, None
 
-    await _maybe_send_draft(
+    draft_text = await _maybe_send_draft(
         message, decision, provider, workspace_context, partner_repository,
         work_repository=work_repository, artifact_repository=artifact_repository,
         conversation_state_repository=conversation_state_repository,
@@ -825,8 +992,9 @@ async def _maybe_send_module_result(
         usage_ledger_repository=usage_ledger_repository,
         web_search_service=web_search_service,
         plan_quota_service=plan_quota_service,
+        force_client_reply=force_client_reply,
     )
-    return False
+    return False, draft_text
 
 
 def _knowledge_clarification_message(resolved: ResolvedActionContext) -> str:
@@ -1144,7 +1312,8 @@ async def _maybe_send_draft(
     usage_ledger_repository: UsageLedgerRepository | None = None,
     web_search_service: WebSearchService | None = None,
     plan_quota_service: PlanQuotaService | None = None,
-) -> None:
+    force_client_reply: bool = False,
+) -> str | None:
     workspace_id = workspace_context.workspace_id
     # Radar UX / free-text fix: раньше сюда дополнительно требовалось буквальное
     # слово "пост" (_is_regular_post) — из-за этого корректно
@@ -1165,15 +1334,26 @@ async def _maybe_send_draft(
     is_regular_post = decision.primary_module is Module.CONTENT_FACTORY
     is_client_reply = decision.primary_module is Module.TRAVEL_ASSISTANT
     if not is_regular_post and not is_client_reply:
-        return
+        return None
 
     # See _INFORMATIONAL_HEADING above for the full reasoning: only the
     # on_free_text entry point (reply_context is None) ever gets split into
     # INFORMATIONAL vs CLIENT_REPLY; every reply_context-carrying call keeps
     # the previous CLIENT_REPLY-only behavior unconditionally.
+    #
+    # force_client_reply (set by on_free_text's assistant-response
+    # follow-up recovery, see _recover_assistant_response_follow_up) bypasses
+    # the keyword check below: decision.task_text there is the bot's OWN
+    # previous draft spliced with a short revision instruction ("короче и
+    # мягче") - that instruction alone never contains an ASSISTANT_INTENT_
+    # KEYWORDS phrase like "человек спрашивает", so without this override a
+    # recovered follow-up would wrongly fall back to the INFORMATIONAL
+    # persona/heading every single time, exactly the live prod bug this
+    # fixes.
     is_informational = (
         is_client_reply
         and reply_context is None
+        and not force_client_reply
         and not _is_explicit_client_reply_intent(decision.task_text)
     )
 
@@ -1217,7 +1397,7 @@ async def _maybe_send_draft(
             quota_decision = await plan_quota_service.check_material_quota(workspace_id)
             if not quota_decision.allowed:
                 await message.answer(quota_decision.message)
-                return
+                return None
         heading = "📝 Черновик для ручной проверки"
         # UX: multi-item/weekly_plan запросы (несколько дней/постов сразу)
         # реально занимают больше времени в Content Factory (удвоенный
@@ -1291,7 +1471,7 @@ async def _maybe_send_draft(
     )
     if draft is None:
         await message.answer(_DRAFT_FAILURE_MESSAGE)
-        return
+        return None
 
     # UX polish: второй защитный слой поверх anti-AI-tail constraints в
     # prompt (см. commit b718685) — модель иногда всё равно заканчивает
@@ -1433,3 +1613,4 @@ async def _maybe_send_draft(
             )
 
     await _send_chunked(message, "\n".join(lines), reply_markup=reply_keyboard)
+    return draft_text
