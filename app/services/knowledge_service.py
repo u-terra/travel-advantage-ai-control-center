@@ -163,7 +163,24 @@ def _retrieval_policy(
     if "best price" in query or "всегда дешевле" in query:
         required.append("ta.best_price_guarantee")
         compliance.append("mwr.claims_and_staleness_compliance")
-    if "booking" in query:
+    # Live prod bug: "Зачем платить за членство каждый месяц, если я и без
+    # клуба могу сам бронировать отели и покупать билеты?" matched only
+    # "booking" (from "бронировать") below - "членство"/"клуб" had no rule
+    # at all, so booking-backend facts (pending/additional verification/
+    # supplier update delay) became the entire required core instead of
+    # membership value/cancellation facts, even though the question is
+    # about membership, and "бронировать" is only mentioned inside a
+    # comparison ("если я и без клуба могу сам..."), not the actual topic.
+    # membership_intent is intentionally a minimal stem check (не словарь):
+    # "член" covers "членство"/"членский", separate from "клуб"/"подписк".
+    membership_intent = any(stem in query for stem in ("член", "клуб", "подписк"))
+    if membership_intent:
+        required.extend(("ta.membership", "ta.membership.cancellation", "mwr.member_vs_ambassador"))
+    # Same live prod bug, other half: a genuine booking question ("Почему
+    # бронирование после оплаты pending?") must keep matching this rule
+    # unchanged - only suppressed when membership_intent is ALSO explicit,
+    # so "booking" stays a required core for its own real topic.
+    if "booking" in query and not membership_intent:
         required.extend(("ta.booking_status_inventory", "ta.support"))
     if "commission" in query:
         required.append("ta.payments_and_support_routing")

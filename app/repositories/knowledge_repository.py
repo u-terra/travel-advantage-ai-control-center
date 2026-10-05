@@ -38,6 +38,15 @@ _SEARCH_TOKEN_ALIASES = {
     "криптовалютой": "crypto", "гарантия": "guarantee", "garantee": "guarantee",
     "бронь": "booking", "брони": "booking", "бронирование": "booking",
     "advantge": "advantage", "advatage": "advantage", "guset": "guest", "lp": "points",
+    # Live prod bug: "членство" had no alias at all, so it could never match
+    # the English "membership" tag on ta.membership/ta.membership.cancellation
+    # via the free-text search fallback (search_text) - only the hand-curated
+    # _retrieval_policy() rules in app/services/knowledge_service.py ever
+    # found these items. "клуб" maps to the same existing "membership" tag
+    # (no separate "club" term exists in the catalogue); "подписка" is the
+    # common everyday word for the same concept in this domain.
+    "членство": "membership", "членский": "membership",
+    "клуб": "membership", "подписка": "membership",
 }
 
 _SCHEMA = """
