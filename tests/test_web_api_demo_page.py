@@ -34,10 +34,10 @@ def test_demo_page_is_public_and_renders():
     assert "text/html" in response.headers["content-type"]
     body = response.text
     assert "ORCHESTRAVEL" in body
-    assert "Radar" in body
+    assert "Следит за рынком и конкурентами" in body
     assert "/admin" not in body
     assert '"/login"' not in body
-    assert "Оркестратор связывает эти блоки" in body
+    assert "ORCHESTRAVEL связывает эти возможности в один рабочий процесс" in body
     assert "Полноценная работа с компьютера" in body
     assert "адаптацией ORCHESTRAVEL под ваш бизнес" in body
     assert 'href="https://t.me/VladCRM"' in body

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ORCHESTRAVEL — AI-система для туристического бизнеса</title>
-<meta name="description" content="ORCHESTRAVEL следит за рынком, понимает контекст и помогает доводить задачи до действия. Демо на подготовленных данных.">
+<title>ORCHESTRAVEL — следит за туристическим рынком для вас</title>
+<meta name="description" content="ORCHESTRAVEL помогает понять, что произошло на туристическом рынке, почему это важно и что с этим делать — и подготовить материал или ответ клиенту. Демо на подготовленных данных.">
 <style>
 * { box-sizing: border-box; }
 
@@ -517,15 +517,16 @@ footer {
         </div>
 
         <h1>ORCHESTRAVEL</h1>
-        <p class="tagline">AI-система для туристического бизнеса</p>
+        <p class="tagline">Следит за туристическим рынком, чтобы вы не тратили на это время</p>
         <p class="lede">
-            Следит за рынком, понимает контекст, помогает принимать решения
-            и доводить задачи до действия.
+            Помогает специалисту быстро понять, что произошло на рынке, почему это важно
+            и что с этим делать — а затем подготовить материал для клиентов или ответ
+            на конкретный вопрос.
         </p>
 
         <div class="hero-actions">
-            <a href="#scenarios" class="btn btn-primary">Посмотреть, как работает</a>
-            <a href="https://t.me/{{BOT_USERNAME}}" target="_blank" rel="noopener" class="btn btn-ghost">Попробовать в Telegram</a>
+            <a href="/signup" class="btn btn-primary">Начать работу</a>
+            <a href="https://t.me/{{BOT_USERNAME}}" target="_blank" rel="noopener" class="btn btn-ghost">Открыть в Telegram</a>
         </div>
     </div>
 </header>
@@ -543,34 +544,34 @@ footer {
                 <div class="feature-icon">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/></svg>
                 </div>
-                <h3>Radar</h3>
-                <p>Следит за рынком, конкурентами и информационными сигналами.</p>
+                <h3>Следит за рынком и конкурентами</h3>
+                <p>Собирает сигналы из подключённых источников.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l7 4v6c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z"/></svg>
                 </div>
-                <h3>Content Factory</h3>
-                <p>Превращает идеи и сигналы в готовые материалы.</p>
+                <h3>Помогает создавать материалы</h3>
+                <p>Превращает идеи и найденные темы в черновики публикаций.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                 </div>
-                <h3>AI-ассистент</h3>
-                <p>Помогает с рабочими задачами, клиентскими запросами и решениями.</p>
+                <h3>Помогает отвечать клиентам</h3>
+                <p>Готовит ответ с учётом контекста бизнеса.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h1m4 0h1m-6 4h1m4 0h1m-6 4h1m4 0h1"/></svg>
                 </div>
-                <h3>Контекст бизнеса</h3>
-                <p>Учитывает информацию о компании, аудитории, конкурентах и текущих задачах.</p>
+                <h3>Учитывает ваш бизнес</h3>
+                <p>Аудиторию, направления, конкурентов, источники и базу знаний.</p>
             </div>
         </div>
 
         <p class="orchestrator-note">
-            Оркестратор связывает эти блоки между собой и определяет следующий шаг.
+            ORCHESTRAVEL связывает эти возможности в один рабочий процесс: от найденного сигнала до готового действия.
         </p>
     </div>
 </section>
@@ -580,7 +581,9 @@ footer {
         <div class="section-label">Демонстрация</div>
         <h2 class="section-title">ORCHESTRAVEL в работе</h2>
         <p class="section-sub">
-            Три сценария на заранее подготовленных данных — от сигнала до готового действия.
+            Три примера на заранее подготовленных данных — показывают логику работы
+            ORCHESTRAVEL, а не сигналы, полученные прямо сейчас. В рабочей версии источник
+            сигнала — ваши подключённые каналы и источники.
         </p>
 
         <div class="scenarios">
@@ -597,21 +600,28 @@ footer {
                     <div class="chain-step">
                         <div class="chain-dot">2</div>
                         <div class="chain-body">
-                            <div class="label">Анализ</div>
-                            <div class="text">Акция затрагивает ключевое направление и период спроса.</div>
+                            <div class="label">Что произошло</div>
+                            <div class="text">Акция запущена на ключевом направлении в активный период спроса.</div>
                         </div>
                     </div>
                     <div class="chain-step">
                         <div class="chain-dot">3</div>
                         <div class="chain-body">
-                            <div class="label">Решение</div>
-                            <div class="text">Сформировать встречное предложение с акцентом на сервис.</div>
+                            <div class="label">Почему это важно</div>
+                            <div class="text">Клиенты начнут сравнивать цены — риск потерять часть бронирований.</div>
                         </div>
                     </div>
                     <div class="chain-step">
                         <div class="chain-dot">4</div>
                         <div class="chain-body">
-                            <div class="label">Действие</div>
+                            <div class="label">Что можно сделать</div>
+                            <div class="text">Подготовить встречное предложение с акцентом на сервис и условия.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">5</div>
+                        <div class="chain-body">
+                            <div class="label">Подготовить материал</div>
                             <div class="text">Готовый пост и рассылка для базы клиентов.</div>
                         </div>
                     </div>
@@ -631,21 +641,28 @@ footer {
                     <div class="chain-step">
                         <div class="chain-dot">2</div>
                         <div class="chain-body">
-                            <div class="label">Анализ</div>
-                            <div class="text">Тема совпадает с аудиторией и текущими приоритетами.</div>
+                            <div class="label">Что произошло</div>
+                            <div class="text">Тема совпадает с аудиторией и текущими приоритетами агентства.</div>
                         </div>
                     </div>
                     <div class="chain-step">
                         <div class="chain-dot">3</div>
                         <div class="chain-body">
-                            <div class="label">Решение</div>
-                            <div class="text">Спланировать серию постов на неделю по теме раннего бронирования.</div>
+                            <div class="label">Почему это важно</div>
+                            <div class="text">Ранний спрос — возможность забронировать клиентов, пока конкуренты не отреагировали.</div>
                         </div>
                     </div>
                     <div class="chain-step">
                         <div class="chain-dot">4</div>
                         <div class="chain-body">
-                            <div class="label">Действие</div>
+                            <div class="label">Что можно сделать</div>
+                            <div class="text">Спланировать серию публикаций по теме раннего бронирования.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">5</div>
+                        <div class="chain-body">
+                            <div class="label">Подготовить материал</div>
                             <div class="text">Готовый контент-план с текстами для публикации.</div>
                         </div>
                     </div>
@@ -665,22 +682,29 @@ footer {
                     <div class="chain-step">
                         <div class="chain-dot">2</div>
                         <div class="chain-body">
-                            <div class="label">Анализ</div>
-                            <div class="text">Запрос сопоставлен с условиями тура и историей клиента.</div>
+                            <div class="label">Что произошло</div>
+                            <div class="text">ORCHESTRAVEL учитывает доступную информацию, правила и контекст бизнеса.</div>
                         </div>
                     </div>
                     <div class="chain-step">
                         <div class="chain-dot">3</div>
                         <div class="chain-body">
-                            <div class="label">Решение</div>
-                            <div class="text">Определён корректный ответ с учётом правил и контекста.</div>
+                            <div class="label">Почему это важно</div>
+                            <div class="text">Быстрый точный ответ влияет на доверие клиента и повторную покупку.</div>
                         </div>
                     </div>
                     <div class="chain-step">
                         <div class="chain-dot">4</div>
                         <div class="chain-body">
-                            <div class="label">Действие</div>
-                            <div class="text">Готовый ответ клиенту, который можно сразу отправить.</div>
+                            <div class="label">Что можно сделать</div>
+                            <div class="text">Определить корректный ответ с учётом правил и контекста.</div>
+                        </div>
+                    </div>
+                    <div class="chain-step">
+                        <div class="chain-dot">5</div>
+                        <div class="chain-body">
+                            <div class="label">Ответ клиенту</div>
+                            <div class="text">Черновик ответа, готовый к проверке перед отправкой.</div>
                         </div>
                     </div>
                 </div>
@@ -692,10 +716,12 @@ footer {
 <section class="differentiator">
     <div class="container">
         <div class="section-label" style="color:#7fe0d3;">Отличие</div>
-        <h2 class="section-title">Почему это не обычный AI</h2>
+        <h2 class="section-title">Чем ORCHESTRAVEL отличается от обычного ChatGPT</h2>
         <p>
-            Обычный AI ждёт вопроса.<br>
-            <strong>ORCHESTRAVEL</strong> связывает информацию, контекст и действия в одном процессе.
+            ChatGPT отвечает на то, что вы ему спросили.
+            <strong>ORCHESTRAVEL</strong> работает с вашим туристическим контекстом: источниками,
+            конкурентами, бизнес-профилем и материалами — и помогает пройти путь от найденной
+            информации до рабочего результата.
         </p>
     </div>
 </section>
@@ -739,22 +765,18 @@ footer {
                 <h2 class="section-title" style="font-size:22px;">Тарифы для старта</h2>
                 <div class="pricing">
                     <div class="price-row">
-                        <span class="plan">2 недели доступа</span>
+                        <span class="plan">START / 14 дней</span>
                         <span class="amount">490 ₽</span>
                     </div>
                     <div class="price-row">
-                        <span class="plan">Подписка / месяц</span>
+                        <span class="plan">STANDARD / 30 дней</span>
                         <span class="amount">990 ₽</span>
                     </div>
                     <div class="price-row">
-                        <span class="plan">Расширенная версия / месяц</span>
+                        <span class="plan">FULL / 30 дней</span>
                         <span class="amount">1 490 ₽</span>
                     </div>
                 </div>
-                <p class="price-note">
-                    Тарифы могут пересматриваться по мере развития системы и изменения
-                    расходов на инфраструктуру и AI-модели.
-                </p>
             </div>
         </div>
     </div>
@@ -772,10 +794,10 @@ footer {
 <section class="final-cta">
     <div class="container">
         <div class="section-label">Начать</div>
-        <h2 class="section-title">Попробуйте ORCHESTRAVEL на своём бизнесе</h2>
+        <h2 class="section-title">Начните работать с ORCHESTRAVEL</h2>
 
         <div class="final-cta-actions">
-            <a href="/signup" class="btn btn-primary">Получить доступ</a>
+            <a href="/signup" class="btn btn-primary">Начать работу</a>
             <a href="https://t.me/VladCRM" target="_blank" rel="noopener" class="btn btn-ghost">Задать вопрос / Связаться</a>
         </div>
 

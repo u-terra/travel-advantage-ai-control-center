@@ -33,8 +33,18 @@ from app.keyboards import (
     lobby_new_visitor_keyboard,
 )
 from app.services.access_state import ACTIVE, TRIAL_ACTIVE
+from app.services.plans import list_plans
 
 router = Router(name="lobby")
+
+
+def _format_plan_line(plan) -> str:
+    amount = int(plan.amount) if plan.amount == plan.amount.to_integral_value() else plan.amount
+    return f"{amount} ₽ — {plan.label}"
+
+
+def _plan_lines_text() -> str:
+    return "\n".join(_format_plan_line(plan) for plan in list_plans())
 
 
 # ── Тексты лобби ──────────────────────────────────────────────────────────
@@ -100,7 +110,8 @@ WHATS_INCLUDED_TEXT = (
     "отдельно подключать CRM, конструкторы ботов или Make/n8n.\n\n"
     "Сначала — платный ознакомительный доступ на 14 дней (один раз на рабочее "
     "пространство, без автоматического перехода на месяц), затем — месячная "
-    "подписка. Точные цены пока не объявлены."
+    "подписка.\n\n"
+    f"{_plan_lines_text()}"
 )
 
 BROWSE_INTRO_TEXT = "🧭 Осмотреться\n\nВыберите раздел, чтобы посмотреть, как всё устроено."
@@ -152,8 +163,8 @@ _BROWSE_SECTIONS: dict[str, tuple[str, str]] = {
         "Make/n8n или другой обязательный платный сервис не нужен. Бесплатного "
         "пробного периода пока нет: активная работа сразу создаёт "
         "инфраструктурные и AI/API-расходы. Вместо этого — платный "
-        "ознакомительный доступ на 14 дней, затем месячная подписка. Цены пока "
-        "не объявлены.",
+        "ознакомительный доступ на 14 дней, затем месячная подписка:\n\n"
+        f"{_plan_lines_text()}",
     ),
     "hosting": (
         "🖥 Свой сервер или подписка",

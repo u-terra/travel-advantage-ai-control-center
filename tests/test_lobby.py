@@ -95,13 +95,30 @@ def test_all_ten_browse_sections_are_reachable() -> None:
         assert callback.message.edits, f"section {key} produced no text"
 
 
-def test_browse_section_texts_do_not_mention_prices() -> None:
-    for key in ("access", "hosting", "faq"):
+def test_hosting_and_faq_sections_do_not_mention_prices() -> None:
+    """hosting - custom-server deployment has no fixed price; faq doesn't
+    need the numbers repeated. "access" now shows the real tariffs (see
+    test_access_section_shows_real_plan_prices)."""
+    for key in ("hosting", "faq"):
         callback = _Callback(f"{BROWSE_SECTION_PREFIX}{key}")
         _run(on_browse_section_selected(callback))
         text = callback.message.edits[0][0]
         for forbidden in ("₽", " руб", "руб.", "USD", "$"):
             assert forbidden not in text
+
+
+def test_access_section_shows_real_plan_prices() -> None:
+    """Lobby no longer claims prices are unannounced - it shows the actual
+    PLAN_CATALOG tariffs from app.services.plans (single source of truth)."""
+    from app.services.plans import list_plans
+
+    callback = _Callback(f"{BROWSE_SECTION_PREFIX}access")
+    _run(on_browse_section_selected(callback))
+    text = callback.message.edits[0][0]
+    assert "не объявлены" not in text.lower()
+    for plan in list_plans():
+        assert plan.label in text
+        assert f"{int(plan.amount)} ₽" in text
 
 
 def test_browse_back_returns_to_intro() -> None:
@@ -145,15 +162,18 @@ def test_existing_workspace_with_closed_access_sees_the_web_billing_link() -> No
     assert str(_ctx().workspace_id) not in WEB_BILLING_URL
 
 
-def test_whats_included_has_no_price_and_mentions_14_days_then_month() -> None:
+def test_whats_included_mentions_14_days_then_month_and_shows_real_prices() -> None:
+    from app.services.plans import list_plans
+
     message = _Message()
     _run(on_whats_included_pressed(message))
     text = message.answers[0][0]
     assert "14 дней" in text
     assert "месячная" in text.lower()
-    assert "цены" in text.lower() and "не объявлены" in text.lower()
-    for forbidden in ("₽", " руб", "руб.", "USD", "$"):
-        assert forbidden not in text
+    assert "не объявлены" not in text.lower()
+    for plan in list_plans():
+        assert plan.label in text
+        assert f"{int(plan.amount)} ₽" in text
 
 
 # --- route_access_gate: единая точка решения --------------------------------
