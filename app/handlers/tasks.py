@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from aiogram import F, Router
@@ -12,6 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.cards import build_card
+from app.domain.conversation_state import OfferItem
 from app.domain.orchestration import OutputFormat
 from app.domain.partners import WorkspaceContext
 from app.domain.usage import UsageStatus
@@ -35,7 +38,10 @@ from app.planner.provider import PlannerLLMProvider
 from app.planner.service import run_planner_for_task
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.competitor_repository import CompetitorRepository
-from app.repositories.conversation_state_repository import ConversationStateRepository
+from app.repositories.conversation_state_repository import (
+    ConversationStateConflictError,
+    ConversationStateRepository,
+)
 from app.repositories.partner_repository import PartnerRepository
 from app.repositories.source_analysis_repository import SourceAnalysisRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
@@ -50,7 +56,7 @@ from app.routing.modules import Module
 from app.routing.router import RouteDecision, route_for_button, route_text
 from app.routing.safety import SafetyLevel
 from app.services.action_contract_adapter import build_action_contract
-from app.services.assistant_tail_cleanup import strip_assistant_tail
+from app.services.assistant_tail_cleanup import extract_offer_sentence, strip_assistant_tail
 from app.services.conversation_state_service import ConversationStateService
 from app.services.daily_actions import DailyActionsService
 from app.services.generation_request_builder import (
@@ -529,6 +535,181 @@ async def _recover_assistant_response_follow_up(
     return module, f"{turn.text}\n\n{task_text}"
 
 
+# Live prod bug, 3rd follow-up class: "Да. Разбери, в каких случаях
+# членство действительно имеет смысл..." (no Telegram reply, no revision
+# keyword) still fell into is_uncertain even after the two fixes above,
+# because the bot's offer ("Могу разобрать, в каких случаях членство...")
+# only ever existed as free text inside the previous draft - there was
+# nothing STRUCTURED to recognize "the user is accepting exactly that".
+# Reusing a lexical-overlap heuristic against the previous draft's text was
+# explicitly rejected (fragile, keyword-adjacent, grows forever) in favor
+# of the ALREADY EXISTING PendingOffer/ConversationStateRepository
+# mechanism menu.py uses for Radar content ideas (_record_radar_content_
+# offer/_consume_radar_content_offer there - same create_offer/
+# get_active_offer/consume_offer API, same try/except shape, same TTL
+# convention) - no schema change, no new table, a new offer_type only.
+_ASSISTANT_OFFER_TYPE = "assistant_next_step"
+_ASSISTANT_OFFER_TTL = timedelta(minutes=30)
+_OFFER_FIELD_MAX_LEN = 300
+_OFFER_LABEL_MAX_LEN = 180
+
+
+def _assistant_offer_expiry() -> str:
+    return (datetime.now(timezone.utc) + _ASSISTANT_OFFER_TTL).isoformat()
+
+
+def _truncate_for_offer(text: str, max_len: int = _OFFER_FIELD_MAX_LEN) -> str:
+    stripped = text.strip()
+    if len(stripped) <= max_len:
+        return stripped
+    return stripped[: max_len - 1].rstrip() + "…"
+
+
+async def _maybe_record_assistant_offer(
+    conversation_state_repository: ConversationStateRepository | None,
+    workspace_context: WorkspaceContext,
+    decision: RouteDecision,
+    draft_text: str,
+    raw_draft_text: str,
+    *,
+    client_reply_intent: bool,
+) -> None:
+    """Records the bot's own next-step offer as a PendingOffer - but ONLY
+    when extract_offer_sentence() actually finds a concrete offer sentence
+    in this response (requirement: never on every assistant response).
+    raw_draft_text is draft.text BEFORE strip_assistant_tail - a short
+    offer sentence may already have been cut from what the user sees
+    (draft_text), but the structured record must still capture it; a
+    longer one (like the real "в каких случаях членство..." example, which
+    strip_assistant_tail's own _MAX_TAIL_WORDS keeps visible) is present in
+    both anyway.
+
+    client_reply_intent is stored so a later acceptance can restore the
+    CLIENT_REPLY persona without re-deriving it from keywords in the new,
+    short acceptance text (see _maybe_accept_assistant_offer/
+    force_client_reply)."""
+    if conversation_state_repository is None:
+        return
+    offer_text = extract_offer_sentence(raw_draft_text)
+    if offer_text is None:
+        return
+    payload = {
+        "module": decision.primary_module.value,
+        "action": "continue_offer",
+        "source_task": _truncate_for_offer(decision.task_text),
+        "source_response": _truncate_for_offer(draft_text),
+        "offer_text": _truncate_for_offer(offer_text),
+        "client_reply_intent": client_reply_intent,
+    }
+    try:
+        await conversation_state_repository.create_offer(
+            workspace_context.workspace_id, workspace_context.telegram_user_id,
+            _ASSISTANT_OFFER_TYPE,
+            (
+                OfferItem(
+                    id="1",
+                    label=_truncate_for_offer(offer_text, _OFFER_LABEL_MAX_LEN),
+                    payload=payload,
+                ),
+            ),
+            expires_at=_assistant_offer_expiry(),
+        )
+    except ConversationStateConflictError:
+        # Same policy as menu.py's _record_radar_content_offer: a still-live
+        # offer of this type already exists (e.g. two offers in quick
+        # succession) - best-effort bookkeeping only, never blocks the
+        # actual reply already shown to the user.
+        log.info("tasks: assistant_next_step PendingOffer already active, skipping")
+    except Exception:
+        log.warning(
+            "tasks: assistant_next_step PendingOffer persistence failed", exc_info=True,
+        )
+
+
+# Tightened acceptance gate: an active offer alone used to be a sufficient
+# signal for ANY is_uncertain message ("а что по тарифам в целом?" with an
+# unrelated offer pending would have been swallowed as "accepting" it).
+# Now also requires the message itself to read as an explicit agreement or
+# command - a leading affirmation ("да", "давай", "хорошо"/"ок"/...) or a
+# leading imperative verb matching the kind of action an offer proposes
+# ("разбери", "объясни", "сделай", "покажи", "расскажи", "продолжи"/
+# "продолжай"). Checked against the FIRST word only (punctuation-stripped),
+# not a lexical-overlap scan of the whole message against the offer's own
+# text - still no keyword-matching against the offer content itself, just a
+# narrow, fixed vocabulary of "yes"/"go ahead" phrasing.
+_OFFER_ACCEPTANCE_LEADING_WORDS = frozenset({
+    "да", "давай", "давайте", "ладно", "хорошо", "ок", "окей", "конечно",
+    "угу", "ага",
+    "разбери", "разберите", "объясни", "объясните", "сделай", "сделайте",
+    "покажи", "покажите", "расскажи", "расскажите", "продолжи", "продолжай",
+})
+
+_LEADING_WORD_RE = re.compile(r"[a-zа-яё]+", re.IGNORECASE)
+
+
+def _looks_like_offer_acceptance(task_text: str) -> bool:
+    match = _LEADING_WORD_RE.search(task_text.lower())
+    return match is not None and match.group(0) in _OFFER_ACCEPTANCE_LEADING_WORDS
+
+
+async def _maybe_accept_assistant_offer(
+    conversation_state_repository: ConversationStateRepository | None,
+    workspace_context: WorkspaceContext,
+    task_text: str,
+) -> tuple[Module, str, bool] | None:
+    """Reads the active assistant_next_step PendingOffer, if any, and treats
+    the CURRENT uncertain message as accepting it - but only when task_text
+    itself also reads as an explicit agreement/command (see
+    _looks_like_offer_acceptance). An active offer existing is no longer
+    sufficient on its own: a genuinely unrelated uncertain message must
+    still fall through to the existing fail-safe path, offer untouched.
+
+    Still no lexical-overlap check against the offer's own text - the
+    acceptance vocabulary is fixed and does not depend on what the offer
+    actually proposed. A bare "да" (or any of the other leading words) with
+    no active offer never reaches past get_active_offer returning None and
+    falls through to the existing fail-safe uncertain path - this never
+    weakens that guarantee.
+
+    Consumes the offer immediately on recognition (one-shot, same contract
+    every other PendingOffer consumer already has) - a later, unrelated
+    message can never reuse it even if generation downstream fails."""
+    if not _looks_like_offer_acceptance(task_text):
+        return None
+    if conversation_state_repository is None:
+        return None
+    try:
+        offer = await conversation_state_repository.get_active_offer(
+            workspace_context.workspace_id, workspace_context.telegram_user_id,
+            _ASSISTANT_OFFER_TYPE,
+        )
+    except Exception:
+        log.warning("tasks: assistant_next_step PendingOffer read failed", exc_info=True)
+        return None
+    if offer is None:
+        return None
+    payload = offer.items[0].payload
+    try:
+        module = Module(payload.get("module"))
+    except ValueError:
+        return None
+    source_task = str(payload.get("source_task") or "")
+    offer_text = str(payload.get("offer_text") or "")
+    client_reply_intent = bool(payload.get("client_reply_intent"))
+    try:
+        await conversation_state_repository.consume_offer(
+            workspace_context.workspace_id, workspace_context.telegram_user_id, offer.id,
+        )
+    except Exception:
+        log.warning(
+            "tasks: assistant_next_step PendingOffer consume failed", exc_info=True,
+        )
+    combined_text = "\n\n".join(
+        part for part in (source_task, offer_text, task_text) if part
+    )
+    return module, combined_text, client_reply_intent
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_free_text(
     message: Message,
@@ -602,6 +783,17 @@ async def on_free_text(
     decision = route_text(task_text)
     force_client_reply = False
     if decision.is_uncertain:
+        # Priority order (requirement: a confident NEW route always wins -
+        # already guaranteed by the `if decision.is_uncertain` gate above;
+        # within the uncertain branch, the most SPECIFIC recognizable signal
+        # goes first):
+        # 1. explicit revision-keyword/bare-да+reply (editing the bot's own
+        #    last draft - "короче", "мягче"...) - unchanged from before.
+        # 2. a structured PendingOffer accepting the bot's own last concrete
+        #    offer ("Могу разобрать...") - only reached when (1) found
+        #    nothing, so "короче" with an offer still active continues to
+        #    mean "shorten the draft", never "accept the offer".
+        # 3. the generic routing-only short-follow-up/reply fallback.
         recovered_response = await _recover_assistant_response_follow_up(
             state, message, task_text,
         )
@@ -610,9 +802,16 @@ async def on_free_text(
             decision = route_for_button(recovered_module, task_text)
             force_client_reply = True
         else:
-            recovered_module = await _recover_follow_up_module(state, message, task_text)
-            if recovered_module is not None:
+            offer_acceptance = await _maybe_accept_assistant_offer(
+                conversation_state_repository, workspace_context, task_text,
+            )
+            if offer_acceptance is not None:
+                recovered_module, task_text, force_client_reply = offer_acceptance
                 decision = route_for_button(recovered_module, task_text)
+            else:
+                recovered_module = await _recover_follow_up_module(state, message, task_text)
+                if recovered_module is not None:
+                    decision = route_for_button(recovered_module, task_text)
     await journal.add(
         workspace_context.workspace_id,
         task_text=task_text,
@@ -1480,6 +1679,20 @@ async def _maybe_send_draft(
     # несмотря на инструкцию. Режем только это, не меняя середину текста
     # (см. app/services/assistant_tail_cleanup.py).
     draft_text = strip_assistant_tail(draft.text)
+
+    # Live prod bug (3rd follow-up class, see _maybe_accept_assistant_offer):
+    # record a structured PendingOffer whenever this draft actually ends in
+    # a concrete next-step offer, so a later "да"/"разбери"/"объясни
+    # разницу" can accept it without any lexical-overlap guessing. Reads
+    # draft.text (BEFORE strip_assistant_tail), not draft_text, so a short
+    # offer sentence that strip_assistant_tail already cut from what the
+    # user sees is still captured. Never fires for a draft with no offer -
+    # extract_offer_sentence returns None far more often than not.
+    await _maybe_record_assistant_offer(
+        conversation_state_repository, workspace_context, decision,
+        draft_text, draft.text,
+        client_reply_intent=is_client_reply and not is_informational,
+    )
 
     # Content Factory всегда выполняет rewrite/generate первой (см. gate выше).
     # Если тема черновика требует Safety (RECOMMENDED/MANDATORY), Safety Layer

@@ -48,10 +48,39 @@ _MOZHNO_SERVICE_OFFER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# extract_offer_sentence()-only superset of _OFFER_VERB_RE, deliberately
+# NOT merged into it: _OFFER_VERB_RE also gates strip_assistant_tail's
+# destructive cut, and widening that shared pattern would change which text
+# strip_assistant_tail removes from what the user actually sees - out of
+# scope for extraction, which removes nothing. "сделаю"/"сделаем" ("Если
+# хотите, сделаю ещё три варианта.") is a real production offer phrasing
+# missing from the stricter strip-only list.
+_OFFER_EXTRACT_VERB_RE = re.compile(
+    r"\b(могу|можем|помогу|поможем|подготовлю|подготовим|пришлю|пришлём|"
+    r"покажу|покажем|расскажу|расскажем|сравню|сравним|подскажу|подскажем|"
+    r"сделаю|сделаем)\b",
+    re.IGNORECASE,
+)
+
 # Настоящий self-offer хвост короткий («Могу сравнить варианты.»).
 # Длинное предложение, которое просто начинается с триггерного слова, обычно
 # несёт реальный контент — резать его неконсервативно.
 _MAX_TAIL_WORDS = 12
+
+# Live prod bug (PendingOffer / assistant-offer follow-up): extract_offer_
+# sentence() below reuses the exact same trigger/verb patterns as
+# _is_assistant_tail, but with a much looser word cap. strip_assistant_tail's
+# own _MAX_TAIL_WORDS=12 exists to avoid wrongly CUTTING a sentence that
+# merely starts with a trigger word but is actually substantial content -
+# that risk does not apply to extraction: nothing here is removed from the
+# text the user sees, this only ALSO records the offer sentence as
+# structured state (app.repositories.conversation_state_repository's
+# PendingOffer) so a later short reply ("да", "разбери", "объясни разницу")
+# can accept it without any lexical-overlap guessing. A real offer sentence
+# like "Могу разобрать, в каких случаях членство действительно имеет смысл,
+# а в каких — нет." (13 words) is deliberately ABOVE strip's own cutoff -
+# extraction must still catch it.
+_MAX_OFFER_EXTRACT_WORDS = 40
 
 # Не больше двух подряд идущих финальных предложений за один вызов — защита
 # от неожиданного вырезания всего текста.
@@ -110,3 +139,31 @@ def strip_assistant_tail(text: str) -> str:
     result = re.sub(r"\n{3,}", "\n\n", result).rstrip()
 
     return result if result else text
+
+
+def extract_offer_sentence(text: str) -> str | None:
+    """Returns the last non-empty sentence of text if it reads like a
+    concrete self-offer of a next action ("Могу X.", "Если хотите, Y."),
+    using the same trigger/verb patterns as strip_assistant_tail's own
+    _is_assistant_tail - just without that function's _MAX_TAIL_WORDS=12
+    cutoff (see _MAX_OFFER_EXTRACT_WORDS above for why). Returns None if the
+    last sentence does not match, or if text is empty. Looks only at the
+    single last sentence - deliberately narrower than strip_assistant_tail's
+    multi-sentence _MAX_TRAILING_CUTS, since this only ever needs to capture
+    ONE concrete offer to act on, not a whole tail."""
+    if not text:
+        return None
+    for sentence in reversed(_split_sentences(text)):
+        stripped = sentence.strip()
+        if not stripped:
+            continue
+        if not _LEADING_TRIGGER_RE.match(stripped):
+            return None
+        if len(_WORD_RE.findall(stripped)) > _MAX_OFFER_EXTRACT_WORDS:
+            return None
+        if stripped.lower().startswith("если"):
+            if _OFFER_EXTRACT_VERB_RE.search(stripped) or _MOZHNO_SERVICE_OFFER_RE.search(stripped):
+                return stripped
+            return None
+        return stripped
+    return None

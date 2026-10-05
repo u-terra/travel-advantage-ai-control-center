@@ -26,6 +26,20 @@ path:
    because "короче и мягче" itself carries no ASSISTANT_INTENT_KEYWORDS
    phrase.
 
+3. A third follow-up class: the bot ends a reply with a concrete offer of
+   its own ("Могу разобрать, в каких случаях членство имеет смысл...") and
+   the user accepts it in their own words ("да, разбери", "разбери",
+   "объясни разницу", "сделай ещё три варианта") with no Telegram reply and
+   no revision keyword - still is_uncertain, because that offer only ever
+   existed as free text. Fixed by a structured PendingOffer (the SAME
+   ConversationStateRepository/create_offer/get_active_offer/consume_offer
+   API menu.py already uses for Radar content ideas - new offer_type
+   "assistant_next_step", no schema change) instead of any lexical-overlap
+   guessing against the previous draft's text - see
+   app.handlers.tasks._maybe_record_assistant_offer/
+   _maybe_accept_assistant_offer and app.services.assistant_tail_cleanup.
+   extract_offer_sentence (deterministic, regex-based, no new LLM call).
+
 See the "Live prod bug" comments above these functions in
 app/handlers/tasks.py for the exact priority rules this file verifies.
 """
@@ -33,17 +47,21 @@ app/handlers/tasks.py for the exact priority rules this file verifies.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from app.domain.conversation_state import OfferItem
 from app.handlers.tasks import (
     _CLIENT_REPLY_HEADING,
     _INFORMATIONAL_HEADING,
     _is_reply_to_bot_message,
+    _looks_like_offer_acceptance,
     _recover_assistant_response_follow_up,
     _recover_follow_up_module,
     on_free_text,
 )
 from app.orchestration.context import record_turn, recent_turns
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.routing.modules import Module
 from app.services.llm.models import ContentDraft
 from tests.llm_fakes import FakeLLMProvider
@@ -379,3 +397,291 @@ def test_assistant_response_follow_up_behaves_identically_for_club_partner_and_a
             followup_journal.add.call_args.kwargs["primary_module"]
             == Module.TRAVEL_ASSISTANT.value
         ), business_type
+
+
+# ============================================================================
+# Part 3: structured PendingOffer acceptance ("Могу разобрать..." -> "да,
+# разбери"/"разбери"/"объясни разницу"/"сделай ещё три варианта") - see the
+# module docstring's item (3). Uses the REAL ConversationStateRepository
+# (same convention as test_journal_handlers.py's
+# test_find_signals_creates_pending_offer_from_structured_ideas), not a
+# fake, since the whole point is the persisted create/get/consume contract.
+# ============================================================================
+
+_ASSISTANT_OFFER_TYPE = "assistant_next_step"
+
+# Ends in a concrete offer sentence (13 words - deliberately above
+# strip_assistant_tail's own 12-word cutoff for STRIPPING, see
+# app/services/assistant_tail_cleanup.py) - the exact live prod report.
+_OFFER_DRAFT_TEXT = (
+    "Это не классический сетевой маркетинг, а партнёрская программа Travel "
+    "Adventis со своей структурой вознаграждений. Могу разобрать, в каких "
+    "случаях членство действительно имеет смысл, а в каких — нет."
+)
+
+
+def _make_conversation_repository(tmp_path, name: str = "journal.sqlite3"):
+    repo = ConversationStateRepository(tmp_path / name)
+    run(repo.init())
+    return repo
+
+
+def _run_offer_then_followup(
+    followup_text: str,
+    conversation_repository,
+    *,
+    business_type: str = "agency",
+    message_factory=Message,
+):
+    state = State()
+    first_provider = FakeLLMProvider(draft=ContentDraft(_OFFER_DRAFT_TEXT, ()))
+    profiles = profile_repository(business_profile(business_type=business_type))
+    run(on_free_text(
+        Message(_ORIGINAL_QUESTION), journal(), first_provider, context(), profiles,
+        state=state, conversation_state_repository=conversation_repository,
+    ))
+
+    followup_journal = journal()
+    followup_provider = FakeLLMProvider(draft=ContentDraft("Продолжение offer'а.", ()))
+    followup_message = message_factory(followup_text)
+    run(on_free_text(
+        followup_message, followup_journal, followup_provider, context(), profiles,
+        state=state, conversation_state_repository=conversation_repository,
+    ))
+    return followup_journal, followup_message, followup_provider
+
+
+def test_offer_is_recorded_only_when_the_draft_ends_in_a_concrete_offer(tmp_path) -> None:
+    """Requirement (2): never create a PendingOffer on every response."""
+    repo = _make_conversation_repository(tmp_path)
+    state = State()
+    provider = FakeLLMProvider(draft=ContentDraft(_OFFER_DRAFT_TEXT, ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        Message(_ORIGINAL_QUESTION), journal(), provider, context(), profiles,
+        state=state, conversation_state_repository=repo,
+    ))
+
+    offer = run(repo.get_active_offer(42, 100, _ASSISTANT_OFFER_TYPE))
+    assert offer is not None
+    payload = offer.items[0].payload
+    assert "разобрать" in payload["offer_text"].lower()
+    assert payload["module"] == Module.TRAVEL_ASSISTANT.value
+    assert payload["client_reply_intent"] is True
+
+
+def test_no_offer_is_recorded_when_the_draft_has_no_concrete_offer(tmp_path) -> None:
+    repo = _make_conversation_repository(tmp_path)
+    state = State()
+    provider = FakeLLMProvider(draft=ContentDraft("Обычный ответ без предложений.", ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        Message(_ORIGINAL_QUESTION), journal(), provider, context(), profiles,
+        state=state, conversation_state_repository=repo,
+    ))
+
+    assert run(repo.get_active_offer(42, 100, _ASSISTANT_OFFER_TYPE)) is None
+
+
+def test_offer_acceptance_phrases_continue_the_offered_action(tmp_path) -> None:
+    for index, phrase in enumerate(
+        ("да, разбери", "разбери", "объясни разницу", "сделай ещё три варианта")
+    ):
+        repo = _make_conversation_repository(tmp_path, f"journal_{index}.sqlite3")
+        followup_journal, followup_message, followup_provider = _run_offer_then_followup(
+            phrase, repo,
+        )
+        logged = followup_journal.add.call_args.kwargs
+        assert logged["primary_module"] == Module.TRAVEL_ASSISTANT.value, phrase
+        assert phrase in logged["task_text"], phrase
+        texts = [text for text, _ in followup_message.answers]
+        assert not any(
+            "Не удалось уверенно определить маршрут" in text for text in texts
+        ), phrase
+        followup_provider.generate_draft.assert_called_once()
+        # One-shot: the offer must be gone immediately after acceptance.
+        assert run(repo.get_active_offer(42, 100, _ASSISTANT_OFFER_TYPE)) is None, phrase
+
+
+def test_bare_da_with_an_active_offer_continues_it(tmp_path) -> None:
+    repo = _make_conversation_repository(tmp_path)
+    followup_journal, followup_message, followup_provider = _run_offer_then_followup(
+        "да", repo,
+    )
+    assert followup_journal.add.call_args.kwargs["primary_module"] == Module.TRAVEL_ASSISTANT.value
+    texts = [text for text, _ in followup_message.answers]
+    assert not any("Не удалось уверенно определить маршрут" in text for text in texts)
+    followup_provider.generate_draft.assert_called_once()
+
+
+def test_bare_da_without_any_active_offer_stays_uncertain(tmp_path) -> None:
+    repo = _make_conversation_repository(tmp_path)
+    state = State()
+    provider = FakeLLMProvider(draft=ContentDraft("Не должно вызваться.", ()))
+    message = Message("да")
+    run(on_free_text(
+        message, journal(), provider, context(), profile_repository(business_profile()),
+        state=state, conversation_state_repository=repo,
+    ))
+    texts = [text for text, _ in message.answers]
+    assert any("Не удалось уверенно определить маршрут" in text for text in texts)
+    provider.generate_draft.assert_not_called()
+
+
+def test_expired_offer_falls_back_to_the_uncertain_fail_safe(tmp_path) -> None:
+    repo = _make_conversation_repository(tmp_path)
+    expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    run(repo.create_offer(
+        42, 100, _ASSISTANT_OFFER_TYPE,
+        (OfferItem(
+            id="1", label="Старое предложение",
+            payload={
+                "module": Module.TRAVEL_ASSISTANT.value, "action": "continue_offer",
+                "source_task": "старый вопрос", "source_response": "старый ответ",
+                "offer_text": "Могу разобрать старое предложение.",
+                "client_reply_intent": True,
+            },
+        ),),
+        expires_at=expired,
+    ))
+    state = State()
+    provider = FakeLLMProvider(draft=ContentDraft("Не должно вызваться.", ()))
+    message = Message("разбери")
+    run(on_free_text(
+        message, journal(), provider, context(), profile_repository(business_profile()),
+        state=state, conversation_state_repository=repo,
+    ))
+    texts = [text for text, _ in message.answers]
+    assert any("Не удалось уверенно определить маршрут" in text for text in texts)
+    provider.generate_draft.assert_not_called()
+
+
+def test_confident_new_route_takes_priority_and_leaves_the_offer_untouched(tmp_path) -> None:
+    repo = _make_conversation_repository(tmp_path)
+    state = State()
+    first_provider = FakeLLMProvider(draft=ContentDraft(_OFFER_DRAFT_TEXT, ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        Message(_ORIGINAL_QUESTION), journal(), first_provider, context(), profiles,
+        state=state, conversation_state_repository=repo,
+    ))
+    assert run(repo.get_active_offer(42, 100, _ASSISTANT_OFFER_TYPE)) is not None
+
+    second_journal = journal()
+    second_provider = FakeLLMProvider(draft=ContentDraft("Пост про раннее бронирование.", ()))
+    run(on_free_text(
+        Message("Напиши пост про раннее бронирование туров"), second_journal, second_provider,
+        context(), profiles, state=state, conversation_state_repository=repo,
+    ))
+    assert second_journal.add.call_args.kwargs["primary_module"] == Module.CONTENT_FACTORY.value
+    # A confidently-routed new task must never even touch the offer.
+    assert run(repo.get_active_offer(42, 100, _ASSISTANT_OFFER_TYPE)) is not None
+
+
+def test_revision_followup_keywords_still_win_over_an_active_offer(tmp_path) -> None:
+    repo = _make_conversation_repository(tmp_path)
+    followup_journal, followup_message, followup_provider = _run_offer_then_followup(
+        "короче и мягче", repo,
+    )
+    logged_task_text = followup_journal.add.call_args.kwargs["task_text"]
+    # Spliced from the last assistant TURN (recent_turns), not the offer -
+    # same mechanism as Part 2, proving priority order is unchanged.
+    assert _OFFER_DRAFT_TEXT in logged_task_text
+    # The offer itself must survive untouched - revision-followup must never
+    # consume an unrelated pending offer.
+    assert run(repo.get_active_offer(42, 100, _ASSISTANT_OFFER_TYPE)) is not None
+
+
+def test_existing_radar_offer_type_is_unaffected_by_assistant_offers(tmp_path) -> None:
+    repo = _make_conversation_repository(tmp_path)
+    run(repo.create_offer(
+        42, 100, "radar_content_ideas",
+        (OfferItem(id="7", label="Идея для поста", payload={"reason": "", "url": ""}),),
+        expires_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+    ))
+
+    state = State()
+    provider = FakeLLMProvider(draft=ContentDraft(_OFFER_DRAFT_TEXT, ()))
+    profiles = profile_repository(business_profile())
+    run(on_free_text(
+        Message(_ORIGINAL_QUESTION), journal(), provider, context(), profiles,
+        state=state, conversation_state_repository=repo,
+    ))
+
+    radar_offer = run(repo.get_active_offer(42, 100, "radar_content_ideas"))
+    assert radar_offer is not None
+    assert radar_offer.items[0].label == "Идея для поста"
+    assistant_offer = run(repo.get_active_offer(42, 100, _ASSISTANT_OFFER_TYPE))
+    assert assistant_offer is not None
+
+
+def test_offer_acceptance_behaves_identically_for_club_partner_and_agency(tmp_path) -> None:
+    for business_type in ("club_partner", "agency"):
+        repo = _make_conversation_repository(tmp_path, f"journal_{business_type}.sqlite3")
+        followup_journal, _, _ = _run_offer_then_followup(
+            "разбери", repo, business_type=business_type,
+        )
+        assert (
+            followup_journal.add.call_args.kwargs["primary_module"]
+            == Module.TRAVEL_ASSISTANT.value
+        ), business_type
+
+
+# ============================================================================
+# Part 4: tightened acceptance gate - an active offer alone is no longer a
+# sufficient signal for ANY is_uncertain message; task_text itself must also
+# read as an explicit agreement/command (да/давай/хорошо/.../разбери/
+# объясни/сделай/...). See _looks_like_offer_acceptance in app/handlers/
+# tasks.py.
+# ============================================================================
+
+
+def test_looks_like_offer_acceptance_recognizes_agreement_and_command_words() -> None:
+    for phrase in (
+        "да", "да, разбери", "давай", "давайте", "хорошо", "ок", "окей",
+        "конечно", "ладно", "разбери", "объясни разницу", "сделай ещё три варианта",
+        "покажи варианты", "расскажи подробнее", "продолжай",
+    ):
+        assert _looks_like_offer_acceptance(phrase) is True, phrase
+
+
+def test_looks_like_offer_acceptance_rejects_unrelated_uncertain_text() -> None:
+    for phrase in (
+        "а что по тарифам в целом?", "неа", "куда поехать в марте?",
+        "это не то, что я спрашивал",
+    ):
+        assert _looks_like_offer_acceptance(phrase) is False, phrase
+
+
+def test_unrelated_uncertain_message_does_not_consume_an_active_offer(tmp_path) -> None:
+    """The acceptance gate's main point: an active offer must not be
+    swallowed by a message that has nothing to do with accepting it."""
+    repo = _make_conversation_repository(tmp_path)
+    followup_journal, followup_message, followup_provider = _run_offer_then_followup(
+        "Это не то, что я имел в виду, у меня был совершенно другой вопрос на самом деле",
+        repo,
+    )
+    texts = [text for text, _ in followup_message.answers]
+    assert any("Не удалось уверенно определить маршрут" in text for text in texts)
+    followup_provider.generate_draft.assert_not_called()
+    # The offer must still be there, untouched - a later real acceptance
+    # must still be able to use it.
+    offer = run(repo.get_active_offer(42, 100, _ASSISTANT_OFFER_TYPE))
+    assert offer is not None
+
+
+def test_additional_acceptance_words_still_continue_the_offer(tmp_path) -> None:
+    for index, phrase in enumerate(("давай", "хорошо", "ок", "продолжай")):
+        repo = _make_conversation_repository(tmp_path, f"journal_extra_{index}.sqlite3")
+        followup_journal, followup_message, followup_provider = _run_offer_then_followup(
+            phrase, repo,
+        )
+        assert (
+            followup_journal.add.call_args.kwargs["primary_module"]
+            == Module.TRAVEL_ASSISTANT.value
+        ), phrase
+        texts = [text for text, _ in followup_message.answers]
+        assert not any(
+            "Не удалось уверенно определить маршрут" in text for text in texts
+        ), phrase
+        followup_provider.generate_draft.assert_called_once()
