@@ -229,3 +229,35 @@ def test_unrelated_grounded_question_still_fits_and_is_unaffected(
     request = generate_for_question(tmp_path, "Что такое Guest Pass?")
     assert len(request) <= 6000
     assert "[SOURCE FACTS - DATA]" in request
+
+
+def test_membership_value_question_prompt_includes_synthesis_instruction(
+    tmp_path: Path,
+) -> None:
+    """Round 3 live prod bug (same question): retrieval and generation
+    context already deliver the right current facts, but the model just
+    listed them raw, used internal jargon (enrollment/redemption/bare
+    membership), and jumped straight to "check the official site" instead
+    of answering "why keep paying". Fixed by a general client-reply
+    synthesis instruction in app.services.material_orchestration
+    (_CLIENT_REPLY_CONSTRAINTS) - not retrieval or generation context, both
+    untouched this round. This test only confirms the instruction and the
+    facts both reach the final prompt together and still fit the budget;
+    the actual wording/behavior requirements are covered by the focused
+    tests in tests/test_material_orchestration.py."""
+    request = generate_for_question(tmp_path, _PRODUCTION_QUESTION)
+
+    assert len(request) <= 6000
+    assert "[SOURCE FACTS - DATA]" in request
+    assert "сначала ответь по сути" in request.lower()
+    assert "enrollment" in request.lower()
+    assert "подключение" in request.lower()
+
+    for stable_key in (
+        "ta.membership",
+        "ta.travel_credits.nature",
+        "ta.loyalty_points.rules_2026_10_06",
+        "ta.life_experiences.definition_2026_10_06",
+    ):
+        assert stable_key in request, stable_key
+    assert "VIP180" in request

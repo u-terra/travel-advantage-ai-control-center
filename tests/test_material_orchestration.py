@@ -1345,4 +1345,60 @@ def test_radar_spec_constraints_forbid_the_general_class_of_contact_ctas():
     for opener in ("напишите", "обращайтесь", "свяжитесь", "подберу", "помогу", "расскажу"):
         assert opener in joined
     assert "класс концовок" in joined
-    assert "коммерческого контекста" in joined and "не считается" in joined
+
+
+# --- Quality fix: live prod test, "Я уже плачу за Travel Advantage каждый
+# месяц. Объясни простыми словами, зачем мне сохранять членство и что
+# конкретно я от него получаю?" By this point retrieval and generation
+# context already delivered the right current facts (Travel Credits never
+# expire, Elite 120 LP, 4 additional travelers, LP redemption cap), but the
+# model just listed them as a raw fact dump, used internal/English jargon
+# ("enrollment", "redemption", bare "membership"), and jumped straight to
+# "check the official site" instead of actually answering "why keep paying".
+# This is a general client-reply SYNTHESIS instruction for any "зачем мне X
+# / что я получаю / в чём польза / стоит ли платить" question - not
+# hardcoded to Travel Advantage or to this exact question. ---
+
+def test_client_reply_constraints_require_direct_answer_before_caveat_for_value_questions():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "зачем мне x" in joined or "что я получаю" in joined
+    assert "сначала ответь по сути" in joined
+    assert "затем" in joined
+    # the caveat must be explicitly placed LAST, not instead of the answer
+    assert "в конце" in joined
+    assert "не вместо ответа" in joined or "не списком" in joined
+
+
+def test_client_reply_constraints_translate_internal_jargon_to_russian():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "enrollment" in joined
+    assert "redemption" in joined
+    assert "membership" in joined
+    assert "подключение" in joined
+    assert "списание" in joined
+    assert "членство" in joined
+
+
+def test_client_reply_constraints_do_not_require_refusing_without_exact_plan():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "если у вас" in joined
+    assert "не отказывайся" in joined
+
+
+def test_client_reply_constraints_forbid_raw_fact_dump_and_benefit_invention():
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "не списком" in joined
+    assert "только факты из контекста" in joined
+
+
+def test_client_reply_constraints_do_not_promise_value_for_value_questions():
+    """Requirement 7: on "стоит ли платить", the model must not promise a
+    benefit outright - it must explain that the economic sense depends on
+    how much the available benefits are actually used."""
+    spec = client_reply_spec(profile())
+    joined = " ".join(spec.constraints).lower()
+    assert "не обещай выгоду" in joined
