@@ -109,6 +109,12 @@ NOISE_SLETAT = _result(
     "Экскурсионные и авторские туры по России и за рубежом от всех туроператоров",
     domain="sletat.ru",
 )
+NOISE_SPUTNIK8 = _result(
+    "Спутник8 - сервис поиска и бронирования экскурсий",
+    "https://www.sputnik8.com/",
+    "30932 экскурсии в 1108 городах на одном сайте, бронирование экскурсий по всему миру",
+    domain="sputnik8.com",
+)
 NOISE_MLM_CLUB = _result(
     "Клуб Путешественников Ближе к Солнцу",
     "https://k-solncy.ru/klub",
@@ -220,6 +226,19 @@ async def test_sletat_ota_aggregator_filtered_out():
     candidates = await service.find_candidates()
     urls = {c.url for c in candidates}
     assert NOISE_SLETAT.url not in urls
+    assert STRONG_AVENTURAMANIA.url in urls
+
+
+@pytest.mark.asyncio
+async def test_sputnik8_marketplace_aggregator_filtered_out():
+    """Regression for the live dry-run defect: sputnik8.com is a
+    multi-operator excursion marketplace, not a single business, and must
+    not reach candidates."""
+    by_query = {"гид экскурсии путешествия": [NOISE_SPUTNIK8, STRONG_AVENTURAMANIA]}
+    service, _ = _service(by_query)
+    candidates = await service.find_candidates()
+    urls = {c.url for c in candidates}
+    assert NOISE_SPUTNIK8.url not in urls
     assert STRONG_AVENTURAMANIA.url in urls
 
 
