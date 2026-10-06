@@ -10,6 +10,7 @@ from app.handlers import (
     consent,
     menu,
     onboarding,
+    partner_discovery,
     profile,
     source_analysis,
     sources,
@@ -36,6 +37,7 @@ def build_router() -> Router:
     # onboarding.py — MagicData(F.onboarding_required)).
     r.include_router(onboarding.router)
     r.include_router(menu.router)
+    r.include_router(partner_discovery.router)
     r.include_router(daily_actions.router)
     r.include_router(sources.router)
     r.include_router(source_analysis.router)

@@ -187,11 +187,21 @@ async def cmd_start(
     text, workspace_available = await _resolve_start_reply(
         workspace_context, partner_repository
     )
+    # Partner Discovery v0: Orchestrator-wide, gated on business_type alone
+    # (not ta_affiliated) - see app/handlers/partner_discovery.py's module
+    # docstring and app/handlers/menu.py's business_type-vs-ta_affiliated
+    # distinction.
+    show_partner_discovery = False
+    if workspace_available and partner_repository is not None:
+        profile = await partner_repository.get_business_profile(
+            workspace_context.workspace_id
+        )
+        show_partner_discovery = profile is not None and profile.business_type == "club_partner"
     # Без рабочего пространства кнопки главного меню всё равно упрутся в тот же
     # отказ в каждом сценарии — показывать их означало бы вести в тупик.
     # Убираем и старую reply keyboard, если она успела остаться у пользователя.
     reply_markup = (
-        active_main_menu(v2_menu_enabled)
+        active_main_menu(v2_menu_enabled, show_partner_discovery)
         if workspace_available
         else ReplyKeyboardRemove()
     )

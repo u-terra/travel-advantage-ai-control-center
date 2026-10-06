@@ -19,6 +19,13 @@ BTN_HOW_IT_WORKS = "ℹ️ Как это работает"
 BTN_WEB_RESOURCES = "🌐 Веб-ресурсы"
 BTN_BACK = "◀️ Назад"
 
+# Partner Discovery v0: Orchestrator-wide function for club_partner
+# workspaces (not Travel Advantage-specific - see app/handlers/
+# partner_discovery.py's module docstring). Shown only when
+# BusinessProfile.business_type == "club_partner"; ta_affiliated plays no
+# role in this button's visibility.
+BTN_FIND_PARTNERS = "🔎 Найти потенциальных партнёров"
+
 BTN_V2_DAILY_ACTIONS = "☀️ Что делать сегодня"
 BTN_V2_ANALYZE_LINK = "📝 Разобрать публикацию"
 BTN_V2_ANALYZE_MORE = "📝 Разобрать ещё текст"
@@ -128,6 +135,12 @@ PROFILE_EXAMPLES_PREFIX = "profile_examples:"
 
 WEB_RESOURCES_BACK = "web_resources_back"
 
+# Partner Discovery v0 candidate card callbacks - see
+# app/handlers/partner_discovery.py. "Открыть" is a plain url= button (no
+# handler needed); these two drive the in-memory/FSM candidate walk.
+PARTNER_DISCOVERY_NEXT = "partner_discovery:next"
+PARTNER_DISCOVERY_MORE = "partner_discovery:more"
+
 # Ресурсы Travel Advantage: показываются только workspace с явным признаком
 # BusinessProfile.ta_affiliated (не по business_type, названию или описанию —
 # см. app/domain/business_profiles.py и app/handlers/menu.py:
@@ -156,40 +169,46 @@ V2_PLACEHOLDER_BUTTONS = frozenset({
 })
 
 
-def main_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BTN_CREATE_CONTENT), KeyboardButton(text=BTN_CLIENT_QUESTION)],
-            [KeyboardButton(text=BTN_FIND_SIGNALS), KeyboardButton(text=BTN_CHECK_TEXT)],
-            [KeyboardButton(text=BTN_PACKAGE_MATERIALS), KeyboardButton(text=BTN_UNSURE)],
-            [KeyboardButton(text=BTN_LAST_TASK), KeyboardButton(text=BTN_HOW_IT_WORKS)],
-            [KeyboardButton(text=BTN_WEB_RESOURCES)],
-        ],
-        resize_keyboard=True,
+def main_menu(show_partner_discovery: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text=BTN_CREATE_CONTENT), KeyboardButton(text=BTN_CLIENT_QUESTION)],
+        [KeyboardButton(text=BTN_FIND_SIGNALS), KeyboardButton(text=BTN_CHECK_TEXT)],
+        [KeyboardButton(text=BTN_PACKAGE_MATERIALS), KeyboardButton(text=BTN_UNSURE)],
+        [KeyboardButton(text=BTN_LAST_TASK), KeyboardButton(text=BTN_HOW_IT_WORKS)],
+        [KeyboardButton(text=BTN_WEB_RESOURCES)],
+    ]
+    if show_partner_discovery:
+        keyboard.append([KeyboardButton(text=BTN_FIND_PARTNERS)])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+def v2_main_menu(show_partner_discovery: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text=BTN_V2_DAILY_ACTIONS)],
+        [KeyboardButton(text=BTN_V2_CREATE_MATERIAL)],
+        [KeyboardButton(text=BTN_V2_CLIENT_REPLY)],
+        [KeyboardButton(text=BTN_V2_FIND_SIGNALS)],
+        [KeyboardButton(text=BTN_V2_ANALYZE_LINK)],
+        [KeyboardButton(text=BTN_V2_CHECK_TEXT)],
+        [KeyboardButton(text=BTN_V2_MATERIALS)],
+        [KeyboardButton(text=BTN_V2_SOURCES)],
+        [KeyboardButton(text=BTN_V2_COMPETITORS)],
+        [KeyboardButton(text=BTN_V2_PROFILE)],
+        [KeyboardButton(text=BTN_V2_HELP)],
+    ]
+    if show_partner_discovery:
+        keyboard.append([KeyboardButton(text=BTN_FIND_PARTNERS)])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+def active_main_menu(
+    v2_menu_enabled: bool, show_partner_discovery: bool = False,
+) -> ReplyKeyboardMarkup:
+    return (
+        v2_main_menu(show_partner_discovery)
+        if v2_menu_enabled
+        else main_menu(show_partner_discovery)
     )
-
-
-def v2_main_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BTN_V2_DAILY_ACTIONS)],
-            [KeyboardButton(text=BTN_V2_CREATE_MATERIAL)],
-            [KeyboardButton(text=BTN_V2_CLIENT_REPLY)],
-            [KeyboardButton(text=BTN_V2_FIND_SIGNALS)],
-            [KeyboardButton(text=BTN_V2_ANALYZE_LINK)],
-            [KeyboardButton(text=BTN_V2_CHECK_TEXT)],
-            [KeyboardButton(text=BTN_V2_MATERIALS)],
-            [KeyboardButton(text=BTN_V2_SOURCES)],
-            [KeyboardButton(text=BTN_V2_COMPETITORS)],
-            [KeyboardButton(text=BTN_V2_PROFILE)],
-            [KeyboardButton(text=BTN_V2_HELP)],
-        ],
-        resize_keyboard=True,
-    )
-
-
-def active_main_menu(v2_menu_enabled: bool) -> ReplyKeyboardMarkup:
-    return v2_main_menu() if v2_menu_enabled else main_menu()
 
 
 def v2_back_keyboard() -> ReplyKeyboardMarkup:
@@ -223,6 +242,29 @@ def lobby_expired_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def partner_discovery_card_keyboard(url: str, has_more_in_batch: bool) -> InlineKeyboardMarkup:
+    """One Partner Discovery v0 candidate card. "✍️ Подготовить обращение"
+    is deliberately absent - a separate next step, not part of v0 (see
+    app/handlers/partner_discovery.py's module docstring)."""
+    rows = [[InlineKeyboardButton(text="🌐 Открыть", url=url)]]
+    if has_more_in_batch:
+        rows.append([
+            InlineKeyboardButton(text="⏭ Следующий", callback_data=PARTNER_DISCOVERY_NEXT),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(text="🔄 Найти ещё", callback_data=PARTNER_DISCOVERY_MORE),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def partner_discovery_retry_keyboard() -> InlineKeyboardMarkup:
+    """Zero-results/end-of-batch message: only the "find more" action."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Найти ещё", callback_data=PARTNER_DISCOVERY_MORE)],
+    ])
 
 
 def browse_sections_keyboard() -> InlineKeyboardMarkup:
