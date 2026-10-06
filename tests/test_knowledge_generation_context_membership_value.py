@@ -38,6 +38,44 @@ generic service-category lists, checkout-display disclaimers) are deferred
 to the very end of the fact budget. No change to knowledge_service.py's
 retrieval policy and no change to generation_request_builder.py's
 section-priority table.
+
+ROUND 2 (same live question, after the fix above was already deployed):
+the answer improved (OTA/platform, Travel Credits, VIP/VIP180-no-LP, LP
+non-transferable, additional-travelers-no-own-LP all appeared) but still
+missed the actual membership VALUE (Elite 120 LP, Life Experiences, Guest
+Passes/additional travelers as a benefit, practical Travel Credits use) -
+and truncated "VIP180" into "VIP18". Root cause, still entirely within this
+module:
+
+3. Item content used a plain ``text[:limit]`` slice, which can split a
+   word/identifier in half mid-token ("VIP180" -> "VIP18"). Fixed with
+   ``_truncate_at_word_boundary()``, which extends a few chars past the
+   limit to finish whatever word a hard cut would otherwise land inside.
+
+4. Within a chosen item's own facts (``own_item_facts``), a purely
+   restrictive/negative fact (``ta.loyalty_points.non_transferable``,
+   fact_type ``transferability_rule``) could still sort ahead of positive,
+   actionable facts (LP redemption rate, additional travelers included,
+   Travel Credits never-expire) purely by KnowledgeService's own internal
+   fact order - not because it was more relevant to "what do I get".
+   ``_VALUE_FACT_TYPES`` now bubbles positive fact types to the front of
+   ``own_item_facts`` (stable sort).
+
+5. The two generic ``ta.platform.type``/``.use`` "core definition" facts
+   always claimed 2 of the tiny ``_MAX_FACTS`` budget - correct for "What is
+   Travel Advantage?" (ta.platform is one of the shown items there) but pure
+   waste once ta.platform has already been demoted out of ``items`` (point 1
+   above): its defining fact already reaches the model separately via
+   ``verified_claims`` regardless. ``include_core_definition`` now skips
+   this tier whenever ta.platform isn't among the chosen items, freeing the
+   whole fact budget for real benefit facts.
+
+6. Item/fact ``source_ref`` strings (citation labels, not the facts
+   themselves) were verbose enough to help starve the byte budget on their
+   own; they are now also truncated at a word boundary to a short label.
+
+No change to knowledge_service.py's retrieval policy or to
+generation_request_builder.py's section-priority table in this round either.
 """
 
 from __future__ import annotations
@@ -57,6 +95,8 @@ from tests.test_knowledge_retrieval_membership_value_intent import (
     _PRODUCTION_QUESTION, service,
 )
 from tests.test_reference_resolver_integration import CountingKnowledgeService
+
+from app.services.knowledge_generation_context import _truncate_at_word_boundary
 
 
 def run(value):
@@ -79,6 +119,24 @@ def generate_for_question(tmp_path: Path, question: str) -> str:
     assert len(knowledge.calls) == 1
     provider.generate_draft.assert_called_once()
     return provider.generate_draft.call_args.kwargs["source_text"]
+
+
+def test_truncate_at_word_boundary_never_splits_a_word() -> None:
+    text = "Рабочая линейка на 2026-10-06: Guest → VIP / VIP180 → Elite → Elite + Turbo Add-On."
+    truncated = _truncate_at_word_boundary(text, 48)
+    assert "VIP180" in truncated
+    assert not truncated.endswith("VIP18")
+    assert truncated == text[:len(truncated)]  # still a genuine prefix, just extended
+
+
+def test_truncate_at_word_boundary_is_a_noop_under_the_limit() -> None:
+    assert _truncate_at_word_boundary("short", 50) == "short"
+
+
+def test_truncate_at_word_boundary_hard_cuts_an_abnormally_long_token() -> None:
+    text = "x" * 100
+    truncated = _truncate_at_word_boundary(text, 10)
+    assert len(truncated) <= 21  # limit + the bounded extension allowance
 
 
 def test_membership_value_question_reaches_source_facts_with_current_benefits(
@@ -113,6 +171,47 @@ def test_membership_value_question_does_not_surface_ambassador_content(
 
     assert "mwr.member_vs_ambassador" not in request
     assert "mwr.ambassador.registration_fee" not in request
+
+
+def test_membership_value_question_never_truncates_plan_identifiers(
+    tmp_path: Path,
+) -> None:
+    """Round 2 live prod bug: a plain [:limit] slice on item content turned
+    "VIP180" into "VIP18" - a broken plan identifier is worse than no
+    mention at all. The word-boundary-safe truncation must never produce a
+    bare "VIP18" (with no trailing digit) anywhere in the final prompt."""
+    request = generate_for_question(tmp_path, _PRODUCTION_QUESTION)
+
+    assert "VIP180" in request
+    assert "VIP18\"" not in request
+    assert "VIP18 " not in request
+    assert "VIP18." not in request
+
+
+def test_membership_value_question_promotes_positive_value_facts(
+    tmp_path: Path,
+) -> None:
+    """Round 2 live prod bug: within the chosen items' own facts, a purely
+    negative/restrictive fact (LP non-transferable) outranked positive,
+    actionable value facts (LP redemption rate, additional travelers,
+    Travel Credits never-expire) in KnowledgeService's own fact order. The
+    tiny fact budget must spend its slots on the latter for this intent."""
+    request = generate_for_question(tmp_path, _PRODUCTION_QUESTION)
+
+    for stable_key in (
+        "ta.travel_credits.never_expire_current_site_claim",
+        "ta.loyalty_points.max_dollar_offset_per_point",
+        "ta.membership.elite.additional_travelers",
+    ):
+        assert stable_key in request, stable_key
+
+    # Not a hard requirement that it never appears anywhere (it may still
+    # win a slot for a question actually about transferability - see
+    # test_ambassador_role_question_is_unaffected_by_value_intent-style
+    # scoping in the retrieval-level test module), but for THIS broad
+    # value question it must not crowd out the positive facts above within
+    # the tiny shared budget.
+    assert "ta.loyalty_points.non_transferable" not in request
 
 
 def test_unrelated_grounded_question_still_fits_and_is_unaffected(
