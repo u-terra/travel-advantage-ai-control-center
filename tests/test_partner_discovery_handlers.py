@@ -16,9 +16,11 @@ import app.main as main_module
 from app.domain.partners import WorkspaceContext
 from app.domain.prospects import EvidenceSource, ProspectCandidate, ProspectFit, ProspectType
 from app.handlers.partner_discovery import (
+    _build_enrichment_prompt,
     _build_explanation,
     _clean_name,
     _enrich_candidates,
+    _ENRICHMENT_INSTRUCTIONS,
     _render_card,
     on_find_partners,
     on_partner_discovery_more,
@@ -597,3 +599,77 @@ def test_on_find_partners_actually_uses_injected_provider_by_keyword():
     assert provider.calls == 1
     text, _ = message.answers[0]
     assert "Авентурамания" in text
+
+
+# ── display_name enrichment fix: extract brand from title/evidence, never
+# default to hostname when a real name is present (live Telegram defect:
+# aventuramania.ru/inrussiatoday.ru shown instead of the actual brand). ────
+
+
+def test_prompt_includes_title_for_each_candidate():
+    candidates = [raw_candidate(name="Авентурамания - туроператор", url="https://aventuramania.ru/")]
+    prompt = _build_enrichment_prompt(candidates)
+    assert "TITLE" in prompt
+    assert "Авентурамания - туроператор" in prompt
+    assert "EVIDENCE" in prompt
+
+
+def test_prompt_instructs_title_priority_over_hostname():
+    assert "TITLE" in _ENRICHMENT_INSTRUCTIONS
+    assert "hostname" in _ENRICHMENT_INSTRUCTIONS
+    assert "крайний случай" in _ENRICHMENT_INSTRUCTIONS
+    # the exact two live-defect brands are called out as worked examples
+    assert "Авентурамания" in _ENRICHMENT_INSTRUCTIONS
+    assert "In Russia Today" in _ENRICHMENT_INSTRUCTIONS
+    assert "aventuramania.ru" in _ENRICHMENT_INSTRUCTIONS  # named as the WRONG answer
+
+
+def test_prompt_forbids_inventing_a_name_not_in_title_or_evidence():
+    assert "Ничего не придумывай" in _ENRICHMENT_INSTRUCTIONS
+
+
+def test_enrichment_uses_brand_from_title_aventuramania():
+    candidates = [raw_candidate(
+        name="Авентурамания - туроператор", url="https://aventuramania.ru/",
+        evidence="Лицензированный туристический оператор, авторские туры",
+    )]
+    response = json.dumps([
+        {"display_name": "Авентурамания", "reason": "Лицензированный туроператор, авторские туры."},
+    ])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert enriched[0]["display_name"] == "Авентурамания"
+    assert enriched[0]["display_name"] != "aventuramania.ru"
+
+
+def test_enrichment_uses_brand_from_title_in_russia_today():
+    candidates = [raw_candidate(
+        name="In Russia Today - туры по России", url="https://inrussiatoday.ru/",
+        evidence="Туры по России, групповые и индивидуальные, команда гидов",
+    )]
+    response = json.dumps([
+        {"display_name": "In Russia Today", "reason": "Организует туры по России для групп и индивидуально."},
+    ])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert enriched[0]["display_name"] == "In Russia Today"
+    assert enriched[0]["display_name"] != "inrussiatoday.ru"
+
+
+def test_enrichment_falls_back_to_hostname_when_no_brand_in_title_or_evidence():
+    candidates = [raw_candidate(
+        name="", url="https://example-travel.ru/page",
+        evidence="Описание страницы без явного названия проекта или бренда",
+    )]
+    response = json.dumps([
+        {"display_name": "example-travel.ru", "reason": "Travel-проект без явного публичного названия."},
+    ])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert enriched[0]["display_name"] == "example-travel.ru"
