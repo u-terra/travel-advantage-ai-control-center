@@ -241,10 +241,13 @@ def _sanitize_enrichment_field(value: object, max_len: int) -> str | None:
     return cleaned
 
 
-def _parse_enrichment_response(raw_text: str, expected_count: int) -> list[dict] | None:
-    """Returns a list of {"display_name", "reason"} dicts, or None on ANY
-    shape/content problem - the caller must then use the deterministic
-    fallback for the WHOLE batch, never a partial mix."""
+def _parse_enrichment_response(
+    raw_text: str, expected_count: int,
+) -> tuple[list[dict] | None, str | None]:
+    """Returns (parsed, None) on success or (None, reason) on ANY shape/
+    content problem - the caller must then use the deterministic fallback
+    for the WHOLE batch, never a partial mix. ``reason`` is a short,
+    secret-free category for diagnostic logging only."""
     text = raw_text.strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -254,20 +257,22 @@ def _parse_enrichment_response(raw_text: str, expected_count: int) -> list[dict]
     try:
         parsed = json.loads(text)
     except (ValueError, TypeError):
-        return None
-    if not isinstance(parsed, list) or len(parsed) != expected_count:
-        return None
+        return None, "invalid_json"
+    if not isinstance(parsed, list):
+        return None, "not_a_list"
+    if len(parsed) != expected_count:
+        return None, "count_mismatch"
 
     result: list[dict] = []
     for item in parsed:
         if not isinstance(item, dict):
-            return None
+            return None, "item_not_a_dict"
         display_name = _sanitize_enrichment_field(item.get("display_name"), 60)
         reason = _sanitize_enrichment_field(item.get("reason"), _ENRICHMENT_MAX_RESPONSE_LEN)
         if not display_name or not reason:
-            return None
+            return None, "item_missing_fields"
         result.append({"display_name": display_name, "reason": reason})
-    return result
+    return result, None
 
 
 def _apply_fallback_enrichment(candidates: list[dict]) -> list[dict]:
@@ -282,30 +287,46 @@ def _apply_fallback_enrichment(candidates: list[dict]) -> list[dict]:
 
 
 async def _enrich_candidates(
-    candidates: list[dict], enrichment_llm_provider: OpenAIChatProvider | None,
+    candidates: list[dict], partner_enrichment_llm_provider: OpenAIChatProvider | None,
 ) -> list[dict]:
     """Exactly one LLM call for the whole batch (never per-candidate, never
     on "Следующий" - callers only invoke this right after a fresh search).
     Any failure - no provider, no credentials, transport error, invalid/
     malformed JSON, wrong item count - falls back to the deterministic,
-    already-noise-free cleanup for every candidate in the batch."""
+    already-noise-free cleanup for every candidate in the batch.
+
+    Diagnostic logging here is deliberately minimal and secret-free: a
+    provider_present flag, a call-started marker, and on failure a short
+    fallback_reason category (never the raw response body, never any
+    credential) - added after a production incident where this path was
+    silently always falling back with nothing in the logs to show why."""
     if not candidates:
         return candidates
-    if enrichment_llm_provider is None or not enrichment_llm_provider.config.api_key:
+
+    provider_present = partner_enrichment_llm_provider is not None
+    log.info("partner_discovery: enrichment provider_present=%s", provider_present)
+    if not provider_present or not partner_enrichment_llm_provider.config.api_key:
+        log.info("partner_discovery: enrichment fallback_reason=no_provider")
         return _apply_fallback_enrichment(candidates)
 
+    log.info("partner_discovery: enrichment_call_started batch_size=%d", len(candidates))
     prompt = _build_enrichment_prompt(candidates)
     try:
-        result = await asyncio.to_thread(enrichment_llm_provider.generate, message=prompt)
+        result = await asyncio.to_thread(
+            partner_enrichment_llm_provider.generate, message=prompt,
+        )
     except Exception:
-        log.warning("partner_discovery: enrichment LLM call failed", exc_info=True)
+        log.warning(
+            "partner_discovery: enrichment fallback_reason=exception", exc_info=True,
+        )
         return _apply_fallback_enrichment(candidates)
 
-    parsed = _parse_enrichment_response(result.text, len(candidates))
+    parsed, reason = _parse_enrichment_response(result.text, len(candidates))
     if parsed is None:
-        log.warning("partner_discovery: enrichment response was not valid, using fallback")
+        log.warning("partner_discovery: enrichment fallback_reason=%s", reason)
         return _apply_fallback_enrichment(candidates)
 
+    log.info("partner_discovery: enrichment success item_count=%d", len(parsed))
     return [
         {**candidate, **enriched}
         for candidate, enriched in zip(candidates, parsed, strict=True)
@@ -379,7 +400,7 @@ async def on_find_partners(
     workspace_context: WorkspaceContext | None,
     partner_repository: PartnerRepository,
     web_search_service: WebSearchService | None = None,
-    enrichment_llm_provider: OpenAIChatProvider | None = None,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
     v2_menu_enabled: bool = False,
 ) -> None:
     if workspace_context is None:
@@ -404,7 +425,7 @@ async def on_find_partners(
         await message.answer(_NO_RESULTS, reply_markup=partner_discovery_retry_keyboard())
         return
 
-    candidates = await _enrich_candidates(candidates, enrichment_llm_provider)
+    candidates = await _enrich_candidates(candidates, partner_enrichment_llm_provider)
     await state.update_data(**{_STATE_CANDIDATES: candidates, _STATE_INDEX: 0})
     text, has_more = _render_card(candidates, 0)
     await message.answer(
@@ -440,7 +461,7 @@ async def on_partner_discovery_more(
     callback: CallbackQuery,
     state: FSMContext,
     web_search_service: WebSearchService | None = None,
-    enrichment_llm_provider: OpenAIChatProvider | None = None,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
 ) -> None:
     await callback.answer()
     candidates = await _run_discovery(web_search_service)
@@ -454,7 +475,7 @@ async def on_partner_discovery_more(
             await callback.message.answer(_NO_RESULTS, reply_markup=partner_discovery_retry_keyboard())
         return
 
-    candidates = await _enrich_candidates(candidates, enrichment_llm_provider)
+    candidates = await _enrich_candidates(candidates, partner_enrichment_llm_provider)
     await state.update_data(**{_STATE_CANDIDATES: candidates, _STATE_INDEX: 0})
     text, has_more = _render_card(candidates, 0)
     if callback.message is not None:

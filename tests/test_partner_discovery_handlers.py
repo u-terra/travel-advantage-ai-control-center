@@ -5,12 +5,14 @@ queries beyond calling the already-tested PartnerDiscoveryService.find_candidate
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import app.main as main_module
 from app.domain.partners import WorkspaceContext
 from app.domain.prospects import EvidenceSource, ProspectCandidate, ProspectFit, ProspectType
 from app.handlers.partner_discovery import (
@@ -544,3 +546,54 @@ def test_malformed_item_missing_fields_falls_back_for_whole_batch():
     enriched = run(_enrich_candidates(candidates, provider))
 
     assert enriched[0]["display_name"] != "Brand A"
+
+
+# ── Regression: production incident - DI name mismatch silently disabled
+# enrichment (handler param was "enrichment_llm_provider", dispatcher key
+# was "partner_enrichment_llm_provider" - aiogram injects by exact name
+# match, so the handler always got its own default of None and silently
+# fell back, with no log anywhere explaining why). ────────────────────────
+
+
+def test_handler_param_name_matches_dispatcher_injection_key():
+    source = inspect.getsource(main_module)
+    assert 'dp["partner_enrichment_llm_provider"]' in source
+
+    find_partners_params = inspect.signature(on_find_partners).parameters
+    assert "partner_enrichment_llm_provider" in find_partners_params
+    assert "enrichment_llm_provider" not in find_partners_params
+
+    find_more_params = inspect.signature(on_partner_discovery_more).parameters
+    assert "partner_enrichment_llm_provider" in find_more_params
+    assert "enrichment_llm_provider" not in find_more_params
+
+
+def test_on_find_partners_actually_uses_injected_provider_by_keyword():
+    """Calls the handler the way aiogram's DI actually does - by keyword,
+    using the dispatcher's own key name - rather than positionally with a
+    hand-picked variable name. This is the exact gap that let the
+    production name-mismatch regress silently: every prior test called the
+    handler with a Python variable the AUTHOR named correctly, never with
+    the real dispatcher key string."""
+    message = Message()
+    state = State()
+    repo = partner_repository(business_type="club_partner")
+    response = json.dumps([{"display_name": "Авентурамания", "reason": "Организует туры."}])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    with patch(
+        "app.handlers.partner_discovery.PartnerDiscoveryService.find_candidates",
+        AsyncMock(return_value=[candidate("Aventuramania", "https://aventuramania.ru/")]),
+    ):
+        run(on_find_partners(**{
+            "message": message,
+            "state": state,
+            "workspace_context": context(),
+            "partner_repository": repo,
+            "web_search_service": web_search_service(object()),
+            "partner_enrichment_llm_provider": provider,
+        }))
+
+    assert provider.calls == 1
+    text, _ = message.answers[0]
+    assert "Авентурамания" in text
