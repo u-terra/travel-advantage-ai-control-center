@@ -5,6 +5,7 @@ queries beyond calling the already-tested PartnerDiscoveryService.find_candidate
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -15,6 +16,7 @@ from app.domain.prospects import EvidenceSource, ProspectCandidate, ProspectFit,
 from app.handlers.partner_discovery import (
     _build_explanation,
     _clean_name,
+    _enrich_candidates,
     _render_card,
     on_find_partners,
     on_partner_discovery_more,
@@ -392,3 +394,153 @@ def test_explanation_at_most_two_sentences():
     )
     sentence_count = explanation.count(". ") + (1 if explanation.endswith(".") else 0)
     assert sentence_count <= 2
+
+
+# ── LLM enrichment: one call per batch, display_name/reason, safe fallback ──
+
+
+def raw_candidate(
+    name="Авторские туры - Магазин Путешествий",
+    url="https://magput.ru/tours/avtorskie-tury-magput",
+    prospect_type="travel_agent",
+    evidence="Авторские туры по России, Турфирмам: +7 (495) 215-20-22",
+    evidence_source="snippet",
+    fit="STRONG",
+):
+    return {
+        "name": name, "url": url, "prospect_type": prospect_type,
+        "query": "q", "evidence": evidence, "evidence_source": evidence_source, "fit": fit,
+    }
+
+
+class FakeEnrichmentProvider:
+    """Stands in for app.chat_provider.OpenAIChatProvider: same .generate()
+    and .config.api_key surface, no real network call."""
+
+    def __init__(self, response_text: str | None = None, raises: Exception | None = None,
+                 api_key: str = "sk-test"):
+        self._response_text = response_text
+        self._raises = raises
+        self.config = SimpleNamespace(api_key=api_key)
+        self.calls = 0
+
+    def generate(self, *, message: str, **kwargs):
+        self.calls += 1
+        if self._raises is not None:
+            raise self._raises
+        return SimpleNamespace(text=self._response_text)
+
+
+def test_enrichment_calls_llm_exactly_once_for_a_five_candidate_batch():
+    candidates = [raw_candidate(url=f"https://x{i}.ru/") for i in range(5)]
+    response = json.dumps([
+        {"display_name": f"Brand {i}", "reason": f"Делает travel-вещи номер {i}."}
+        for i in range(5)
+    ])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert provider.calls == 1
+    assert len(enriched) == 5
+    assert enriched[3]["display_name"] == "Brand 3"
+
+
+def test_enrichment_uses_llm_display_name_and_reason():
+    candidates = [raw_candidate()]
+    response = json.dumps([
+        {"display_name": "Магазин Путешествий", "reason": "Организует авторские туры по России."},
+    ])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert enriched[0]["display_name"] == "Магазин Путешествий"
+    assert enriched[0]["reason"] == "Организует авторские туры по России."
+
+
+def test_enrichment_reason_is_concise():
+    candidates = [raw_candidate()]
+    response = json.dumps([
+        {"display_name": "Магазин Путешествий", "reason": "Организует авторские туры."},
+    ])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert len(enriched[0]["reason"]) < 200
+
+
+def test_card_does_not_show_internal_type_label():
+    candidates = [{**raw_candidate(), "display_name": "Магазин Путешествий", "reason": "Факт."}]
+    text, _ = _render_card(candidates, 0)
+    assert "Тип:" not in text
+    # internal prospect_type is untouched in the stored dict
+    assert candidates[0]["prospect_type"] == "travel_agent"
+
+
+def test_invalid_json_falls_back_safely():
+    candidates = [raw_candidate()]
+    provider = FakeEnrichmentProvider(response_text="this is not json at all")
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert enriched[0]["display_name"] == "Магазин Путешествий"
+    assert "+7" not in enriched[0]["reason"]
+
+
+def test_wrong_item_count_falls_back_safely():
+    candidates = [raw_candidate(), raw_candidate(url="https://other.ru/")]
+    response = json.dumps([{"display_name": "Only One", "reason": "Reason."}])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert len(enriched) == 2
+    assert enriched[0]["display_name"] == "Магазин Путешествий"
+    assert enriched[1]["display_name"] != "Only One"
+
+
+def test_provider_exception_falls_back_safely():
+    candidates = [raw_candidate()]
+    provider = FakeEnrichmentProvider(raises=RuntimeError("network down"))
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert enriched[0]["display_name"] == "Магазин Путешествий"
+    assert enriched[0]["reason"]
+
+
+def test_no_provider_configured_falls_back_safely():
+    candidates = [raw_candidate()]
+    enriched = run(_enrich_candidates(candidates, None))
+    assert enriched[0]["display_name"] == "Магазин Путешествий"
+
+
+def test_fallback_never_contains_raw_phone_email_or_menu_fragments():
+    noisy = raw_candidate(
+        evidence=(
+            "Меню Контакты Отзывы +7 (495) 150-19-99 info@example.ru "
+            "Рассрочка 4 месяца Вход в ЛК Организуем авторские туры по России"
+        ),
+    )
+    enriched = run(_enrich_candidates([noisy], None))
+    reason = enriched[0]["reason"].lower()
+    assert "+7" not in reason
+    assert "@" not in reason
+    assert "меню" not in reason
+    assert "рассрочк" not in reason
+    assert "вход в лк" not in reason
+
+
+def test_malformed_item_missing_fields_falls_back_for_whole_batch():
+    candidates = [raw_candidate(), raw_candidate(url="https://other.ru/")]
+    response = json.dumps([
+        {"display_name": "Brand A", "reason": "Reason A."},
+        {"display_name": "", "reason": "Reason B."},
+    ])
+    provider = FakeEnrichmentProvider(response_text=response)
+
+    enriched = run(_enrich_candidates(candidates, provider))
+
+    assert enriched[0]["display_name"] != "Brand A"

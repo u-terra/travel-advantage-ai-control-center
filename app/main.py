@@ -9,6 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.access import AllowlistMiddleware
 from app.access_state_gate import AccessStateMiddleware
+from app.chat_provider import ChatConfig, OpenAIChatProvider
 from app.config import load_settings
 from app.handlers import build_router
 from app.onboarding_gate import OnboardingGateMiddleware
@@ -76,6 +77,7 @@ def _build_dispatcher(
     web_search_service: WebSearchService | None = None,
     web_signal_repository: WebSignalRepository | None = None,
     plan_quota_service: PlanQuotaService | None = None,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -162,6 +164,11 @@ def _build_dispatcher(
     # tests are unaffected.
     dp["web_signal_repository"] = web_signal_repository
     dp["plan_quota_service"] = plan_quota_service
+    # Partner Discovery v0 card enrichment (app/handlers/partner_discovery.py)
+    # - the SAME OpenAIChatProvider app.web_api's chat already uses live, not
+    # a new vendor/API. One batch call per discovered set of candidates, not
+    # per card. Optional/default-None like every other dependency here.
+    dp["partner_enrichment_llm_provider"] = partner_enrichment_llm_provider
     return dp
 
 
@@ -309,6 +316,19 @@ async def _async_main() -> None:
     # Yandex credentials) - off (fail-soft, provider=None) unless configured.
     web_search_service = create_web_search_service(settings)
 
+    # Partner Discovery v0 card enrichment - reuses the exact same
+    # OpenAIChatProvider/key app.web_api's own chat already calls live
+    # (settings.planner_openai_api_key), not a new vendor/API. Empty
+    # api_key is handled fail-soft by the handler itself (falls back to the
+    # deterministic cleanup), same as every other optional-credential path.
+    partner_enrichment_llm_provider = OpenAIChatProvider(
+        ChatConfig(
+            api_key=settings.planner_openai_api_key,
+            model="gpt-5.6-terra",
+            timeout_seconds=60,
+        )
+    )
+
     bot = Bot(settings.bot_token)
     dp = _build_dispatcher(
         settings.allowed_user_ids,
@@ -338,6 +358,7 @@ async def _async_main() -> None:
         web_search_service=web_search_service,
         web_signal_repository=web_signal_repository,
         plan_quota_service=plan_quota_service,
+        partner_enrichment_llm_provider=partner_enrichment_llm_provider,
     )
 
     await dp.start_polling(bot)
