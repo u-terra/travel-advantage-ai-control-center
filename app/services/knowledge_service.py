@@ -49,7 +49,7 @@ class KnowledgeService:
         self,
         repository: KnowledgeRepository,
         *,
-        max_primary_items: int = 5,
+        max_primary_items: int = 6,
         max_related_items: int = 12,
         max_facts: int = 40,
         max_examples: int = 3,
@@ -87,10 +87,26 @@ class KnowledgeService:
             (fact for fact in fact_candidates if fact.fact_type in _COMPLIANCE_TYPES),
             key=lambda fact: (fact.sort_order, fact.stable_key),
         ))
+        # Live prod bug: facts belonging to the bounded PRIMARY items (the
+        # ones _retrieval_policy() actually required for this question) used
+        # to compete on equal footing with facts pulled in from merely
+        # related/compliance items. With no token overlap (e.g. a broad
+        # "what do I get from membership" question has no "loyalty"/"elite"
+        # words of its own), ties fell back to alphabetical stable_key order
+        # and could crowd a required item's own facts out of max_facts
+        # entirely. Primary-item facts are now always ranked ahead of
+        # related-item facts, score/sort_order/stable_key only break ties
+        # within that.
+        primary_item_ids = {item.id for item in primary}
         regular = [fact for fact in fact_candidates if fact.fact_type not in _COMPLIANCE_TYPES]
         ranked_regular = sorted(
             regular,
-            key=lambda fact: (-_fact_score(fact, tokens), fact.sort_order, fact.stable_key),
+            key=lambda fact: (
+                fact.item_id not in primary_item_ids,
+                -_fact_score(fact, tokens),
+                fact.sort_order,
+                fact.stable_key,
+            ),
         )
         available = max(0, self.max_facts - len(compliance))
         facts = tuple(ranked_regular[:available])
@@ -198,6 +214,24 @@ def _retrieval_policy(
     ambassador_role_intent = any(stem in query for stem in _AMBASSADOR_ROLE_INTENT_STEMS)
     if ambassador_role_intent:
         required.append("mwr.member_vs_ambassador")
+    # Live prod bug: "Я уже плачу за Travel Advantage каждый месяц. Объясни
+    # простыми словами, зачем мне сохранять членство и что конкретно я от
+    # него получаю?" only matched membership_intent above, which requires
+    # just ta.membership/ta.membership.cancellation (overview + refund
+    # terms) - a broad "what do I get" question needs the newly imported
+    # (2026-10-06) CURRENT benefit items too, or the answer stays generic
+    # platform/cancellation text and never surfaces Travel Credits/Loyalty
+    # Points/Life Experiences. Scoped to its own benefit-value stems so a
+    # plain cancellation/objection question (e.g. "Можно ли отменить
+    # членство и вернуть деньги?") is unaffected.
+    if membership_intent and any(
+        stem in query for stem in ("получ", "дает", "даёт", "польз", "ценност", "выгод")
+    ):
+        required.extend((
+            "ta.travel_credits.nature",
+            "ta.loyalty_points.rules_2026_10_06",
+            "ta.life_experiences.definition_2026_10_06",
+        ))
     # Same live prod bug, other half: a genuine booking question ("Почему
     # бронирование после оплаты pending?") must keep matching this rule
     # unchanged - only suppressed when membership_intent is ALSO explicit,
