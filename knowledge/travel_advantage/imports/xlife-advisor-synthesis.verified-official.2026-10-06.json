@@ -1,0 +1,217 @@
+{
+  "dataset_version": 1,
+  "sources": [
+    {
+      "stable_key": "xlife.advisor_synthesis.2026_10_06",
+      "title": "Xlife — официальный нейросоветник Travel Advantage / MWR Life, синтез 2026-10-06",
+      "source_type": "official_advisor_synthesis",
+      "source_name": "Xlife advisor synthesis, частично перепроверено по live официальным страницам 2026-10-06",
+      "source_reference": "knowledge/travel_advantage/sources/xlife-advisor-synthesis-2026-10-06.md",
+      "version": "2026-10-06",
+      "effective_date": "2026-10-06",
+      "verification_status": "verified_official",
+      "content_hash": "656907ff7da9090ed2338487dc2c09423563ee2c00c39bb6bba10b7b4e4dd5de"
+    }
+  ],
+  "items": [
+    {
+      "stable_key": "ta.membership",
+      "category": "memberships",
+      "title": "Membership Travel Advantage",
+      "content": "Рабочая линейка на 2026-10-06: Guest → VIP / VIP180 → Elite → Elite + Turbo Add-On. VIP180 подтверждён как current (не legacy), согласуется с live-проверкой checkout 2026-10-05. Plus — legacy-supported уровень: может ещё встречаться в логике Loyalty Points для существующих аккаунтов, не позиционируется как основной новый enrollment-продукт. Числовые значения стоимости и benefits хранятся только в связанных facts. Источник — синтез Xlife 2026-10-06 (OFFICIAL SYNTHESIS), не отдельная новая live-проверка checkout.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Membership line-up (OFFICIAL SYNTHESIS)",
+      "tags": ["membership", "vip", "elite", "vip 180", "turbo upgrade", "plus", "guest"]
+    },
+    {
+      "stable_key": "mwr.member_vs_ambassador",
+      "category": "ambassador_compensation",
+      "title": "Travel Advantage Member vs Lifestyle Ambassador",
+      "content": "Member и Lifestyle Ambassador — отдельные роли. Member — клиентская/travel-роль, использует Travel Advantage benefits согласно уровню membership. Lifestyle Ambassador — независимая бизнес-роль: может продвигать MWR Life memberships/business opportunity и спонсировать Members/Ambassadors. Ambassador может существовать без оплаченного Travel Advantage membership — официальная регистрация прямо поддерживает 'Ambassador without a service'; статус Ambassador не равен оплаченному Travel Advantage membership. Согласуется с live-проверкой 2026-10-05 (ambassador-only enrollment).",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Member vs Lifestyle Ambassador (LIVE-RECHECK 2026-10-06)",
+      "tags": ["member", "ambassador", "roles"]
+    },
+    {
+      "stable_key": "ta.membership.vip_180",
+      "category": "memberships",
+      "title": "VIP 180",
+      "content": "CURRENT, не legacy. $99 / 6 месяцев. Те же основные benefits, что VIP Monthly. Membership page показывает $20 activation, но live checkout показывает Total Due Today $99 — activation timing остаётся неоднозначным. 25 Guest Passes изначально, затем 25 каждые 6 месяцев. 1 дополнительный traveler. Loyalty Points не начисляются. Согласуется с live-проверкой checkout 2026-10-05.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "VIP180 (LIVE-RECHECK 2026-10-06 + OFFICIAL SYNTHESIS)",
+      "tags": ["vip 180"]
+    },
+    {
+      "stable_key": "ta.membership.turbo_addon",
+      "category": "memberships",
+      "title": "Turbo Travel Advantage (Upgrade/Add-on)",
+      "content": "Не отдельный membership — one-time add-on только к Elite. $249.97 one-time. +250 Loyalty Points немедленно. Удвоенные ежемесячные Loyalty Points (240 LP) при успешном rebill, пока применим Turbo. +1500 Guest Passes. Эксклюзивные Turbo hotel deals. Flex Traveller каждые 6 месяцев. До 100 LP с баланса основного Member может быть применено ко второму гостю на Life Experience. Старый вариант 'Elite Turbo $598.97 standalone' не current.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Turbo Travel Advantage add-on (OFFICIAL SYNTHESIS)",
+      "tags": ["turbo upgrade", "add-on"]
+    },
+    {
+      "stable_key": "ta.membership.guest",
+      "category": "memberships",
+      "title": "Guest Membership",
+      "content": "Free membership, $0 activation. Доступ к Hotels и 24/7 Support. Может зарабатывать Travel Credits. Может приглашать Guest Members. 10 Guest Passes при регистрации. Guest Pass holder может сделать одно бронирование отеля до 2 ночей по insider member pricing. Конверсия Guest → paid membership может генерировать Travel Credits для пригласившего. Источник — синтез Xlife 2026-10-06, не отдельная новая live-проверка checkout.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Guest membership (OFFICIAL SYNTHESIS)",
+      "tags": ["membership", "guest", "free"]
+    },
+    {
+      "stable_key": "ta.travel_credits.nature",
+      "category": "travel_credits",
+      "title": "Travel Credits — природа вознаграждения",
+      "content": "Travel Credits — вознаграждение за использование Travel Advantage / eligible bookings, а не за оплату Elite membership. Доступны не только на Elite: Guest/VIP/VIP180/Elite могут зарабатывать их на eligible активности. Не начисляются на Life Experiences, Car Rentals, Flash Deals. Нет универсального процента начисления — сумма зависит от конкретного предложения и показывается при бронировании. Текущий сайт утверждает, что Travel Credits никогда не истекают. Elite может зарабатывать и использовать Travel Credits в Lifestyle Mall. Travel Credits нельзя использовать для Life Experiences (для них используются Loyalty Points). Источник — синтез Xlife 2026-10-06, в основном без отдельной новой live-перепроверки конкретно на 2026-10-06.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Travel Credits — суть / current-confirmed (OFFICIAL SYNTHESIS)",
+      "tags": ["travel credits", "earning", "redemption"]
+    },
+    {
+      "stable_key": "ta.travel_credits.unreconfirmed_2025_faq",
+      "category": "travel_credits",
+      "title": "Travel Credits — положения FAQ 2025, не переподтверждённые отдельно на 2026-10-06",
+      "content": "Следующее документировано в официальном FAQ 2025 года, но не является отдельно live-перепроверенным фактом на текущей публичной странице 2026 года: '100 Travel Credits = $1 потенциального снижения стоимости бронирования'; credits за бронирование дополнительного traveler-а идут основному Member; возможность передачи Travel Credits другому Member/traveler-у; обычное зачисление credits примерно через неделю после travel/использования; точное поведение баланса после окончательного прекращения membership. По текущим публичным правилам нельзя утверждать, что Travel Credits автоматически сгорают при одном пропущенном платеже membership.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Travel Credits — 2025 FAQ material / документировано в FAQ 2025, но не переподтверждено",
+      "tags": ["travel credits", "2025 faq", "not reconfirmed"]
+    },
+    {
+      "stable_key": "ta.loyalty_points.rules_2026_10_06",
+      "category": "loyalty_points",
+      "title": "Loyalty Points — правила начисления и ограничений",
+      "content": "VIP/VIP180 не получают LP. Elite: 120 LP при enrollment + 120 LP при каждом успешном ежемесячном rebill. Turbo: +250 LP единовременно и 240 LP за успешный ежемесячный rebill, пока применим Turbo double-points benefit. LP не начисляются за бронирования. 1 LP может давать до $1 снижения цены там, где конкретный продукт допускает redemption. LP — не деньги, не выводятся, непередаваемы; дополнительные traveler-ы не получают собственный баланс LP. Текущие категории redemption: Life Experiences, Transfers, Lifestyle Mall, Stays, Hotels, Getaways, Cruises, Flights, Activities, Ground Transport; фактическая применимость зависит от продукта. Суммы по Elite/Turbo согласуются с live-проверкой checkout 2026-10-05.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Loyalty Points (OFFICIAL SYNTHESIS)",
+      "tags": ["loyalty points", "elite", "turbo", "redemption"]
+    },
+    {
+      "stable_key": "ta.loyalty_points.billing_and_transitions",
+      "category": "loyalty_points",
+      "title": "Loyalty Points — failed billing, delinquency, upgrade/downgrade",
+      "content": "При неудачном billing накопленные LP блокируются до возобновления успешного billing; новые LP начисляются только активным eligible Member-ам (один пропущенный платёж — не немедленное уничтожение LP). При задолженности 180+ дней текущая детальная документация Membership Benefits говорит об отмене membership. При upgrade накопленные LP сохраняются согласно текущей детальной документации benefits; при downgrade LP теряются согласно той же документации. Старое правило сгорания через 90 дней и старая лестница разблокировки 10%→20%→... считаются legacy/superseded, не текущим руководством.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Loyalty Points — failed billing / cancellation (current detailed Membership Benefits documentation)",
+      "tags": ["loyalty points", "delinquency", "upgrade", "downgrade", "legacy"]
+    },
+    {
+      "stable_key": "ta.life_experiences.definition_2026_10_06",
+      "category": "life_experiences",
+      "title": "Life Experiences — определение и типичный состав",
+      "content": "Life Experience — курируемая поездка члена Travel Advantage на фиксированные даты с программой/условиями конкретного предложения; это не 'любая поездка, оплаченная очками'. Обычно/возможно включено в зависимости от предложения: проживание; welcome reception/коктейль; групповые активности; host; другие явно перечисленные компоненты. Нельзя утверждать универсально, что питание, трансферы или экскурсии включены. Перелёты, как правило, НЕ включены, если предложение явно не говорит иначе.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Life Experiences — определение (OFFICIAL SYNTHESIS)",
+      "tags": ["life experiences", "definition"]
+    },
+    {
+      "stable_key": "ta.life_experiences.out_of_pocket_costs",
+      "category": "life_experiences",
+      "title": "Life Experiences — возможные расходы сверх LP",
+      "content": "Даже если стоимость Life Experience полностью покрыта LP, возможны отдельные расходы: перелёты; не включённые трансферы; не включённое питание; налоги/сборы где применимо; визы; страховка; багаж; личные расходы; дополнительные активности; трансфер до/от аэропорта; дополнительные ночи; расходы второго гостя; всё, что явно не указано как включённое. Не использовать формулировку 'бесплатная поездка'.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Life Experiences — потенциальные расходы сверх LP (OFFICIAL SYNTHESIS)",
+      "tags": ["life experiences", "out of pocket", "flights"]
+    },
+    {
+      "stable_key": "ta.life_experiences.lp_redemption_timeline",
+      "category": "life_experiences",
+      "title": "Life Experiences — использование LP до и после 12 месяцев",
+      "content": "LP можно использовать уже до 12 месяцев членства; нельзя обещать универсальные 50% или 90% — текущий публичный материал содержит обе формулировки, фактическая сумма определяется конкретным Life Experience/оформлением. После 12 месяцев eligible Member с достаточным балансом LP может использовать до 100% накопленных LP на покрытие стоимости eligible Life Experience — это может означать отсутствие доплаты за саму стоимость Life Experience, но не нулевые суммарные расходы на поездку. Предпочтительная формулировка: стоимость самого подходящего Life Experience может быть на 100% оплачена Loyalty Points; авиабилеты и другие не включённые расходы оплачиваются отдельно.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Life Experiences — использование LP до 12 месяцев / после 12 месяцев (OFFICIAL SYNTHESIS)",
+      "tags": ["life experiences", "loyalty points", "12 months"]
+    },
+    {
+      "stable_key": "ta.life_experiences.turbo_second_guest",
+      "category": "life_experiences",
+      "title": "Life Experiences — Turbo second guest LP",
+      "content": "До 100 LP с баланса основного Member может быть применено ко второму гостю на Life Experience. Это не передача LP и не означает, что второй гость путешествует бесплатно.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Life Experiences — Turbo second guest",
+      "tags": ["life experiences", "turbo", "second guest"]
+    },
+    {
+      "stable_key": "ta.life_experiences.inactivity_cancellation",
+      "category": "life_experiences",
+      "title": "Life Experiences — отмена при неактивности membership",
+      "content": "Life Experience/Deluxe Life Experience, забронированный с использованием LP, может быть отменён, если membership остаётся неактивным более 30 дней; дополнительные расходы от такой отмены несёт Member. LP, использованные на Life Experience, не возвращаются при отмене Member-ом согласно детальным правилам. Travel Credits не начисляются на Life Experiences и не могут использоваться для их бронирования.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Life Experiences — membership inactivity / Travel Credits неприменимы",
+      "tags": ["life experiences", "inactivity", "cancellation", "travel credits"]
+    },
+    {
+      "stable_key": "mwr.ambassador_tools.2026_10_06",
+      "category": "ambassador_compensation",
+      "title": "Ambassador рабочие инструменты и enrollment flow",
+      "content": "Текущие рабочие инструменты Ambassador: Biz Center; Mobile App; Prospector; ручное добавление контактов / синхронизация контактов телефона; Guest Pass sharing; Enrollment; персональные корпоративные сайты; My Dashboard; Media Library; MWR Academy; Book Travel / доступ к Travel Advantage; бизнес-отчёты. Персональный enrollment URL имеет вид mwrlife.com/[personal-site]/join; атрибуция спонсора идёт через персонализированную корпоративную регистрацию. Ambassador может приглашать Travel Advantage Member или другого Lifestyle Ambassador; новый Ambassador может зарегистрироваться только как Ambassador или дополнительно выбрать Travel Advantage membership. Количество Guest Passes у Ambassador зависит в основном от применимого Travel Advantage membership/текущих условий — не каждый Ambassador автоматически получает фиксированное число Guest Passes.",
+      "source_key": "xlife.advisor_synthesis.2026_10_06",
+      "source_ref": "Ambassador tools (OFFICIAL SYNTHESIS)",
+      "tags": ["ambassador", "tools", "enrollment", "guest pass"]
+    }
+  ],
+  "facts": [
+    {"stable_key":"ta.membership.guest.activation_fee.usd","item_key":"ta.membership.guest","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"membership_activation_fee","subject_type":"membership","subject_key":"membership.guest","value_number":0,"currency":"USD","period":"one_time","source_ref":"Guest membership / $0 activation"},
+    {"stable_key":"ta.membership.guest.guest_passes_on_registration","item_key":"ta.membership.guest","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"guest_passes_allocation","subject_type":"membership","subject_key":"membership.guest","qualifier_key":"timing","qualifier_value":"on_registration","value_number":10,"unit":"guest_passes","source_ref":"Guest membership / 10 Guest Passes on registration"},
+    {"stable_key":"ta.membership.guest.pass_booking_limit_nights","item_key":"ta.membership.guest","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"guest_pass_booking_limit","subject_type":"membership","subject_key":"membership.guest","value_number":2,"unit":"nights","condition_text":"Guest Pass holder может сделать одно бронирование отеля до 2 ночей по insider member pricing.","source_ref":"Guest membership / guest pass booking limit"},
+
+    {"stable_key":"ta.membership.vip.additional_travelers","item_key":"ta.membership","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"additional_travelers_included","subject_type":"membership","subject_key":"membership.vip","value_number":1,"unit":"travelers","source_ref":"VIP / 1 additional traveler"},
+    {"stable_key":"ta.membership.vip.guest_passes_on_enrollment","item_key":"ta.membership","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"guest_passes_allocation","subject_type":"membership","subject_key":"membership.vip","qualifier_key":"timing","qualifier_value":"on_enrollment","value_number":15,"unit":"guest_passes","source_ref":"VIP / 15 Guest Passes at enrollment"},
+
+    {"stable_key":"ta.membership.vip_180.additional_travelers","item_key":"ta.membership.vip_180","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"additional_travelers_included","subject_type":"membership","subject_key":"membership.vip_180","value_number":1,"unit":"travelers","source_ref":"VIP 180 / 1 additional traveler"},
+    {"stable_key":"ta.membership.vip_180.guest_passes_initial","item_key":"ta.membership.vip_180","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"guest_passes_allocation","subject_type":"membership","subject_key":"membership.vip_180","qualifier_key":"timing","qualifier_value":"initial_then_every_6_months","value_number":25,"unit":"guest_passes","condition_text":"25 Guest Passes изначально, затем 25 каждые 6 месяцев.","source_ref":"VIP 180 / 25 Guest Passes initially then every 6 months"},
+    {"stable_key":"ta.membership.vip_180.loyalty_points_not_awarded","item_key":"ta.membership.vip_180","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"loyalty_points_eligibility","subject_type":"membership","subject_key":"membership.vip_180","value_text":"Loyalty Points не начисляются на VIP180.","source_ref":"VIP 180 / Loyalty Points не начисляются"},
+
+    {"stable_key":"ta.membership.elite.additional_travelers","item_key":"ta.membership","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"additional_travelers_included","subject_type":"membership","subject_key":"membership.elite","value_number":4,"unit":"travelers","source_ref":"Elite / 4 additional travelers"},
+    {"stable_key":"ta.membership.elite.guest_passes_initial","item_key":"ta.membership","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"guest_passes_allocation","subject_type":"membership","subject_key":"membership.elite","qualifier_key":"timing","qualifier_value":"initial","value_number":50,"unit":"guest_passes","source_ref":"Elite / 50 Guest Passes initially"},
+    {"stable_key":"ta.membership.elite.guest_passes_monthly","item_key":"ta.membership","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"guest_passes_allocation","subject_type":"membership","subject_key":"membership.elite","qualifier_key":"timing","qualifier_value":"monthly","value_number":20,"unit":"guest_passes","period":"monthly","source_ref":"Elite / +20 Guest Passes monthly"},
+    {"stable_key":"ta.membership.elite.loyalty_points_on_enrollment","item_key":"ta.membership","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"loyalty_points_award","subject_type":"membership","subject_key":"membership.elite","qualifier_key":"timing","qualifier_value":"on_enrollment","value_number":120,"unit":"loyalty_points","source_ref":"Elite / 120 Loyalty Points on enrollment"},
+    {"stable_key":"ta.membership.elite.loyalty_points_on_rebill","item_key":"ta.membership","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"loyalty_points_award","subject_type":"membership","subject_key":"membership.elite","qualifier_key":"timing","qualifier_value":"on_successful_monthly_rebill","value_number":120,"unit":"loyalty_points","period":"monthly","source_ref":"Elite / 120 Loyalty Points on every successful monthly rebill"},
+
+    {"stable_key":"ta.membership.turbo_addon.loyalty_points_immediate","item_key":"ta.membership.turbo_addon","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"loyalty_points_award","subject_type":"membership_addon","subject_key":"membership.turbo_addon","qualifier_key":"timing","qualifier_value":"immediate","value_number":250,"unit":"loyalty_points","source_ref":"Turbo / +250 Loyalty Points immediately"},
+    {"stable_key":"ta.membership.turbo_addon.loyalty_points_double_monthly","item_key":"ta.membership.turbo_addon","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"loyalty_points_award","subject_type":"membership_addon","subject_key":"membership.turbo_addon","qualifier_key":"timing","qualifier_value":"on_successful_monthly_rebill","value_number":240,"unit":"loyalty_points","period":"monthly","condition_text":"Double monthly Loyalty Points while Turbo benefit applies.","source_ref":"Turbo / 240 LP on successful monthly rebill (double points)"},
+    {"stable_key":"ta.membership.turbo_addon.guest_passes","item_key":"ta.membership.turbo_addon","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"guest_passes_allocation","subject_type":"membership_addon","subject_key":"membership.turbo_addon","qualifier_key":"timing","qualifier_value":"one_time","value_number":1500,"unit":"guest_passes","source_ref":"Turbo / +1500 Guest Passes"},
+    {"stable_key":"ta.membership.turbo_addon.second_guest_lp_cap","item_key":"ta.membership.turbo_addon","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"loyalty_points_transfer_cap","subject_type":"membership_addon","subject_key":"membership.turbo_addon","value_number":100,"unit":"loyalty_points","condition_text":"До 100 LP с баланса основного Member может быть применено ко второму гостю на Life Experience; это не передача LP и не бесплатная поездка для второго гостя.","source_ref":"Turbo / second guest LP cap on Life Experience"},
+
+    {"stable_key":"ta.travel_credits.not_earned_life_experiences","item_key":"ta.travel_credits.nature","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"earning_exclusion","subject_type":"travel_credits","subject_key":"travel_credits_earning","qualifier_key":"excluded_category","qualifier_value":"life_experiences","value_text":"Travel Credits не начисляются на Life Experiences.","source_ref":"Travel Credits / не начисляются на Life Experiences"},
+    {"stable_key":"ta.travel_credits.not_earned_car_rentals","item_key":"ta.travel_credits.nature","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"earning_exclusion","subject_type":"travel_credits","subject_key":"travel_credits_earning","qualifier_key":"excluded_category","qualifier_value":"car_rentals","value_text":"Travel Credits не начисляются на Car Rentals.","source_ref":"Travel Credits / не начисляются на Car Rentals"},
+    {"stable_key":"ta.travel_credits.not_earned_flash_deals","item_key":"ta.travel_credits.nature","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"earning_exclusion","subject_type":"travel_credits","subject_key":"travel_credits_earning","qualifier_key":"excluded_category","qualifier_value":"flash_deals","value_text":"Travel Credits не начисляются на Flash Deals.","source_ref":"Travel Credits / не начисляются на Flash Deals"},
+    {"stable_key":"ta.travel_credits.never_expire_current_site_claim","item_key":"ta.travel_credits.nature","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"expiration_policy","subject_type":"travel_credits","subject_key":"travel_credits_earning","value_text":"Текущий официальный сайт утверждает, что Travel Credits никогда не истекают.","source_ref":"Travel Credits / never expire (current site claim)"},
+    {"stable_key":"ta.travel_credits.not_usable_for_life_experiences","item_key":"ta.travel_credits.nature","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"redemption_exclusion","subject_type":"travel_credits","subject_key":"travel_credits_redemption","qualifier_key":"excluded_category","qualifier_value":"life_experiences","value_text":"Detailed FAQ: Travel Credits нельзя использовать для бронирования Life Experiences; для Life Experiences используются Loyalty Points.","source_ref":"Travel Credits / нельзя использовать для Life Experiences"},
+    {"stable_key":"ta.travel_credits.no_auto_forfeit_on_single_missed_payment","item_key":"ta.travel_credits.nature","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"forfeiture_rule_clarification","subject_type":"travel_credits","subject_key":"travel_credits_balance","value_text":"По текущим публичным правилам нельзя утверждать, что Travel Credits автоматически сгорают при одном пропущенном платеже membership.","source_ref":"Travel Credits / не утверждать автоматическое сгорание при одном пропуске платежа"},
+
+    {"stable_key":"ta.travel_credits.faq2025.conversion_rate_not_reconfirmed","item_key":"ta.travel_credits.unreconfirmed_2025_faq","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"legacy_material_not_reconfirmed","subject_type":"travel_credits","subject_key":"travel_credits_conversion","value_text":"'100 Travel Credits = $1 потенциального снижения стоимости бронирования' — формулировка из официального FAQ 2025 года, не новый live-подтверждённый факт 2026-10-06.","source_ref":"Travel Credits — 2025 FAQ material / conversion rate"},
+    {"stable_key":"ta.travel_credits.faq2025.additional_traveler_credits_to_main_member","item_key":"ta.travel_credits.unreconfirmed_2025_faq","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"legacy_material_not_reconfirmed","subject_type":"travel_credits","subject_key":"travel_credits_additional_traveler","value_text":"FAQ 2025: credits за бронирование дополнительного traveler-а идут основному Member — не отдельно переподтверждено на 2026-10-06.","source_ref":"Travel Credits — 2025 FAQ material / additional traveler credits"},
+    {"stable_key":"ta.travel_credits.not_reconfirmed_transferability","item_key":"ta.travel_credits.unreconfirmed_2025_faq","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"verification_pending_note","subject_type":"travel_credits","subject_key":"travel_credits_transferability","value_text":"Возможность передачи Travel Credits другому Member/traveler-у документирована в FAQ 2025, но не переподтверждена на текущей публичной странице 2026 года.","source_ref":"Travel Credits / документировано в FAQ 2025, но не переподтверждено — transferability"},
+    {"stable_key":"ta.travel_credits.not_reconfirmed_posting_delay","item_key":"ta.travel_credits.unreconfirmed_2025_faq","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"verification_pending_note","subject_type":"travel_credits","subject_key":"travel_credits_posting_timing","value_text":"Обычное зачисление credits примерно через неделю после travel/использования документировано в FAQ 2025, но не переподтверждено на текущей публичной странице 2026 года.","source_ref":"Travel Credits / документировано в FAQ 2025, но не переподтверждено — posting delay"},
+    {"stable_key":"ta.travel_credits.not_reconfirmed_balance_after_termination","item_key":"ta.travel_credits.unreconfirmed_2025_faq","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"verification_pending_note","subject_type":"travel_credits","subject_key":"travel_credits_balance_after_termination","value_text":"Точное поведение баланса Travel Credits после окончательного прекращения membership документировано в FAQ 2025, но не переподтверждено на текущей публичной странице 2026 года.","source_ref":"Travel Credits / документировано в FAQ 2025, но не переподтверждено — balance after termination"},
+
+    {"stable_key":"ta.loyalty_points.vip_not_eligible","item_key":"ta.loyalty_points.rules_2026_10_06","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"loyalty_points_eligibility","subject_type":"membership","subject_key":"membership.vip","value_text":"VIP не получает Loyalty Points.","source_ref":"Loyalty Points / VIP/VIP180 не получают LP"},
+    {"stable_key":"ta.loyalty_points.not_earned_from_bookings","item_key":"ta.loyalty_points.rules_2026_10_06","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"earning_rule","subject_type":"loyalty_points","subject_key":"loyalty_points_earning","value_text":"LP не начисляются за бронирования.","source_ref":"Loyalty Points / не начисляются за бронирования"},
+    {"stable_key":"ta.loyalty_points.max_dollar_offset_per_point","item_key":"ta.loyalty_points.rules_2026_10_06","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"redemption_rate_cap","subject_type":"loyalty_points","subject_key":"loyalty_points_redemption","value_number":1,"currency":"USD","unit":"per_point","condition_text":"До $1 снижения цены за 1 LP там, где конкретный продукт допускает redemption.","source_ref":"Loyalty Points / 1 LP может давать до $1 снижения цены"},
+    {"stable_key":"ta.loyalty_points.non_transferable","item_key":"ta.loyalty_points.rules_2026_10_06","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"transferability_rule","subject_type":"loyalty_points","subject_key":"loyalty_points_balance","value_text":"LP непередаваемы; дополнительные traveler-ы не получают собственный баланс LP.","source_ref":"Loyalty Points / непередаваемы"},
+
+    {"stable_key":"ta.loyalty_points.blocked_on_failed_billing","item_key":"ta.loyalty_points.billing_and_transitions","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"billing_failure_rule","subject_type":"loyalty_points","subject_key":"loyalty_points_balance","value_text":"При неудачном billing накопленные LP блокируются до возобновления успешного billing; новые LP начисляются только активным eligible Member-ам. Один пропущенный платёж — не немедленное уничтожение LP.","source_ref":"Loyalty Points / failed billing blocks LP"},
+    {"stable_key":"ta.membership.delinquency_180_days_cancellation","item_key":"ta.loyalty_points.billing_and_transitions","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"delinquency_rule","subject_type":"membership","subject_key":"membership_general","qualifier_key":"delinquency_days","qualifier_value":"180","value_text":"При задолженности 180+ дней текущая детальная документация Membership Benefits говорит об отмене membership.","source_ref":"Loyalty Points / 180+ days delinquent → membership cancelled"},
+    {"stable_key":"ta.loyalty_points.preserved_on_upgrade","item_key":"ta.loyalty_points.billing_and_transitions","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"transition_rule","subject_type":"loyalty_points","subject_key":"loyalty_points_balance","qualifier_key":"transition","qualifier_value":"upgrade","value_text":"При upgrade накопленные LP сохраняются согласно текущей детальной документации benefits.","source_ref":"Loyalty Points / upgrade preserves LP"},
+    {"stable_key":"ta.loyalty_points.lost_on_downgrade","item_key":"ta.loyalty_points.billing_and_transitions","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"transition_rule","subject_type":"loyalty_points","subject_key":"loyalty_points_balance","qualifier_key":"transition","qualifier_value":"downgrade","value_text":"При downgrade LP теряются согласно текущей детальной документации benefits.","source_ref":"Loyalty Points / downgrade loses LP"},
+    {"stable_key":"ta.loyalty_points.legacy_90_day_forfeiture_superseded","item_key":"ta.loyalty_points.billing_and_transitions","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"legacy_material_rule_superseded","subject_type":"loyalty_points","subject_key":"loyalty_points_balance","qualifier_key":"legacy_rule","qualifier_value":"90_day_forfeiture_and_unlock_ladder","value_text":"Старое правило сгорания LP через 90 дней и старая лестница разблокировки 10%→20%→... считаются legacy/superseded, не текущим руководством на 2026-10-06.","source_ref":"Loyalty Points / старое правило 90 дней и лестница разблокировки — superseded"},
+
+    {"stable_key":"ta.life_experiences.flights_generally_not_included","item_key":"ta.life_experiences.definition_2026_10_06","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"inclusion_rule","subject_type":"life_experience","subject_key":"life_experience_general","qualifier_key":"component","qualifier_value":"flights","value_text":"Перелёты, как правило, НЕ включены в Life Experience, если конкретное предложение явно не говорит иначе.","source_ref":"Life Experiences / перелёты обычно не включены"},
+    {"stable_key":"ta.life_experiences.no_universal_meals_transfers_excursions_claim","item_key":"ta.life_experiences.definition_2026_10_06","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"inclusion_rule_clarification","subject_type":"life_experience","subject_key":"life_experience_general","value_text":"Нельзя утверждать универсально, что питание, трансферы или экскурсии включены в Life Experience.","source_ref":"Life Experiences / нет универсального включения питания/трансферов/экскурсий"},
+
+    {"stable_key":"ta.life_experiences.lp_redemption_before_12_months_no_fixed_percent","item_key":"ta.life_experiences.lp_redemption_timeline","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"redemption_rule_clarification","subject_type":"life_experience","subject_key":"life_experience_lp_redemption","qualifier_key":"membership_tenure","qualifier_value":"before_12_months","value_text":"LP можно использовать уже до 12 месяцев членства; нельзя обещать универсальные 50% или 90% — текущий публичный материал содержит обе формулировки, сумма определяется конкретным Life Experience/оформлением.","source_ref":"Life Experiences / использование LP до 12 месяцев"},
+    {"stable_key":"ta.life_experiences.lp_redemption_after_12_months_up_to_100_percent","item_key":"ta.life_experiences.lp_redemption_timeline","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"redemption_rate_cap","subject_type":"life_experience","subject_key":"life_experience_lp_redemption","qualifier_key":"membership_tenure","qualifier_value":"after_12_months","value_number":100,"unit":"percent","condition_text":"До 100% накопленных LP на покрытие стоимости eligible Life Experience; означает отсутствие доплаты за саму стоимость Life Experience, но не нулевые суммарные расходы на поездку.","source_ref":"Life Experiences / после 12 месяцев до 100% LP"},
+
+    {"stable_key":"ta.life_experiences.cancellation_on_30_day_inactivity","item_key":"ta.life_experiences.inactivity_cancellation","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"cancellation_rule","subject_type":"life_experience","subject_key":"life_experience_booking","qualifier_key":"inactivity_days","qualifier_value":"30","value_text":"Life Experience/Deluxe Life Experience, забронированный с использованием LP, может быть отменён, если membership остаётся неактивным более 30 дней; дополнительные расходы от такой отмены несёт Member.","source_ref":"Life Experiences / отмена при неактивности membership более 30 дней"},
+    {"stable_key":"ta.life_experiences.lp_not_returned_on_member_cancellation","item_key":"ta.life_experiences.inactivity_cancellation","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"refund_forfeiture_rule","subject_type":"life_experience","subject_key":"life_experience_booking","value_text":"LP, использованные на Life Experience, не возвращаются при отмене Member-ом согласно детальным правилам.","source_ref":"Life Experiences / LP не возвращаются при отмене Member-ом"},
+
+    {"stable_key":"mwr.ambassador.registration_fee.usd","item_key":"mwr.member_vs_ambassador","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"ambassador_registration_fee","subject_type":"role","subject_key":"lifestyle_ambassador","value_number":99,"currency":"USD","period":"one_time","source_ref":"Member vs Lifestyle Ambassador / текущая регистрация Ambassador $99"},
+    {"stable_key":"mwr.ambassador.renewal_fee.usd","item_key":"mwr.member_vs_ambassador","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"ambassador_renewal_fee","subject_type":"role","subject_key":"lifestyle_ambassador","value_number":99,"currency":"USD","period":"annual","source_ref":"Member vs Lifestyle Ambassador / продление $99 ежегодно"},
+    {"stable_key":"mwr.ambassador.travel_benefits_come_from_membership_not_ambassador_status","item_key":"mwr.member_vs_ambassador","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"requirement_clarification","subject_type":"role_pair","subject_key":"member_and_ambassador","value_text":"Travel-бенефиты, такие как Elite Loyalty Points и membership Guest Pass allocations, идут от оплаченного Travel Advantage membership, а не просто от статуса Ambassador.","source_ref":"Member vs Lifestyle Ambassador / travel benefits come from membership"},
+
+    {"stable_key":"mwr.ambassador_tools.guest_pass_quantity_depends_on_membership","item_key":"mwr.ambassador_tools.2026_10_06","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"requirement_clarification","subject_type":"role","subject_key":"lifestyle_ambassador","value_text":"Количество Guest Passes у Ambassador зависит в основном от применимого Travel Advantage membership/текущих условий; не каждый Ambassador автоматически получает фиксированное число Guest Passes.","source_ref":"Ambassador tools / guest pass quantity depends on membership"},
+    {"stable_key":"mwr.ambassador_tools.personal_enrollment_url_pattern","item_key":"mwr.ambassador_tools.2026_10_06","source_key":"xlife.advisor_synthesis.2026_10_06","fact_type":"enrollment_url_pattern","subject_type":"role","subject_key":"lifestyle_ambassador","value_text":"Персональный enrollment URL имеет вид mwrlife.com/[personal-site]/join; атрибуция спонсора идёт через персонализированную корпоративную регистрацию.","source_ref":"Ambassador tools / personal enrollment URL"}
+  ],
+  "examples": []
+}
