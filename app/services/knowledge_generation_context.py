@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping
@@ -11,8 +12,19 @@ from app.services.knowledge_service import KnowledgeBundle
 
 _MAX_ITEMS = 4
 _MAX_FACTS = 3
-_MAX_ITEM_CONTENT_CHARS = 48
-_MAX_SOURCE_REF_CHARS = 16
+_MAX_ITEM_CONTENT_CHARS = 40
+# Live prod bug: the single sentence that actually answers "what does Elite
+# get" ("Elite: 120 LP при enrollment + 120 LP при каждом успешном
+# ежемесячном rebill...") lives entirely inside ta.loyalty_points.rules_
+# 2026_10_06's own item content, past the generic _MAX_ITEM_CONTENT_CHARS
+# cutoff - the model only ever saw "...Elite: 120 LP при enrollment" and
+# never the monthly-rebill half. This item alone gets a larger content
+# window (traded against a smaller default elsewhere, not a bigger total
+# budget) so that sentence survives whole.
+_ITEM_CONTENT_CHARS_OVERRIDES: Mapping[str, int] = {
+    "ta.loyalty_points.rules_2026_10_06": 95,
+}
+_MAX_SOURCE_REF_CHARS = 10
 _MAX_PROVENANCE = 1
 _MAX_VERIFIED_CLAIMS = 1
 # Live prod bug: for a broad "why keep membership / what do I get" question,
@@ -44,13 +56,40 @@ _LOW_PRIORITY_FACT_TYPES = frozenset({
 # Travel Credits never-expire) out of the tiny _MAX_FACTS budget entirely.
 # Within own_item_facts specifically, these positive/actionable fact types
 # are now bubbled to the front (stable sort - ties keep their prior order).
+#
+# Live prod bug, next round: "Travel Credits never expire" (expiration_
+# policy) is secondary metadata, not practical value - it kept winning a
+# fact slot over genuinely actionable facts (Guest Passes allocation) that
+# belong to the same chosen item. Removed from this set so it no longer
+# outranks them; its item's own content still mentions it in passing if
+# there is room, it just doesn't force out a better fact. Pricing facts
+# (monthly fee, activation fee, total due today) were removed too - they
+# answer "what do I pay", not "what do I get", and for a value/benefit
+# question they only displaced a real benefit fact (Guest Passes) for the
+# last of the tiny fact-budget slots.
 _VALUE_FACT_TYPES = frozenset({
     "loyalty_points_award", "guest_passes_allocation",
     "additional_travelers_included", "redemption_rate_cap",
-    "membership_recurring_fee", "membership_activation_fee",
-    "membership_total_due_today", "addon_price", "expiration_policy",
-    "loyalty_points_transfer_cap",
+    "addon_price", "loyalty_points_transfer_cap",
 })
+# Live prod bug, next round: raw English lifecycle terms from the knowledge
+# text itself ("enrollment", "redemption", bare "membership") reached the
+# model as-is inside item content/fact text and then leaked straight into
+# the Russian answer - the client-reply synthesis instruction alone only
+# ever had a chance to catch this if the model happened to comply. This
+# normalizes the grounding text itself at the generation-context layer, so
+# the jargon is never even offered to the model. Deliberately NOT applied to
+# machine-readable fields (stable_key, fact_type, subject_key, qualifier_*)
+# which are identifiers, not prose, and must stay exact for provenance.
+_JARGON_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # "при X" almost always wants the Russian prepositional case - checked
+    # ahead of the bare-word fallback below so e.g. "при enrollment" becomes
+    # the grammatical "при подключении", not "при подключение".
+    (re.compile(r"\bпри enrollment\b", re.IGNORECASE), "при подключении"),
+    (re.compile(r"\benrollment\b", re.IGNORECASE), "подключение"),
+    (re.compile(r"\bredemption\b", re.IGNORECASE), "списание баллов"),
+    (re.compile(r"\bmembership\b", re.IGNORECASE), "членство"),
+)
 _COMPENSATION_FACT_TYPES = frozenset({
     "builder_bonus_rank_amount", "differential_builder_rule",
     "member_bonus", "compensation_component_count", "monthly_income_amount",
@@ -95,9 +134,13 @@ def build_knowledge_generation_context(bundle: KnowledgeBundle) -> KnowledgeGene
     official_facts = tuple(fact for fact in facts if fact.stable_key not in compliance_keys)
     source_facts = {"official_knowledge": {
         "items": tuple({
-            "stable_key": item.stable_key, "title": item.title,
+            "stable_key": item.stable_key,
+            "title": _localize_jargon(item.title),
             "category": item.category,
-            "content": _truncate_at_word_boundary(item.content, _MAX_ITEM_CONTENT_CHARS),
+            "content": _truncate_at_word_boundary(
+                _localize_jargon(item.content),
+                _ITEM_CONTENT_CHARS_OVERRIDES.get(item.stable_key, _MAX_ITEM_CONTENT_CHARS),
+            ),
             "source_ref": _truncate_at_word_boundary(item.source_ref, _MAX_SOURCE_REF_CHARS),
         } for item in items),
         "canonical_facts": tuple(_fact_data(fact) for fact in official_facts),
@@ -123,6 +166,17 @@ def build_knowledge_generation_context(bundle: KnowledgeBundle) -> KnowledgeGene
     return KnowledgeGenerationContext(source_facts, verified_claims, constraints)
 
 
+def _localize_jargon(text: str | None) -> str | None:
+    """Replace raw English lifecycle terms with their normal Russian
+    equivalent wherever one exists, so grounding text can never hand the
+    model jargon to leak into a Russian answer (see _JARGON_REPLACEMENTS)."""
+    if not text:
+        return text
+    for pattern, replacement in _JARGON_REPLACEMENTS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def _truncate_at_word_boundary(text: str, limit: int) -> str:
     """Slice ``text`` to ``limit`` chars without splitting a word/identifier
     in half (live prod bug: a plain [:limit] slice turned "VIP180" into
@@ -142,10 +196,11 @@ def _fact_data(fact: KnowledgeFact) -> dict[str, Any]:
         "stable_key": fact.stable_key, "fact_type": fact.fact_type,
         "subject_key": fact.subject_key,
         "qualifier_key": fact.qualifier_key, "qualifier_value": fact.qualifier_value,
-        "value_number": _decimal(fact.value_number), "value_text": fact.value_text,
+        "value_number": _decimal(fact.value_number),
+        "value_text": _localize_jargon(fact.value_text),
         "range_min": _decimal(fact.range_min), "range_max": _decimal(fact.range_max),
         "unit": fact.unit, "currency": fact.currency, "period": fact.period,
-        "condition": fact.condition_text,
+        "condition": _localize_jargon(fact.condition_text),
         "source_ref": _truncate_at_word_boundary(fact.source_ref, _MAX_SOURCE_REF_CHARS),
     }
     return {key: value for key, value in values.items() if value is not None}
@@ -155,6 +210,36 @@ def _verified_claim_facts(
     facts: tuple[KnowledgeFact, ...],
 ) -> tuple[KnowledgeFact, ...]:
     return _priority_facts(facts, limit=_MAX_VERIFIED_CLAIMS)
+
+
+def _strongest_per_value_fact_type(
+    facts: tuple[KnowledgeFact, ...],
+) -> tuple[KnowledgeFact, ...]:
+    """Live prod bug, next round: two VALUE_FACT_TYPES facts of the same
+    kind but different subjects (e.g. "1 additional traveler" on VIP vs "4
+    additional travelers" on Elite) could both be candidates, and the
+    weaker one (VIP's) happened to sort first and spend one of the tiny
+    fact-budget slots - leaving no room for a genuinely different benefit
+    (Guest Passes). For numeric value facts sharing a fact_type, only the
+    strongest (highest value_number) survives, at the position of its
+    group's first occurrence; every other fact type/subject is untouched."""
+    best_by_type: dict[str, KnowledgeFact] = {}
+    for fact in facts:
+        if fact.fact_type in _VALUE_FACT_TYPES and fact.value_number is not None:
+            current = best_by_type.get(fact.fact_type)
+            if current is None or fact.value_number > current.value_number:
+                best_by_type[fact.fact_type] = fact
+    result: list[KnowledgeFact] = []
+    seen_types: set[str] = set()
+    for fact in facts:
+        if fact.fact_type in _VALUE_FACT_TYPES and fact.value_number is not None:
+            if fact.fact_type in seen_types:
+                continue
+            seen_types.add(fact.fact_type)
+            result.append(best_by_type[fact.fact_type])
+        else:
+            result.append(fact)
+    return tuple(result)
 
 
 def _priority_facts(
@@ -185,10 +270,10 @@ def _priority_facts(
     # question and are deferred to the very end instead.
     ranked_facts = tuple(fact for fact in facts if fact.fact_type not in _LOW_PRIORITY_FACT_TYPES)
     deferred_facts = tuple(fact for fact in facts if fact.fact_type in _LOW_PRIORITY_FACT_TYPES)
-    own_item_facts = tuple(sorted(
+    own_item_facts = _strongest_per_value_fact_type(tuple(sorted(
         (fact for fact in ranked_facts if item_ids is not None and fact.item_id in item_ids),
         key=lambda fact: fact.fact_type not in _VALUE_FACT_TYPES,
-    )) if item_ids else ()
+    ))) if item_ids else ()
     prioritized = (
         *(fact for fact in ranked_facts if fact.fact_type in core_definition_fact_types),
         *own_item_facts,
@@ -211,7 +296,7 @@ def _priority_facts(
 
 def _fact_statement(fact: KnowledgeFact) -> str:
     if fact.value_text is not None:
-        value = fact.value_text
+        value = _localize_jargon(fact.value_text)
     elif fact.value_number is not None:
         value = f"{_decimal(fact.value_number)}{_unit_suffix(fact)}"
     else:
@@ -220,7 +305,9 @@ def _fact_statement(fact: KnowledgeFact) -> str:
         f"; {fact.qualifier_key}={fact.qualifier_value}"
         if fact.qualifier_key and fact.qualifier_value else ""
     )
-    condition = f"; условие: {fact.condition_text}" if fact.condition_text else ""
+    condition = (
+        f"; условие: {_localize_jargon(fact.condition_text)}" if fact.condition_text else ""
+    )
     return f"{fact.subject_key}: {value}{qualifier}{condition}"
 
 
