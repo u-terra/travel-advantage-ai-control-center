@@ -25,13 +25,15 @@ candidates.
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from app.domain.competitor_discovery import canonical_domain
 from app.domain.partners import WorkspaceContext
-from app.domain.prospects import ProspectCandidate
+from app.domain.prospects import ProspectCandidate, ProspectType
 from app.keyboards import (
     BTN_FIND_PARTNERS,
     PARTNER_DISCOVERY_MORE,
@@ -67,6 +69,112 @@ _TYPE_LABELS = {
     "other_travel_project": "Travel-проект",
 }
 _EVIDENCE_SOURCE_LABELS = {"page": "страница сайта", "snippet": "поисковая выдача"}
+_FIT_LABELS = {"STRONG": "высокое", "POSSIBLE": "возможное"}
+
+_TYPE_SENTENCE = {
+    "travel_agent": "Работает как турагентство/туроператор.",
+    "tour_organizer": "Организует туры и путешествия.",
+    "guide": "Работает гидом/экскурсоводом.",
+    "travel_creator": "Ведёт публичный travel-блог/канал о путешествиях.",
+    "travel_club": "Объединяет сообщество путешественников.",
+    "other_travel_project": "Публичный travel-проект.",
+}
+
+# ── Presentation-only cleanup (card name & explanation) ─────────────────────
+# Everything below only reshapes what the service already returned for
+# display - it never changes what is found, scored, ranked, deduped, or
+# filtered (that stays entirely inside app/services/partner_discovery.py).
+
+_NAME_SPLIT_RE = re.compile(r"\s*(?:\||—|–|:)\s*|\s-\s|\.\s+")
+_PLATFORM_NAME_TOKENS = frozenset({
+    "вконтакте", "vk", "instagram", "инстаграм", "facebook", "телеграм",
+    "telegram", "одноклассники",
+})
+# Generic category words - strip them out when picking the one segment of a
+# noisy page/VK title that is the actual brand, not a descriptor of what
+# the brand does (see the live cases this was tuned against: "Гильдия
+# гидов - Магазин Путешествий" must keep "Магазин Путешествий", "Duh
+# Travel. Авторские путешествия | ..." must keep "Duh Travel").
+_GENERIC_NAME_DESCRIPTORS = (
+    "туроператор", "турагент", "турагентство", "авторские", "авторский",
+    "гид", "гиды", "гидов", "экскурси", "блог", "реестр",
+    "клуб путешественников", "сообщество путешественников",
+)
+
+
+def _clean_name(raw_name: str, url: str) -> str:
+    raw_name = (raw_name or "").strip()
+    if not raw_name or raw_name.startswith("http://") or raw_name.startswith("https://"):
+        return canonical_domain(url)
+
+    parts = [p.strip() for p in _NAME_SPLIT_RE.split(raw_name) if p.strip()]
+    parts = [
+        p for p in parts
+        if len(p) > 1 and not p.isdigit() and p.lower() not in _PLATFORM_NAME_TOKENS
+    ]
+    if not parts:
+        return raw_name[:60]
+
+    def noise_score(part: str) -> int:
+        lowered = part.lower()
+        return sum(1 for word in _GENERIC_NAME_DESCRIPTORS if word in lowered)
+
+    return min(parts, key=lambda p: (noise_score(p), parts.index(p)))
+
+
+_PHONE_RE = re.compile(r"(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
+_URL_IN_TEXT_RE = re.compile(r"https?://\S+")
+
+# Menu/service/consent/form boilerplate that shows up in raw page extracts -
+# none of it says anything about what the subject publicly does, so none of
+# it belongs in a human-facing explanation.
+_NOISE_PHRASES = (
+    "вход в лк", "личный кабинет", "рассрочку", "рассрочка", "в рассрочку",
+    "гибкой оплаты", "кредит", "скидк", "бесплатно по россии", "звонить",
+    "писать", "контакты", "cookie", "куки", "согласие на обработку",
+    "политика конфиденциальности", "подарочный сертификат", "акции",
+    "отзывы", "вопросы", "календарь", "расписание", "раннее бронирование",
+    "оставить заявку", "записаться", "забронировать", "в корзину",
+    "каталог", "фильтр", "сортировка", "режим работы", "вход", "меню",
+)
+
+
+def _strip_noise(text: str) -> str:
+    text = _URL_IN_TEXT_RE.sub(" ", text)
+    text = _PHONE_RE.sub(" ", text)
+    text = _EMAIL_RE.sub(" ", text)
+    for phrase in _NOISE_PHRASES:
+        text = re.sub(re.escape(phrase), " ", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip(" .,;:-")
+
+
+def _first_clean_clause(cleaned: str, max_len: int = 160) -> str:
+    for sep in (". ", "! ", "? "):
+        idx = cleaned.find(sep)
+        if 15 <= idx <= max_len:
+            return cleaned[: idx + 1]
+    if not cleaned:
+        return ""
+    if len(cleaned) <= max_len:
+        return cleaned.rstrip(".") + "."
+    truncated = cleaned[:max_len].rsplit(" ", 1)[0]
+    return truncated.rstrip(",.;:") + "…"
+
+
+def _build_explanation(prospect_type_value: str, evidence: str) -> str:
+    """Max two sentences: a factual what-they-do statement derived from the
+    already-computed prospect type, plus (when available) one cleaned
+    detail clause from the public evidence itself. Never invents interest
+    in partnership/income/Travel Advantage - it only describes what the
+    public page/snippet already says."""
+    type_sentence = _TYPE_SENTENCE.get(
+        prospect_type_value, _TYPE_SENTENCE[ProspectType.OTHER.value],
+    )
+    clause = _first_clean_clause(_strip_noise(evidence))
+    if len(clause) < 10:
+        return type_sentence
+    return f"{type_sentence} {clause}"
 
 
 async def _is_club_partner(
@@ -92,17 +200,20 @@ def _render_card(candidates: list[dict], index: int) -> tuple[str, bool]:
     """Returns (text, has_more_in_batch)."""
     candidate = candidates[index]
     type_label = _TYPE_LABELS.get(candidate["prospect_type"], candidate["prospect_type"])
+    fit_label = _FIT_LABELS.get(candidate["fit"], candidate["fit"])
     evidence_label = _EVIDENCE_SOURCE_LABELS.get(
         candidate["evidence_source"], candidate["evidence_source"],
     )
+    name = _clean_name(candidate["name"], candidate["url"])
+    explanation = _build_explanation(candidate["prospect_type"], candidate["evidence"])
     text = (
         f"{index + 1}/{len(candidates)}\n\n"
-        f"{candidate['name']}\n"
+        f"{name}\n"
         f"Тип: {type_label}\n"
-        f"Fit: {candidate['fit']}\n\n"
-        f"Почему найден:\n{candidate['evidence']}\n\n"
+        f"Соответствие: {fit_label}\n\n"
+        f"Почему интересен:\n{explanation}\n\n"
         f"Источник:\n{candidate['url']}\n\n"
-        f"Основание: {evidence_label}"
+        f"Подтверждено: {evidence_label}"
     )
     has_more = index + 1 < len(candidates)
     return text, has_more

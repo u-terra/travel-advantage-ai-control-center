@@ -13,6 +13,9 @@ import pytest
 from app.domain.partners import WorkspaceContext
 from app.domain.prospects import EvidenceSource, ProspectCandidate, ProspectFit, ProspectType
 from app.handlers.partner_discovery import (
+    _build_explanation,
+    _clean_name,
+    _render_card,
     on_find_partners,
     on_partner_discovery_more,
     on_partner_discovery_next,
@@ -263,3 +266,129 @@ def test_find_more_runs_a_new_search():
     text, _ = callback.message.answers[0]
     assert "Fresh" in text
     assert state.data["partner_discovery_index"] == 0
+
+
+# ── Card presentation fix: name cleanup, "Соответствие:", explanation ──────
+
+
+def test_clean_name_picks_brand_when_tagline_comes_first():
+    assert _clean_name("Авентурамания - туроператор", "https://aventuramania.ru/") == "Авентурамания"
+
+
+def test_clean_name_picks_brand_when_tagline_comes_second():
+    assert _clean_name(
+        "Гильдия гидов - Магазин Путешествий",
+        "https://magput.ru/tours/gildiya-gidov-magput",
+    ) == "Магазин Путешествий"
+
+
+def test_clean_name_picks_brand_out_of_noisy_vk_title():
+    raw = (
+        "Duh Travel. Авторские путешествия | Мы в реестре ТУРОПЕРАТОРОВ 2989"
+        "ДУХ ПРИКЛЮЧЕНИЙ – это команда | 2026 | ВКонтакте"
+    )
+    assert _clean_name(raw, "https://vk.ru/duh_travel") == "Duh Travel"
+
+
+def test_clean_name_passes_through_already_clean_brand():
+    assert _clean_name("In Russia Today", "https://inrussiatoday.ru/") == "In Russia Today"
+
+
+def test_clean_name_falls_back_to_domain_when_name_is_a_url():
+    assert _clean_name("https://example.ru/page", "https://example.ru/page") == "example.ru"
+
+
+def test_card_first_line_is_name_not_url():
+    candidates = [{
+        "name": "Авторские туры - Магазин Путешествий",
+        "url": "https://magput.ru/tours/avtorskie-tury-magput",
+        "prospect_type": "travel_agent",
+        "query": "q", "evidence": "Авторские туры по России", "evidence_source": "snippet",
+        "fit": "STRONG",
+    }]
+    text, _ = _render_card(candidates, 0)
+    first_content_line = text.split("\n")[2]
+    assert first_content_line == "Магазин Путешествий"
+    assert "https://" not in first_content_line
+
+
+def test_fit_strong_rendered_as_vysokoe_internal_enum_unchanged():
+    candidates = [{
+        "name": "A", "url": "https://a.ru/", "prospect_type": "travel_agent",
+        "query": "q", "evidence": "ev", "evidence_source": "page", "fit": "STRONG",
+    }]
+    text, _ = _render_card(candidates, 0)
+    assert "Соответствие: высокое" in text
+    assert "Fit:" not in text
+    assert "STRONG" not in text
+    # The stored dict itself still carries the raw enum value, unchanged.
+    assert candidates[0]["fit"] == "STRONG"
+
+
+def test_fit_possible_rendered_as_vozmozhnoe():
+    candidates = [{
+        "name": "A", "url": "https://a.ru/", "prospect_type": "other_travel_project",
+        "query": "q", "evidence": "ev", "evidence_source": "snippet", "fit": "POSSIBLE",
+    }]
+    text, _ = _render_card(candidates, 0)
+    assert "Соответствие: возможное" in text
+
+
+def test_explanation_strips_phone_menu_and_rassrochka_noise():
+    noisy_evidence = (
+        "Календарь путешествий Зарубежные туры и круизы Корпоративные "
+        "путешествия Отзывы Контакты Платформа для турагентов МЕНЮ 4.9 "
+        "звонить писать +7 (495) 150-19-99 Возможности гибкой оплаты от "
+        "Сбербанка Комфортными платежами (кредит) В рассрочку до 4 месяцев"
+    )
+    explanation = _build_explanation("travel_agent", noisy_evidence)
+    assert "+7" not in explanation
+    assert "495" not in explanation
+    assert "рассрочк" not in explanation.lower()
+    assert "кредит" not in explanation.lower()
+    assert "отзывы" not in explanation.lower()
+    assert "контакты" not in explanation.lower()
+    assert "меню" not in explanation.lower()
+
+
+def test_explanation_strips_email():
+    explanation = _build_explanation(
+        "guide", "Пишите нам: info@example.ru для записи на экскурсии",
+    )
+    assert "@" not in explanation
+
+
+def test_explanation_from_snippet_evidence_is_used_directly():
+    explanation = _build_explanation(
+        "travel_club",
+        "Клуб путешественников с 20-летней историей, более 30 собственных гидов.",
+    )
+    assert "20-летней историей" in explanation
+
+
+def test_explanation_falls_back_to_type_sentence_when_evidence_is_unusable():
+    explanation = _build_explanation("travel_agent", "")
+    assert explanation == "Работает как турагентство/туроператор."
+
+
+def test_explanation_never_claims_partnership_or_income_interest():
+    candidates_evidence = [
+        ("travel_agent", "Лицензированный туристический оператор, авторские туры"),
+        ("guide", "Гиды и экскурсоводы, более 100 туров проведено"),
+        ("travel_creator", "Блог о путешествиях, 230+ туров"),
+    ]
+    forbidden = ("партнёрств", "партнерств", "доход", "выгодн", "travel advantage", "заработ")
+    for prospect_type, evidence in candidates_evidence:
+        explanation = _build_explanation(prospect_type, evidence)
+        lowered = explanation.lower()
+        for word in forbidden:
+            assert word not in lowered
+
+
+def test_explanation_at_most_two_sentences():
+    explanation = _build_explanation(
+        "tour_organizer",
+        "Организуем авторские туры по России и за рубежом для небольших групп.",
+    )
+    sentence_count = explanation.count(". ") + (1 if explanation.endswith(".") else 0)
+    assert sentence_count <= 2
