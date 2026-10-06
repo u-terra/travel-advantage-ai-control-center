@@ -1,0 +1,249 @@
+"""Partner Discovery v0: finds up to 5 PUBLIC travel-related subjects
+(agents, tour organizers, guides, content creators, travel clubs/projects)
+a club_partner workspace might want to look at - never a claim that any of
+them wants a partnership, extra income, or Travel Advantage (see
+app.domain.prospects.ProspectCandidate's own docstring).
+
+Reuses exactly three already-existing primitives, no new provider/API:
+- WebSearchProvider.search() (app.services.web_search.base) - the same
+  Yandex-backed search this codebase already runs in production for
+  knowledge-chat web search and per-source article discovery
+  (app.services.web_source_discovery);
+- fetch_public_source_sync() (app.planner.fetch) - the same SSRF-hardened
+  public-page fetch app.services.web_signal_collector and
+  app.services.competitor_discovery already use;
+- app.domain.competitor_discovery.canonical_domain() for dedup, the same
+  root-host normalization an existing discovery flow already relies on.
+
+v0 is entirely stateless: one call in, a bounded list of candidates out,
+nothing written anywhere. No DB, no migration, no persistence - see the
+task's own explicit v0 scope.
+
+Pipeline (bounded cost - see the module constants below):
+    fixed queries (<=5) --search--> raw results --dedupe--> candidates
+        --noise filter--> survivors --rank--> top N --page-verify-->
+        final top 5, each carrying its own query/url/evidence-source
+        provenance.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from urllib.parse import urlsplit
+
+from app.domain.competitor_discovery import canonical_domain
+from app.domain.prospects import EvidenceSource, ProspectCandidate, ProspectFit, ProspectType
+from app.planner.fetch import PublicSourceFetchError, fetch_public_source_sync
+from app.services.web_search.base import SearchResult, WebSearchProvider
+
+log = logging.getLogger(__name__)
+
+# ── Bounded cost knobs ────────────────────────────────────────────────────
+# Fixed, hand-picked query list (confirmed against a live production probe -
+# see the Partner Discovery v0 experiment write-up). Deliberately NOT
+# generated/expanded at runtime: one discovery run is always exactly this
+# many search calls, never a growing/paginated crawl.
+DISCOVERY_QUERIES: tuple[str, ...] = (
+    "турагент авторские туры",
+    "организатор путешествий группа",
+    "гид экскурсии путешествия",
+    "travel блог автор путешествий",
+    "клуб путешественников сообщество",
+)
+
+_RESULTS_PER_QUERY = 5
+# Page-verification (one fetch_public_source_sync call each) only ever runs
+# on the best-ranked survivors, bounded independently of how many raw
+# results/duplicates came back across all queries - this is what keeps one
+# discovery run's cost flat regardless of query/result volume.
+_MAX_PAGE_VERIFY_CANDIDATES = 10
+_MAX_RESULTS = 5
+_EVIDENCE_EXCERPT_CHARS = 400
+
+
+# ── Noise filter (narrow, reviewable denylist - same style as this
+# codebase's existing _IRRELEVANT_FINANCE_MARKERS/_AD_CONTACT_MARKERS) ─────
+#
+# Known large OTAs/marketplaces/aggregators/classifieds/platforms: a single
+# SEARCH RESULT from one of these is a listing of MANY subjects, not one
+# identifiable candidate - confirmed in the live probe (Tripster, youtravel.me,
+# Avito, Yandex Uslugi all returned multi-subject listing pages, not a single
+# project's own page). GuideGo (a guide MARKETPLACE, not a single guide) is
+# the same category. travel.yandex.ru is Yandex's own travel media/journal -
+# an editorial listicle about several bloggers, not any one of them's own page.
+_DENYLIST_DOMAINS: frozenset[str] = frozenset({
+    "tripster.ru", "youtravel.me", "avito.ru", "uslugi.yandex.ru",
+    "guidego.ru", "travel.yandex.ru",
+    # Large/well-known OTAs - never independent prospect candidates even if
+    # a query happens to surface them.
+    "booking.com", "ostrovok.ru", "tutu.ru", "onetwotrip.com",
+})
+
+# Phrase markers for categories that are not domain-identifiable.
+# Live-probe-confirmed cases (see the Partner Discovery v0 experiment):
+# - a Moscow municipal senior-citizens excursion programme ("Московское
+#   долголетие") surfaced under "клуб путешественников" - a government
+#   social programme, not an independent travel business/creator;
+# - a "travel club" ("Ближе к Солнцу") whose own text is an MLM-style
+#   referral/commission pitch (60% commission, one-time membership fee,
+#   passive dividends) - explicitly NOT a genuine travel subject to
+#   prospect, and the wrong kind of thing to approach (same genre as what
+#   this very feature could be mistaken for).
+_NOISE_MARKERS: tuple[str, ...] = (
+    "московского долголетия",
+    "реферальная система", "пассивный доход", "дивиденд",
+    "единоразовый взнос", "комиссии с каждого тура",
+    "вакансия", "резюме соискателя", "ищем сотрудника",
+)
+
+
+def _is_noise(result: SearchResult) -> bool:
+    domain = (result.domain or "").lower().removeprefix("www.")
+    if domain in _DENYLIST_DOMAINS:
+        return True
+    haystack = f"{result.title} {result.snippet}".lower()
+    return any(marker in haystack for marker in _NOISE_MARKERS)
+
+
+# ── Deterministic type/fit scoring (same style as lead_radar.py's
+# _content_quality_rank - keyword tiers, no LLM, no ai_score reuse) ────────
+_TYPE_MARKERS: tuple[tuple[ProspectType, tuple[str, ...]], ...] = (
+    (ProspectType.TRAVEL_AGENT, (
+        "турагент", "туроператор", "турфирма", "туристический оператор",
+        "рто ", "лицензия туристического оператора", "реестре туроператоров",
+    )),
+    (ProspectType.TOUR_ORGANIZER, (
+        "авторские туры", "авторский тур", "организатор путешествий",
+        "организуем путешествия", "организовали", "групповые туры",
+    )),
+    (ProspectType.GUIDE, (
+        "гид", "экскурсовод", "экскурсии",
+    )),
+    (ProspectType.TRAVEL_CREATOR, (
+        "travel-блог", "трэвел-блог", "тревел-блог", "блог о путешествиях",
+        "блог путешеств", "travel blog",
+    )),
+    (ProspectType.TRAVEL_CLUB, (
+        "клуб путешественников", "клуб путешествий", "сообщество путешественников",
+        "travellers club", "комьюнити путешественников",
+    )),
+)
+
+
+def _score(result: SearchResult) -> tuple[ProspectType, int]:
+    """Dominant type (first tier with the most hits, ties broken by the
+    tier order above) + total marker hits across every tier as the
+    deterministic rank score. Zero hits -> (OTHER, 0), handled by the
+    caller as POSSIBLE fit, not dropped - a travel-context query result
+    with no specific-type marker is still travel-related, just unclear."""
+    haystack = f"{result.title} {result.snippet}".lower()
+    best_type = ProspectType.OTHER
+    best_count = 0
+    total = 0
+    for prospect_type, markers in _TYPE_MARKERS:
+        count = sum(1 for marker in markers if marker in haystack)
+        total += count
+        if count > best_count:
+            best_count = count
+            best_type = prospect_type
+    return best_type, total
+
+
+def _dedupe_key(url: str) -> str:
+    """canonical_domain() alone collapses distinct subjects hosted on the
+    same platform (vk.ru hosts many unrelated groups - confirmed in the
+    live probe, 3 different vk.ru communities all independently relevant).
+    Domain + normalized path is the real identity of one subject's page."""
+    domain = canonical_domain(url)
+    path = urlsplit(url).path.rstrip("/")
+    return f"{domain}{path}"
+
+
+def _collapse_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+class PartnerDiscoveryService:
+    def __init__(self, provider: WebSearchProvider) -> None:
+        self._provider = provider
+
+    async def find_candidates(self) -> list[ProspectCandidate]:
+        """Runs the fixed query list, dedupes, filters noise, ranks, page-
+        verifies the best survivors, and returns at most ``_MAX_RESULTS``
+        candidates. Never writes anywhere; safe to call repeatedly."""
+        seen: dict[str, tuple[SearchResult, str]] = {}
+        for query in DISCOVERY_QUERIES:
+            try:
+                response = await asyncio.to_thread(
+                    self._provider.search, query, limit=_RESULTS_PER_QUERY,
+                )
+            except Exception:
+                log.warning(
+                    "partner_discovery: search failed for query '%s'", query, exc_info=True,
+                )
+                continue
+            if response is None:
+                continue
+            for result in response.results:
+                if not result.url:
+                    continue
+                key = _dedupe_key(result.url)
+                if key in seen:
+                    continue  # first query to find a subject keeps provenance
+                seen[key] = (result, query)
+
+        ranked: list[tuple[SearchResult, str, ProspectType, int]] = []
+        for result, query in seen.values():
+            if _is_noise(result):
+                continue
+            prospect_type, score = _score(result)
+            ranked.append((result, query, prospect_type, score))
+
+        # Highest score first; stable sort keeps search-rank order as the
+        # tie-breaker (earlier tuples were inserted in query/rank order).
+        ranked.sort(key=lambda item: item[3], reverse=True)
+
+        candidates: list[ProspectCandidate] = []
+        for result, query, prospect_type, score in ranked[:_MAX_PAGE_VERIFY_CANDIDATES]:
+            evidence, evidence_source = await self._verify(result)
+            fit = ProspectFit.STRONG if score > 0 else ProspectFit.POSSIBLE
+            candidates.append(ProspectCandidate(
+                name=result.title or result.url,
+                url=result.url,
+                prospect_type=prospect_type,
+                query=query,
+                evidence=evidence,
+                evidence_source=evidence_source,
+                fit=fit,
+                rank_score=score,
+            ))
+
+        return candidates[:_MAX_RESULTS]
+
+    async def _verify(self, result: SearchResult) -> tuple[str, EvidenceSource]:
+        """Best-effort page read. A fetch failure (bot/login wall, oversized
+        page, network error - all already handled inside
+        fetch_public_source_sync as PublicSourceFetchError) falls back to
+        the search snippet as evidence, explicitly tagged SNIPPET - never
+        silently treated as page-verified."""
+        try:
+            page = await asyncio.to_thread(fetch_public_source_sync, result.url)
+        except PublicSourceFetchError as exc:
+            log.info(
+                "partner_discovery: page verification failed for '%s': %s",
+                result.url, exc,
+            )
+            return _collapse_whitespace(result.snippet)[:_EVIDENCE_EXCERPT_CHARS], EvidenceSource.SNIPPET
+        except Exception:
+            log.warning(
+                "partner_discovery: unexpected error verifying '%s'",
+                result.url, exc_info=True,
+            )
+            return _collapse_whitespace(result.snippet)[:_EVIDENCE_EXCERPT_CHARS], EvidenceSource.SNIPPET
+
+        excerpt = _collapse_whitespace(page.text)[:_EVIDENCE_EXCERPT_CHARS]
+        if not excerpt:
+            return _collapse_whitespace(result.snippet)[:_EVIDENCE_EXCERPT_CHARS], EvidenceSource.SNIPPET
+        return excerpt, EvidenceSource.PAGE
