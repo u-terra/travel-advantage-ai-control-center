@@ -122,18 +122,60 @@ def _service(by_query, verify_ok=False):
 
 
 @pytest.mark.asyncio
-async def test_dedupes_same_domain_different_subject_pages_kept_separate():
-    """magput.ru's two distinct subject pages must NOT collapse into one -
-    canonical_domain() alone would merge them; the service must not."""
+async def test_two_pages_of_same_business_collapse_to_one_prospect():
+    """Regression for the live dry-run defect: magput.ru's two distinct
+    pages (авторские туры / гильдия гидов) are the SAME business and must
+    occupy exactly one TOP-5 slot, not two."""
     by_query = {
         "турагент авторские туры": [STRONG_MAGPUT_1],
         "гид экскурсии путешествия": [STRONG_MAGPUT_2],
     }
     service, _ = _service(by_query)
     candidates = await service.find_candidates()
+    magput_candidates = [c for c in candidates if "magput.ru" in c.url]
+    assert len(magput_candidates) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_business_dedupe_keeps_higher_scoring_page():
+    """Of the two colliding magput.ru pages, STRONG_MAGPUT_1 ("авторские
+    туры") scores higher (turагент + авторские-туры markers) than
+    STRONG_MAGPUT_2 ("гид"-only markers) - the tie-break must keep it."""
+    by_query = {
+        "турагент авторские туры": [STRONG_MAGPUT_1],
+        "гид экскурсии путешествия": [STRONG_MAGPUT_2],
+    }
+    service, _ = _service(by_query)
+    candidates = await service.find_candidates()
+    magput = next(c for c in candidates if "magput.ru" in c.url)
+    assert magput.url == STRONG_MAGPUT_1.url
+
+
+@pytest.mark.asyncio
+async def test_vk_distinct_projects_kept_separate():
+    """vk.ru is a multi-tenant platform - two different community paths are
+    two different prospects and must both survive dedup."""
+    project_a = _result(
+        "Project A - авторские туры",
+        "https://vk.ru/project_a",
+        "Авторские туры, организатор путешествий",
+        domain="vk.ru",
+    )
+    project_b = _result(
+        "Project B - авторские туры",
+        "https://vk.ru/project_b",
+        "Авторские туры, организатор путешествий",
+        domain="vk.ru",
+    )
+    by_query = {
+        "турагент авторские туры": [project_a],
+        "организатор путешествий группа": [project_b],
+    }
+    service, _ = _service(by_query)
+    candidates = await service.find_candidates()
     urls = {c.url for c in candidates}
-    assert STRONG_MAGPUT_1.url in urls
-    assert STRONG_MAGPUT_2.url in urls
+    assert project_a.url in urls
+    assert project_b.url in urls
 
 
 @pytest.mark.asyncio

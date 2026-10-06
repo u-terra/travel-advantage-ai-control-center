@@ -151,14 +151,55 @@ def _score(result: SearchResult) -> tuple[ProspectType, int]:
     return best_type, total
 
 
-def _dedupe_key(url: str) -> str:
-    """canonical_domain() alone collapses distinct subjects hosted on the
-    same platform (vk.ru hosts many unrelated groups - confirmed in the
-    live probe, 3 different vk.ru communities all independently relevant).
-    Domain + normalized path is the real identity of one subject's page."""
+def _raw_dedupe_key(url: str) -> str:
+    """Collapses only EXACT duplicate URLs seen across different queries
+    (e.g. the same page surfacing for two different search terms). Always
+    domain+path - this is not where the one-prospect-per-business rule
+    lives, see ``_identity_key`` below for that."""
     domain = canonical_domain(url)
     path = urlsplit(url).path.rstrip("/")
     return f"{domain}{path}"
+
+
+# Multi-tenant/social platforms: one domain legitimately hosts many
+# unrelated subjects (vk.ru/vk.com host independent communities/pages, t.me
+# independent channels - confirmed in the live probe, 3 different vk.ru
+# communities all independently relevant). For these, identity is
+# domain+path. Every other site is a business's own domain: two pages under
+# it (e.g. magput.ru's "авторские туры" page and its "гильдия гидов" page -
+# the exact live-probe duplicate this fix addresses) are the SAME prospect.
+_MULTI_TENANT_DOMAINS: frozenset[str] = frozenset({"vk.ru", "vk.com", "t.me"})
+
+
+def _identity_key(url: str) -> str:
+    """The one-prospect-per-business identity used to dedupe the final
+    candidate list. Deliberately just these two cases - no generic
+    multi-tenant-detection framework, per v0's narrow-fix scope."""
+    domain = canonical_domain(url)
+    if domain in _MULTI_TENANT_DOMAINS:
+        path = urlsplit(url).path.rstrip("/")
+        return f"{domain}{path}"
+    return domain
+
+
+def _identity_tie_break(item: tuple[SearchResult, str, ProspectType, int, str, EvidenceSource]) -> tuple:
+    """Higher is better. Order: fit (score>0) > deterministic score > page
+    evidence over snippet > better (lower) original search rank - exactly
+    the 4-step rule for picking the one candidate to keep per business."""
+    result, _query, _prospect_type, score, _evidence, evidence_source = item
+    return (score > 0, score, evidence_source is EvidenceSource.PAGE, -result.rank)
+
+
+def _dedupe_by_identity(
+    items: list[tuple[SearchResult, str, ProspectType, int, str, EvidenceSource]],
+) -> list[tuple[SearchResult, str, ProspectType, int, str, EvidenceSource]]:
+    best_by_key: dict[str, tuple] = {}
+    for item in items:
+        key = _identity_key(item[0].url)
+        current_best = best_by_key.get(key)
+        if current_best is None or _identity_tie_break(item) > _identity_tie_break(current_best):
+            best_by_key[key] = item
+    return list(best_by_key.values())
 
 
 def _collapse_whitespace(text: str) -> str:
@@ -189,7 +230,7 @@ class PartnerDiscoveryService:
             for result in response.results:
                 if not result.url:
                     continue
-                key = _dedupe_key(result.url)
+                key = _raw_dedupe_key(result.url)
                 if key in seen:
                     continue  # first query to find a subject keeps provenance
                 seen[key] = (result, query)
@@ -205,20 +246,31 @@ class PartnerDiscoveryService:
         # tie-breaker (earlier tuples were inserted in query/rank order).
         ranked.sort(key=lambda item: item[3], reverse=True)
 
-        candidates: list[ProspectCandidate] = []
+        verified: list[tuple[SearchResult, str, ProspectType, int, str, EvidenceSource]] = []
         for result, query, prospect_type, score in ranked[:_MAX_PAGE_VERIFY_CANDIDATES]:
             evidence, evidence_source = await self._verify(result)
-            fit = ProspectFit.STRONG if score > 0 else ProspectFit.POSSIBLE
-            candidates.append(ProspectCandidate(
+            verified.append((result, query, prospect_type, score, evidence, evidence_source))
+
+        # One-prospect-per-business: collapse pages that belong to the same
+        # business (see _identity_key) down to their single best candidate
+        # before capping the final list - done only now, since the tie-break
+        # rule needs each candidate's score AND its verification outcome.
+        deduped = _dedupe_by_identity(verified)
+        deduped.sort(key=lambda item: item[3], reverse=True)
+
+        candidates = [
+            ProspectCandidate(
                 name=result.title or result.url,
                 url=result.url,
                 prospect_type=prospect_type,
                 query=query,
                 evidence=evidence,
                 evidence_source=evidence_source,
-                fit=fit,
+                fit=ProspectFit.STRONG if score > 0 else ProspectFit.POSSIBLE,
                 rank_score=score,
-            ))
+            )
+            for result, query, prospect_type, score, evidence, evidence_source in deduped
+        ]
 
         return candidates[:_MAX_RESULTS]
 
