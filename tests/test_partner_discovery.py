@@ -103,6 +103,12 @@ NOISE_MD_TRAVEL_CLUB = _result(
     "Экскурсии для участников программы Московского долголетия",
     domain="vk.ru",
 )
+NOISE_SLETAT = _result(
+    "Слетать.ру - экскурсии и туры от всех туроператоров",
+    "https://sletat.ru/trips/",
+    "Экскурсионные и авторские туры по России и за рубежом от всех туроператоров",
+    domain="sletat.ru",
+)
 NOISE_MLM_CLUB = _result(
     "Клуб Путешественников Ближе к Солнцу",
     "https://k-solncy.ru/klub",
@@ -202,6 +208,18 @@ async def test_noise_domains_filtered_out():
     for noisy in (NOISE_YOUTRAVEL, NOISE_AVITO, NOISE_TRIPSTER,
                   NOISE_USLUGI_YANDEX, NOISE_YANDEX_JOURNAL):
         assert noisy.url not in urls
+    assert STRONG_AVENTURAMANIA.url in urls
+
+
+@pytest.mark.asyncio
+async def test_sletat_ota_aggregator_filtered_out():
+    """Regression for the live dry-run defect: sletat.ru is a multi-operator
+    OTA aggregator, not a single business, and must not reach candidates."""
+    by_query = {"турагент авторские туры": [NOISE_SLETAT, STRONG_AVENTURAMANIA]}
+    service, _ = _service(by_query)
+    candidates = await service.find_candidates()
+    urls = {c.url for c in candidates}
+    assert NOISE_SLETAT.url not in urls
     assert STRONG_AVENTURAMANIA.url in urls
 
 

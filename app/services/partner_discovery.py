@@ -77,8 +77,9 @@ _DENYLIST_DOMAINS: frozenset[str] = frozenset({
     "tripster.ru", "youtravel.me", "avito.ru", "uslugi.yandex.ru",
     "guidego.ru", "travel.yandex.ru",
     # Large/well-known OTAs - never independent prospect candidates even if
-    # a query happens to surface them.
-    "booking.com", "ostrovok.ru", "tutu.ru", "onetwotrip.com",
+    # a query happens to surface them. sletat.ru confirmed via live dry-run
+    # (2026-10-06): a multi-operator tour aggregator, not a single business.
+    "booking.com", "ostrovok.ru", "tutu.ru", "onetwotrip.com", "sletat.ru",
 })
 
 # Phrase markers for categories that are not domain-identifiable.
