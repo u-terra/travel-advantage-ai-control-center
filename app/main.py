@@ -79,6 +79,7 @@ def _build_dispatcher(
     web_signal_repository: WebSignalRepository | None = None,
     plan_quota_service: PlanQuotaService | None = None,
     partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+    contact_claim_repository: ContactClaimRepository | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -364,6 +365,7 @@ async def _async_main() -> None:
         web_signal_repository=web_signal_repository,
         plan_quota_service=plan_quota_service,
         partner_enrichment_llm_provider=partner_enrichment_llm_provider,
+        contact_claim_repository=contact_claim_repository,
     )
 
     await dp.start_polling(bot)
