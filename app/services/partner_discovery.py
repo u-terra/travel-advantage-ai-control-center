@@ -29,6 +29,7 @@ Pipeline (bounded cost - see the module constants below):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 from urllib.parse import urlsplit
@@ -41,17 +42,68 @@ from app.services.web_search.base import SearchResult, WebSearchProvider
 log = logging.getLogger(__name__)
 
 # ── Bounded cost knobs ────────────────────────────────────────────────────
-# Fixed, hand-picked query list (confirmed against a live production probe -
-# see the Partner Discovery v0 experiment write-up). Deliberately NOT
-# generated/expanded at runtime: one discovery run is always exactly this
-# many search calls, never a growing/paginated crawl.
-DISCOVERY_QUERIES: tuple[str, ...] = (
-    "турагент авторские туры",
-    "организатор путешествий группа",
-    "гид экскурсии путешествия",
-    "travel блог автор путешествий",
-    "клуб путешественников сообщество",
+# Tenant-aware query rotation (2026-10-07): one hand-picked variant pool per
+# category (same 5 categories as _TYPE_MARKERS below, same order), so the
+# scoring/dedupe/noise-filter pipeline downstream never changes - only
+# WHICH synonymous phrasing is sent per category differs per workspace.
+# Index 0 of every tuple is the ORIGINAL, already-live-probe-confirmed
+# query (see the Partner Discovery v0 experiment write-up) - this is what
+# DISCOVERY_QUERIES (below) and every caller that passes no rotation_seed
+# still gets, unchanged.
+_DISCOVERY_QUERY_VARIANTS: tuple[tuple[str, ...], ...] = (
+    (  # travel_agent
+        "турагент авторские туры",
+        "туроператор индивидуальные туры",
+        "турагентство авторские маршруты",
+    ),
+    (  # tour_organizer
+        "организатор путешествий группа",
+        "организатор групповых туров",
+        "команда организует путешествия",
+    ),
+    (  # guide
+        "гид экскурсии путешествия",
+        "экскурсовод авторские экскурсии",
+        "частный гид путешествия",
+    ),
+    (  # travel_creator
+        "travel блог автор путешествий",
+        "трэвел-блогер путешествия",
+        "блог путешественника авторский",
+    ),
+    (  # travel_club
+        "клуб путешественников сообщество",
+        "сообщество путешественников блог",
+        "travel клуб единомышленников",
+    ),
 )
+
+# Fixed, hand-picked query list - the default/no-rotation-seed case. Exactly
+# index 0 of every category above, unchanged from before this feature
+# existed. Deliberately NOT generated/expanded at runtime beyond the one
+# variant pick below: one discovery run is always exactly 5 search calls,
+# never a growing/paginated crawl.
+DISCOVERY_QUERIES: tuple[str, ...] = tuple(variants[0] for variants in _DISCOVERY_QUERY_VARIANTS)
+
+
+def _select_discovery_queries(rotation_seed: int | None) -> tuple[str, ...]:
+    """rotation_seed=None (no workspace context available) -> the original
+    fixed DISCOVERY_QUERIES, byte-for-byte - existing callers/tests that
+    never pass a seed see zero behavior change. Otherwise: one variant per
+    category, chosen deterministically from (rotation_seed, category index)
+    - the SAME workspace always gets the SAME 5 queries (stable, not
+    re-rolled per click), while different workspace_ids are very likely to
+    land on different combinations (there are 3^5 = 243 possible
+    combinations). Never more than one query per category, so exactly 5
+    queries total, same as before - no increase in Yandex calls per run."""
+    if rotation_seed is None:
+        return DISCOVERY_QUERIES
+    selected: list[str] = []
+    for category_index, variants in enumerate(_DISCOVERY_QUERY_VARIANTS):
+        digest = hashlib.sha256(f"{rotation_seed}:{category_index}".encode("utf-8")).hexdigest()
+        variant_index = int(digest, 16) % len(variants)
+        selected.append(variants[variant_index])
+    return tuple(selected)
 
 _RESULTS_PER_QUERY = 5
 # Page-verification (one fetch_public_source_sync call each) only ever runs
@@ -213,12 +265,22 @@ class PartnerDiscoveryService:
     def __init__(self, provider: WebSearchProvider) -> None:
         self._provider = provider
 
-    async def find_candidates(self) -> list[ProspectCandidate]:
-        """Runs the fixed query list, dedupes, filters noise, ranks, page-
-        verifies the best survivors, and returns at most ``_MAX_RESULTS``
-        candidates. Never writes anywhere; safe to call repeatedly."""
+    async def find_candidates(
+        self, *, rotation_seed: int | None = None,
+    ) -> list[ProspectCandidate]:
+        """Runs the fixed-size (always 5) query list, dedupes, filters
+        noise, ranks, page-verifies the best survivors, and returns at most
+        ``_MAX_RESULTS`` candidates. Never writes anywhere; safe to call
+        repeatedly.
+
+        ``rotation_seed`` (2026-10-07, typically a workspace_id) selects
+        which synonymous query variant is used per category - see
+        _select_discovery_queries. None (the default) reproduces the
+        original fixed DISCOVERY_QUERIES exactly - this parameter changes
+        NOTHING about scoring/dedupe/noise-filtering/ranking, only which
+        search strings are sent."""
         seen: dict[str, tuple[SearchResult, str]] = {}
-        for query in DISCOVERY_QUERIES:
+        for query in _select_discovery_queries(rotation_seed):
             try:
                 response = await asyncio.to_thread(
                     self._provider.search, query, limit=_RESULTS_PER_QUERY,

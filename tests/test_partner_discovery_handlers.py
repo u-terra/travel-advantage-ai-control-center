@@ -171,6 +171,24 @@ def test_on_find_partners_returns_card_for_club_partner():
     assert len(state.data["partner_discovery_candidates"]) == 2
 
 
+def test_on_find_partners_passes_workspace_id_as_rotation_seed():
+    """2026-10-07: tenant-aware query rotation - on_find_partners must pass
+    THIS workspace's own id through to find_candidates(rotation_seed=...),
+    never a fixed/shared value."""
+    message = Message()
+    state = State()
+    repo = partner_repository(business_type="club_partner")
+    ws_context = context(workspace_id=777)
+
+    mock = AsyncMock(return_value=[])
+    with patch(
+        "app.handlers.partner_discovery.PartnerDiscoveryService.find_candidates", mock,
+    ):
+        run(on_find_partners(message, state, ws_context, repo, web_search_service(object())))
+
+    mock.assert_awaited_once_with(rotation_seed=777)
+
+
 # ── "Следующий" walks the batch, never calls search again ─────────────────
 
 

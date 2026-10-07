@@ -349,3 +349,54 @@ async def test_provenance_fields_present_on_every_candidate():
     assert candidate.query == "турагент авторские туры"
     assert candidate.url == STRONG_AVENTURAMANIA.url
     assert candidate.evidence_source in (EvidenceSource.PAGE, EvidenceSource.SNIPPET)
+
+
+# ── Tenant-aware query rotation (2026-10-07) ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_no_rotation_seed_uses_exact_original_fixed_queries():
+    """Backward compatibility: a caller that never passes rotation_seed
+    (e.g. an older/unrelated caller, or workspace_context is None) must see
+    byte-for-byte the same 5 queries as before this feature existed."""
+    from app.services.partner_discovery import DISCOVERY_QUERIES
+    service, provider = _service({})
+    await service.find_candidates()
+    assert provider.calls == list(DISCOVERY_QUERIES)
+
+
+@pytest.mark.asyncio
+async def test_different_workspaces_get_different_query_subsets():
+    service_a, provider_a = _service({})
+    service_b, provider_b = _service({})
+    await service_a.find_candidates(rotation_seed=101)
+    await service_b.find_candidates(rotation_seed=202)
+    assert provider_a.calls != provider_b.calls
+
+
+@pytest.mark.asyncio
+async def test_same_workspace_gets_a_stable_subset_across_calls():
+    service_1, provider_1 = _service({})
+    service_2, provider_2 = _service({})
+    await service_1.find_candidates(rotation_seed=42)
+    await service_2.find_candidates(rotation_seed=42)
+    assert provider_1.calls == provider_2.calls
+
+
+@pytest.mark.asyncio
+async def test_rotation_never_exceeds_five_discovery_queries():
+    for seed in (1, 2, 3, 42, 101, 999999):
+        service, provider = _service({})
+        await service.find_candidates(rotation_seed=seed)
+        assert len(provider.calls) <= 5
+        assert len(provider.calls) == len(set(provider.calls))  # one per category, no dupes
+
+
+def test_query_variant_pool_has_exactly_one_variant_per_original_category():
+    """Rotation must never add/remove a category - same 5-category shape
+    _TYPE_MARKERS/_score() already rely on, just a different synonymous
+    phrasing per category."""
+    from app.services.partner_discovery import DISCOVERY_QUERIES, _DISCOVERY_QUERY_VARIANTS
+    assert len(_DISCOVERY_QUERY_VARIANTS) == 5
+    assert len(DISCOVERY_QUERIES) == 5
+    for variants in _DISCOVERY_QUERY_VARIANTS:
+        assert len(variants) >= 1

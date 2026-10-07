@@ -41,13 +41,21 @@ Travel-Advantage-specific wording is only ever added when the workspace is
 BusinessProfile.ta_affiliated (see _is_ta_affiliated) - club_partner alone
 never implies it, same established separation as the rest of this module.
 
-Still not built: auto-send, persistence of discovered candidates/drafts to
-a database.
+Cross-tenant claim guard (2026-10-07): starting outreach to a PERSON
+(on_partner_contact_draft/on_draft_command_text/on_invitation_link_command_text)
+claims that contact for this workspace via ContactClaimRepository for
+CLAIM_COOLDOWN_DAYS - see _check_and_claim_contact. Partner Discovery
+(prospect cards) and Contact Discovery alone (finding a PERSON without
+starting outreach) never claim anything. A different workspace hitting an
+active claim gets a neutral message (_CONTACT_CLAIMED_BY_OTHER) - never the
+claiming workspace's identity. Still not built: auto-send, persistence of
+discovered candidates/drafts themselves (only the claim fact is persisted).
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -73,6 +81,7 @@ from app.keyboards import (
     partner_discovery_card_keyboard,
     partner_discovery_retry_keyboard,
 )
+from app.repositories.contact_claim_repository import ContactClaimRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.services.contact_discovery import find_contact
 from app.services.partner_discovery import PartnerDiscoveryService
@@ -94,6 +103,11 @@ _NO_RESULTS = (
 _BATCH_EXHAUSTED = "Это все найденные кандидаты в этой подборке."
 _CONTACT_CHECK_FAILED = (
     "Не удалось проверить публичные контакты сейчас. Попробуйте немного позже."
+)
+# Cross-tenant claim guard (2026-10-07) - deliberately generic. Never names
+# the other workspace/tenant/user in any way - see _check_and_claim_contact.
+_CONTACT_CLAIMED_BY_OTHER = (
+    "Этот контакт сейчас уже находится в работе. Попробую подобрать другого человека."
 )
 
 _CONTACT_CONFIDENCE_LABELS = {"HIGH": "высокое", "MEDIUM": "среднее"}
@@ -565,15 +579,20 @@ def _render_contact_card(contact: dict) -> str:
     )
 
 
-async def _run_discovery(web_search_service: WebSearchService | None) -> list[dict] | None:
+async def _run_discovery(
+    web_search_service: WebSearchService | None, *, rotation_seed: int | None = None,
+) -> list[dict] | None:
     """Returns a list of candidate dicts, an empty list on zero results, or
     None on a search failure - the three cases the caller must render
-    differently."""
+    differently. rotation_seed (2026-10-07, the calling workspace_id) is
+    passed straight through to PartnerDiscoveryService.find_candidates() -
+    see that function's own docstring; None reproduces the exact original
+    fixed query set."""
     if web_search_service is None or web_search_service.provider is None:
         return None
     service = PartnerDiscoveryService(web_search_service.provider)
     try:
-        candidates = await service.find_candidates()
+        candidates = await service.find_candidates(rotation_seed=rotation_seed)
     except Exception:
         log.warning("partner_discovery: find_candidates failed", exc_info=True)
         return None
@@ -604,7 +623,9 @@ async def on_find_partners(
         )
         return
 
-    candidates = await _run_discovery(web_search_service)
+    candidates = await _run_discovery(
+        web_search_service, rotation_seed=workspace_context.workspace_id,
+    )
     if candidates is None:
         await message.answer(_SEARCH_FAILED)
         return
@@ -657,7 +678,8 @@ async def on_partner_discovery_more(
     partner_repository: PartnerRepository | None = None,
 ) -> None:
     await callback.answer()
-    candidates = await _run_discovery(web_search_service)
+    rotation_seed = workspace_context.workspace_id if workspace_context is not None else None
+    candidates = await _run_discovery(web_search_service, rotation_seed=rotation_seed)
 
     if candidates is None:
         if callback.message is not None:
@@ -930,14 +952,56 @@ async def _generate_outreach_draft(
     return draft
 
 
+def _contact_identity_key(contact: dict) -> str:
+    """Deterministic cross-tenant claim identity (2026-10-07) - combines
+    evidence_url (the specific public page/result that named this person;
+    the most discriminating signal Contact Discovery produces) with a
+    normalized display_name, rather than display_name alone, which could
+    collide across genuinely different people sharing a common name.
+    public_url is used as a fallback only if evidence_url is somehow
+    missing (should not happen for a PERSON contact in practice)."""
+    url = (contact.get("evidence_url") or contact.get("public_url") or "").strip().lower()
+    name = (contact.get("display_name") or "").strip().lower()
+    raw = f"{url}|{name}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def _check_and_claim_contact(
+    contact: dict,
+    workspace_context: WorkspaceContext | None,
+    contact_claim_repository: ContactClaimRepository | None,
+) -> bool:
+    """True = this workspace may proceed with outreach right now (either it
+    already held the claim, or none existed and one was just created for
+    CLAIM_COOLDOWN_DAYS - see app.repositories.contact_claim_repository).
+    False = a DIFFERENT workspace currently holds an active claim - the
+    caller must show _CONTACT_CLAIMED_BY_OTHER and MUST NOT reveal which
+    workspace holds it. No repository/workspace available -> fail-open
+    (True), same posture as every other optional-dependency check in this
+    module (e.g. _is_ta_affiliated)."""
+    if contact_claim_repository is None or workspace_context is None:
+        return True
+    identity_key = _contact_identity_key(contact)
+    result = await contact_claim_repository.claim(identity_key, workspace_context.workspace_id)
+    return result.allowed
+
+
 async def _draft_for_current_contact(
     state: FSMContext,
     partner_repository: PartnerRepository | None,
     workspace_context: WorkspaceContext | None,
     partner_enrichment_llm_provider: OpenAIChatProvider | None,
-) -> str | None:
-    """Returns the generated draft, or None when there is no PERSON contact
-    currently in FSM state (caller decides how to respond to that case).
+    contact_claim_repository: ContactClaimRepository | None = None,
+) -> tuple[dict | None, str | None, bool]:
+    """Returns (contact, draft_text, claimed_by_other).
+    - contact is None: no PERSON contact currently in FSM state.
+    - claimed_by_other True: a DIFFERENT workspace holds an active claim on
+      this contact (2026-10-07) - draft_text is then also None, and the
+      caller must show _CONTACT_CLAIMED_BY_OTHER, never run generation.
+    - Otherwise draft_text is the generated draft - and THIS call is what
+      claims the contact for this workspace (starting outreach), per the
+      task's own policy: Partner Discovery and Contact Discovery alone
+      never claim anything, only actually drafting a first message does.
 
     One profile fetch for both ta_affiliated and the sender's own
     business_name (2026-10-07) - same BusinessProfile, same authoritative,
@@ -947,7 +1011,10 @@ async def _draft_for_current_contact(
     data = await state.get_data()
     contact: dict | None = data.get(_STATE_CONTACT)
     if not contact or contact.get("contact_type") != "person":
-        return None
+        return None, None, False
+
+    if not await _check_and_claim_contact(contact, workspace_context, contact_claim_repository):
+        return contact, None, True
 
     ta_affiliated = False
     sender_business_name: str | None = None
@@ -957,10 +1024,11 @@ async def _draft_for_current_contact(
             ta_affiliated = bool(getattr(profile, "ta_affiliated", False))
             sender_business_name = getattr(profile, "business_name", None) or None
 
-    return await _generate_outreach_draft(
+    draft = await _generate_outreach_draft(
         contact, partner_enrichment_llm_provider,
         ta_affiliated=ta_affiliated, sender_business_name=sender_business_name,
     )
+    return contact, draft, False
 
 
 @router.callback_query(F.data == PARTNER_CONTACT_DRAFT)
@@ -970,18 +1038,23 @@ async def on_partner_contact_draft(
     partner_repository: PartnerRepository | None = None,
     workspace_context: WorkspaceContext | None = None,
     partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+    contact_claim_repository: ContactClaimRepository | None = None,
 ) -> None:
     """"✉️ Подготовить первое сообщение" button on a PERSON contact card.
     Draft only - never sent automatically, always requires the human to
     review/edit/send it themselves."""
     await callback.answer()
-    draft = await _draft_for_current_contact(
+    contact, draft, claimed_by_other = await _draft_for_current_contact(
         state, partner_repository, workspace_context, partner_enrichment_llm_provider,
+        contact_claim_repository,
     )
     if callback.message is None:
         return
-    if draft is None:
+    if contact is None:
         await callback.message.answer(_DRAFT_UNAVAILABLE)
+        return
+    if claimed_by_other:
+        await callback.message.answer(_CONTACT_CLAIMED_BY_OTHER)
         return
     await callback.message.answer(_DRAFT_HEADER + draft)
 
@@ -1011,17 +1084,22 @@ async def on_draft_command_text(
     partner_repository: PartnerRepository | None = None,
     workspace_context: WorkspaceContext | None = None,
     partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+    contact_claim_repository: ContactClaimRepository | None = None,
 ) -> None:
     """Natural-language equivalent of on_partner_contact_draft - only ever
     invoked when _looks_like_draft_command already confirmed a PERSON
-    contact is active, so `draft` here is never None in practice (the
+    contact is active, so `contact` here is never None in practice (the
     None-guard is defense in depth only, e.g. a race with on_partner_
     contact_back clearing state between the filter check and this call)."""
-    draft = await _draft_for_current_contact(
+    contact, draft, claimed_by_other = await _draft_for_current_contact(
         state, partner_repository, workspace_context, partner_enrichment_llm_provider,
+        contact_claim_repository,
     )
-    if draft is None:
+    if contact is None:
         await message.answer(_DRAFT_UNAVAILABLE)
+        return
+    if claimed_by_other:
+        await message.answer(_CONTACT_CLAIMED_BY_OTHER)
         return
     await message.answer(_DRAFT_HEADER + draft)
 
@@ -1080,16 +1158,25 @@ async def _invitation_link_for_current_contact(
     state: FSMContext,
     partner_repository: PartnerRepository | None,
     workspace_context: WorkspaceContext | None,
-) -> tuple[dict | None, str | None]:
-    """Returns (contact, invitation_text). contact is None when there is no
-    PERSON contact in FSM state. invitation_text is None when a contact
-    exists but THIS workspace has no ta_enrollment_url set - the caller
-    must then show _INVITATION_LINK_MISSING, never substitute another
-    workspace's link or a global default."""
+    contact_claim_repository: ContactClaimRepository | None = None,
+) -> tuple[dict | None, str | None, bool]:
+    """Returns (contact, invitation_text, claimed_by_other).
+    - contact is None: no PERSON contact in FSM state.
+    - claimed_by_other True: a DIFFERENT workspace holds an active claim
+      (2026-10-07) - invitation_text is then also None; caller must show
+      _CONTACT_CLAIMED_BY_OTHER, never _INVITATION_LINK_MISSING in that
+      case (the claim check runs first - see _check_and_claim_contact).
+    - invitation_text is None (claimed_by_other False): a contact exists
+      and this workspace may proceed, but THIS workspace has no
+      ta_enrollment_url set - the caller must show _INVITATION_LINK_MISSING,
+      never substitute another workspace's link or a global default."""
     data = await state.get_data()
     contact: dict | None = data.get(_STATE_CONTACT)
     if not contact or contact.get("contact_type") != "person":
-        return None, None
+        return None, None, False
+
+    if not await _check_and_claim_contact(contact, workspace_context, contact_claim_repository):
+        return contact, None, True
 
     enrollment_url: str | None = None
     if partner_repository is not None and workspace_context is not None:
@@ -1098,8 +1185,8 @@ async def _invitation_link_for_current_contact(
             enrollment_url = getattr(profile, "ta_enrollment_url", None) or None
 
     if not enrollment_url:
-        return contact, None
-    return contact, _fallback_invitation_with_link(contact, enrollment_url)
+        return contact, None, False
+    return contact, _fallback_invitation_with_link(contact, enrollment_url), False
 
 
 async def _looks_like_invitation_link_command(message: Message, state: FSMContext) -> bool:
@@ -1120,12 +1207,16 @@ async def on_invitation_link_command_text(
     state: FSMContext,
     partner_repository: PartnerRepository | None = None,
     workspace_context: WorkspaceContext | None = None,
+    contact_claim_repository: ContactClaimRepository | None = None,
 ) -> None:
-    contact, invitation = await _invitation_link_for_current_contact(
-        state, partner_repository, workspace_context,
+    contact, invitation, claimed_by_other = await _invitation_link_for_current_contact(
+        state, partner_repository, workspace_context, contact_claim_repository,
     )
     if contact is None:
         await message.answer(_DRAFT_UNAVAILABLE)
+        return
+    if claimed_by_other:
+        await message.answer(_CONTACT_CLAIMED_BY_OTHER)
         return
     if invitation is None:
         await message.answer(_INVITATION_LINK_MISSING)

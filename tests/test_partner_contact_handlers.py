@@ -6,8 +6,15 @@ Discovery search. app/services/contact_discovery.py itself is mocked here
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import aiosqlite
+
+from app.repositories.contact_claim_repository import ContactClaimRepository
 
 from app.domain.contacts import ContactCandidate, ContactConfidence, ContactType
 from app.domain.partners import WorkspaceContext
@@ -744,3 +751,173 @@ def test_invitation_link_filter_does_not_steal_cold_draft_commands():
 
     assert run(_looks_like_invitation_link_command(message, state)) is False
     assert run(_looks_like_draft_command(message, state)) is True
+
+
+# ── 15. Cross-tenant claim guard (2026-10-07) ───────────────────────────────
+
+def _claim_repo() -> ContactClaimRepository:
+    db_path = Path(tempfile.mkdtemp()) / "claims.sqlite3"
+    repo = ContactClaimRepository(db_path)
+    run(repo.init())
+    return repo
+
+
+def _insert_expired_claim(repo: ContactClaimRepository, identity_key: str, workspace_id: int) -> None:
+    """Backdates a claim's expiry for cooldown-expiry tests - the only way
+    to test "30 days later" without actually waiting or monkeypatching
+    datetime.now() throughout the repository module."""
+    past = (datetime.now(timezone.utc) - timedelta(days=35)).isoformat()
+    expired = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+
+    async def _insert():
+        async with aiosqlite.connect(repo.db_path) as db:
+            await db.execute(
+                "INSERT INTO contact_claims "
+                "(contact_identity_key, workspace_id, claimed_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (identity_key, workspace_id, past, expired),
+            )
+            await db.commit()
+
+    run(_insert())
+
+
+def test_simple_prospect_card_never_creates_a_claim():
+    """Partner Discovery showing prospect cards must never touch claims -
+    confirmed structurally: on_find_partners/on_partner_discovery_more/
+    on_partner_discovery_next take no contact_claim_repository parameter
+    at all (see app/handlers/partner_discovery.py)."""
+    import inspect
+    from app.handlers.partner_discovery import on_find_partners, on_partner_discovery_more
+    assert "contact_claim_repository" not in inspect.signature(on_find_partners).parameters
+    assert "contact_claim_repository" not in inspect.signature(on_partner_discovery_more).parameters
+
+
+def test_contact_discovery_alone_does_not_create_a_claim():
+    """Finding a PERSON via Contact Discovery (👤 Найти человека для
+    контакта) must not itself claim them - confirmed structurally:
+    on_partner_contact_find takes no contact_claim_repository parameter."""
+    import inspect
+    assert "contact_claim_repository" not in inspect.signature(on_partner_contact_find).parameters
+
+
+def test_workspace_a_starts_outreach_then_b_is_blocked_during_cooldown():
+    claim_repo = _claim_repo()
+    state_a = State({"partner_discovery_contact": _person_contact_dict()})
+    callback_a = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback_a, state_a,
+        partner_repository=_partner_repository(), workspace_context=_workspace(1),
+        contact_claim_repository=claim_repo,
+    ))
+    text_a, _ = callback_a.message.answers[0]
+    assert "Людмила Борисовна" in text_a  # A got a real draft, not blocked
+
+    state_b = State({"partner_discovery_contact": _person_contact_dict()})
+    callback_b = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback_b, state_b,
+        partner_repository=_partner_repository(), workspace_context=_workspace(2),
+        contact_claim_repository=claim_repo,
+    ))
+    text_b, _ = callback_b.message.answers[0]
+
+    assert text_b == "Этот контакт сейчас уже находится в работе. Попробую подобрать другого человека."
+    # Neutral - no workspace id/name/role/project leaked to B.
+    assert "1" not in text_b or "workspace" not in text_b.lower()
+    assert "Людмила Борисовна" not in text_b
+
+
+def test_workspace_a_can_keep_working_with_its_own_claimed_contact():
+    claim_repo = _claim_repo()
+    state_a1 = State({"partner_discovery_contact": _person_contact_dict()})
+    run(on_partner_contact_draft(
+        Callback(PARTNER_CONTACT_DRAFT), state_a1,
+        partner_repository=_partner_repository(), workspace_context=_workspace(1),
+        contact_claim_repository=claim_repo,
+    ))
+
+    state_a2 = State({"partner_discovery_contact": _person_contact_dict()})
+    callback_a2 = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback_a2, state_a2,
+        partner_repository=_partner_repository(), workspace_context=_workspace(1),
+        contact_claim_repository=claim_repo,
+    ))
+
+    text_a2, _ = callback_a2.message.answers[0]
+    assert "Людмила Борисовна" in text_a2  # same workspace still allowed
+
+
+def test_b_can_claim_after_cooldown_expires():
+    claim_repo = _claim_repo()
+    identity_key = _contact_identity_key_for_test()
+    _insert_expired_claim(claim_repo, identity_key, workspace_id=1)
+
+    state_b = State({"partner_discovery_contact": _person_contact_dict()})
+    callback_b = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback_b, state_b,
+        partner_repository=_partner_repository(), workspace_context=_workspace(2),
+        contact_claim_repository=claim_repo,
+    ))
+
+    text_b, _ = callback_b.message.answers[0]
+    assert "Людмила Борисовна" in text_b  # allowed - old claim expired
+
+
+def _contact_identity_key_for_test() -> str:
+    from app.handlers.partner_discovery import _contact_identity_key
+    return _contact_identity_key(_person_contact_dict())
+
+
+def test_different_persons_never_conflict_with_each_other():
+    claim_repo = _claim_repo()
+    other_person = {
+        "contact_type": "person", "display_name": "Петров Андрей Викторович",
+        "role": "организатор туров", "project_name": "Клуб Путешественников Атлас",
+        "public_url": "https://atlas-club.example/", "evidence_text": "ev",
+        "evidence_url": "https://atlas-club.example/about", "confidence": "MEDIUM",
+        "provenance": "professional_search",
+    }
+
+    state_a = State({"partner_discovery_contact": _person_contact_dict()})
+    run(on_partner_contact_draft(
+        Callback(PARTNER_CONTACT_DRAFT), state_a,
+        partner_repository=_partner_repository(), workspace_context=_workspace(1),
+        contact_claim_repository=claim_repo,
+    ))
+
+    state_b = State({"partner_discovery_contact": other_person})
+    callback_b = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback_b, state_b,
+        partner_repository=_partner_repository(), workspace_context=_workspace(2),
+        contact_claim_repository=claim_repo,
+    ))
+
+    text_b, _ = callback_b.message.answers[0]
+    assert "Андрей Викторович" in text_b  # different person - no conflict
+
+
+def test_invitation_link_command_also_respects_an_active_claim():
+    claim_repo = _claim_repo()
+    state_a = State({"partner_discovery_contact": _person_contact_dict()})
+    run(on_partner_contact_draft(
+        Callback(PARTNER_CONTACT_DRAFT), state_a,
+        partner_repository=_partner_repository(), workspace_context=_workspace(1),
+        contact_claim_repository=claim_repo,
+    ))
+
+    state_b = State({"partner_discovery_contact": _person_contact_dict()})
+    message_b = TextMessage("дай ему мою ссылку")
+    run(on_invitation_link_command_text(
+        message_b, state_b,
+        partner_repository=_partner_repository(ta_affiliated=True, ta_enrollment_url="https://x.example/b"),
+        workspace_context=_workspace(2),
+        contact_claim_repository=claim_repo,
+    ))
+
+    text_b, _ = message_b.answers[0]
+    assert text_b == "Этот контакт сейчас уже находится в работе. Попробую подобрать другого человека."
+    assert "https://x.example/b" not in text_b

@@ -21,6 +21,7 @@ from app.planner.factory import create_planner_llm_provider
 from app.planner.openai_provider import PlannerOpenAIConfig
 from app.planner.provider import PlannerLLMProvider
 from app.repositories.artifact_repository import ArtifactRepository
+from app.repositories.contact_claim_repository import ContactClaimRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
@@ -123,6 +124,7 @@ def _build_dispatcher(
     dp["v2_menu_enabled"] = v2_menu_enabled
     dp["partner_repository"] = partner_repository
     dp["artifact_repository"] = artifact_repository
+    dp["contact_claim_repository"] = contact_claim_repository
     dp["source_analysis_repository"] = source_analysis_repository
     dp["source_catalog_repository"] = source_catalog_repository
     dp["workspace_signal_repository"] = workspace_signal_repository
@@ -192,6 +194,9 @@ async def _async_main() -> None:
 
     artifact_repository = ArtifactRepository(settings.journal_db_path)
     await artifact_repository.init()
+
+    contact_claim_repository = ContactClaimRepository(settings.journal_db_path)
+    await contact_claim_repository.init()
 
     source_analysis_repository = SourceAnalysisRepository(settings.journal_db_path)
     await source_analysis_repository.initialize()
