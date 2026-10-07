@@ -503,33 +503,65 @@ def test_draft_is_fully_gender_neutral():
         assert forbidden not in lowered, f"found gendered form: {forbidden!r} in draft"
 
 
-def test_draft_uses_sender_business_name_when_known():
-    state = State({"partner_discovery_contact": _person_contact_dict()})
-    callback = Callback(PARTNER_CONTACT_DRAFT)
-
+def test_draft_never_mentions_sender_business_name():
+    """2026-10-07 wording fix: sender_business_name is no longer
+    interpolated into the draft text at all, known or not - a live
+    production case showed it producing "Travel Advantage AI Ecosystem"
+    (the admin/owner workspace's own internal bootstrap business_name)
+    mixed in with Travel Advantage's own positioning. The parameter is
+    still accepted (no architecture change) but has no effect on the
+    rendered text any more."""
+    state_known = State({"partner_discovery_contact": _person_contact_dict()})
+    callback_known = Callback(PARTNER_CONTACT_DRAFT)
     run(on_partner_contact_draft(
-        callback, state,
+        callback_known, state_known,
         partner_repository=_partner_repository(ta_affiliated=True, business_name="Südwind Travel Club"),
         workspace_context=_workspace(),
     ))
+    text_known, _ = callback_known.message.answers[0]
+    assert "Südwind Travel Club" not in text_known
+    assert "Представляю проект" not in text_known
 
-    text, _ = callback.message.answers[0]
-    assert "Südwind Travel Club" in text
-
-
-def test_draft_omits_sender_business_name_when_unknown_without_inventing_one():
-    state = State({"partner_discovery_contact": _person_contact_dict()})
-    callback = Callback(PARTNER_CONTACT_DRAFT)
-
+    state_unknown = State({"partner_discovery_contact": _person_contact_dict()})
+    callback_unknown = Callback(PARTNER_CONTACT_DRAFT)
     run(on_partner_contact_draft(
-        callback, state,
+        callback_unknown, state_unknown,
         partner_repository=_partner_repository(ta_affiliated=True, business_name=None),
         workspace_context=_workspace(),
     ))
+    text_unknown, _ = callback_unknown.message.answers[0]
+    assert "«None»" not in text_unknown
+    assert "Представляю проект" not in text_unknown
 
+
+def test_draft_never_mixes_travel_advantage_with_sender_project_name():
+    """Guards exactly the live production defect: Travel Advantage is
+    named only as the generic club/platform description, never alongside
+    any sender project/brand/AI Ecosystem label."""
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback, state,
+        partner_repository=_partner_repository(ta_affiliated=True, business_name="Travel Advantage AI Ecosystem"),
+        workspace_context=_workspace(),
+    ))
     text, _ = callback.message.answers[0]
-    assert "Представляю проект" not in text
-    assert "«None»" not in text
+    assert "Travel Advantage AI Ecosystem" not in text
+    assert "международным туристическим клубом и платформой для путешествий" in text
+
+
+def test_draft_does_not_say_pishu_vam_kak_role():
+    """2026-10-07 wording fix: "Пишу вам как {role}" reads ambiguously, as
+    if the SENDER holds that role. Must use "Обращаюсь к вам как к
+    {role}" (addressing the recipient) instead."""
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback, state, partner_repository=_partner_repository(), workspace_context=_workspace(),
+    ))
+    text, _ = callback.message.answers[0]
+    assert "Пишу вам, потому что вы" not in text
+    assert "Обращаюсь к вам как к" in text
 
 
 def test_draft_differs_across_two_tenants_with_the_same_code_path():
@@ -567,11 +599,15 @@ def test_draft_differs_across_two_tenants_with_the_same_code_path():
     ))
     text_b, _ = callback_b.message.answers[0]
 
-    assert "Людмила Борисовна" in text_a and "Südwind Travel Club" in text_a
-    assert "Андрей Викторович" in text_b and "Atlas Partners" in text_b
+    assert "Людмила Борисовна" in text_a
+    assert "Андрей Викторович" in text_b
     assert text_a != text_b
     assert "Андрей Викторович" not in text_a
-    assert "Südwind Travel Club" not in text_b
+    assert "Людмила Борисовна" not in text_b
+    # business_name is intentionally never surfaced in the text (2026-10-07
+    # wording fix) - confirm it stays that way for both tenants.
+    assert "Südwind Travel Club" not in text_a and "Südwind Travel Club" not in text_b
+    assert "Atlas Partners" not in text_a and "Atlas Partners" not in text_b
 
 
 # ── 12. Free-text draft commands continue the same contact context ─────────

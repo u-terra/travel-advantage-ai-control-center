@@ -814,34 +814,41 @@ _OUTREACH_DRAFT_INSTRUCTIONS = """Ты помогаешь подготовить
 Роль (публично подтверждена): {role}
 Проект/сообщество: {project}
 Почему найден (public evidence): {evidence}
-Проект/бизнес отправителя (если известен): {sender_business_name}
 
 Напиши короткое (4-6 предложений), вежливое, персонализированное первое сообщение на русском языке, которое ПОНЯТНО объясняет, зачем мы пишем - пустое "давайте познакомимся" без причины не годится. Структура:
 1) Обращение по имени (если из "Имя" можно уверенно выделить имя/имя-отчество - например из формата "Фамилия Имя Отчество" - используй именно имя/имя-отчество, а не полностью ФИО; если формат неясен - используй то, что есть).
-2) Коротко упомяни подтверждённые роль и проект/сообщество.
-3) Объясни причину обращения, при наличии "Проект/бизнес отправителя" упомяни его (например: "Представляю проект «...»").{ta_instruction}
+2) Фраза вида "Обращаюсь к вам как к {{роль}}" (адресуя роль ПОЛУЧАТЕЛЮ) + при наличии проекта/сообщества упомяни его. НИКОГДА не формулируй как "Пишу вам как {{роль}}" - это звучит, будто роль принадлежит отправителю, а не адресату.
+3) Объясни причину обращения.{ta_instruction}
 4) Заверши простым низкопороговым вопросом/предложением - например, можно ли коротко рассказать или прислать информацию, без развёрнутой презентации.
 
 СТРОГО ЗАПРЕЩЕНО:
 - начинать с "Увидел(а) вашу страницу" или любой похожей шаблонной фразы;
+- формулировку "Пишу вам как {{роль}}" или любую другую, где роль из evidence может быть прочитана как роль ОТПРАВИТЕЛЯ, а не получателя;
+- называть Travel Advantage каким-либо собственным/внутренним названием отправителя (например, упоминать проект/бренд/организацию отправителя рядом с Travel Advantage) - Travel Advantage называется только как "международный туристический клуб и платформа для путешествий", без смешивания с чем-либо ещё;
 - утверждать или подразумевать, что человек уже заинтересован, нуждается в Travel Advantage или ищет что-либо конкретное;
 - упоминать доход, заработок, окупаемость или любой гарантированный результат;
-- придумывать детали о человеке или об отправителе сверх предоставленных полей.
+- придумывать детали о человеке сверх предоставленных полей.
 
-ГРАММАТИЧЕСКИ ОБЯЗАТЕЛЬНО - сообщение пишется от лица отправителя, чей пол НЕИЗВЕСТЕН и не должен угадываться: используй ТОЛЬКО глагольные формы, не зависящие от рода (настоящее время/инфинитив/безличные конструкции): "пишу", "представляю", "хочу познакомить", "могу коротко рассказать" и подобные. СТРОГО ЗАПРЕЩЕНЫ любые родовые формы прошедшего времени или конструкции с "(а)": "нашёл/нашла", "увидел/увидела", "хотел/хотела", "решил/решила", "был/была", "рад/рада" и любые их варианты с "(а)".
+ГРАММАТИЧЕСКИ ОБЯЗАТЕЛЬНО - сообщение пишется от лица отправителя, чей пол НЕИЗВЕСТЕН и не должен угадываться: используй ТОЛЬКО глагольные формы, не зависящие от рода (настоящее время/инфинитив/безличные конструкции): "обращаюсь", "пишу", "хочу познакомить", "думаю", "могу коротко рассказать" и подобные. СТРОГО ЗАПРЕЩЕНЫ любые родовые формы прошедшего времени или конструкции с "(а)": "нашёл/нашла", "увидел/увидела", "хотел/хотела", "решил/решила", "был/была", "рад/рада" и любые их варианты с "(а)".
 
 Верни только текст сообщения на русском языке, без пояснений, без markdown, без кавычек вокруг всего текста."""
 
 # Only appended when BusinessProfile.ta_affiliated - see _is_ta_affiliated.
 # Still forbids inventing interest/need - only permits NAMING Travel
 # Advantage as a possible tool for an introduction, same fail-closed posture
-# as _TA_AFFILIATED_ENRICHMENT_CLAUSE above.
+# as _TA_AFFILIATED_ENRICHMENT_CLAUSE above. Deliberately names Travel
+# Advantage ONLY as "международный туристический клуб и платформа для
+# путешествий" - never alongside the sender's own business/project name
+# (2026-10-07 fix: that mixing previously produced confusing text like
+# "представляю Travel Advantage AI Ecosystem" for the admin/owner
+# workspace, whose own BusinessProfile.business_name happens to be an
+# internal ORCHESTRAVEL bootstrap label, not a Travel Advantage brand).
 _TA_AFFILIATED_DRAFT_INSTRUCTION = (
-    " Явно и содержательно, но коротко объясни, что Travel Advantage - это "
-    "международный туристический клуб и платформа для путешествий, и что это "
-    "может быть интересно человеку, который напрямую работает с "
-    "путешественниками и туристической аудиторией - только как возможность, "
-    "не обещая конкретных результатов и не утверждая, что человек в этом уже "
+    " Хочу познакомить вас с Travel Advantage - международным туристическим "
+    "клубом и платформой для путешествий. Думаю, этот формат может быть "
+    "интересен проектам/людям, которые напрямую работают с путешественниками "
+    "и туристической аудиторией - только как возможность, не обещая "
+    "конкретных результатов и не утверждая, что человек в этом уже "
     "заинтересован или нуждается."
 )
 
@@ -881,38 +888,47 @@ def _fallback_outreach_draft(
     _apply_fallback_enrichment: no LLM required, never invents motive.
 
     Fully gender-neutral by construction (2026-10-07 fix): every
-    self-referential verb is present-tense/modal ("пишу", "представляю",
+    self-referential verb is present-tense/modal ("обращаюсь", "пишу",
     "хочу", "могу") - none of these decline by the sender's grammatical
     gender, unlike the earlier "увидел(а)"/"решил(а)" phrasing this
-    replaces. The sender's own BusinessProfile.business_name is used when
-    available (never a hardcoded project/name) - when it isn't known, the
-    sentence that would have named it is simply omitted, never invented."""
+    replaces.
+
+    "Обращаюсь к вам как к {role}" (2026-10-07 wording fix), not "Пишу вам
+    как {role}" - the latter reads ambiguously as if the SENDER holds that
+    role, not the recipient. sender_business_name is still accepted (kept
+    for signature/call-site compatibility - no architecture change) but is
+    deliberately NOT interpolated into the message text any more: a live
+    production case showed it producing "Travel Advantage AI Ecosystem"
+    (the admin/owner workspace's own internal bootstrap business_name,
+    see _TA_OWNER_PROJECT_NAME in app.repositories.partner_repository) -
+    i.e. ORCHESTRAVEL's own internal label mixed into Travel Advantage
+    positioning. Travel Advantage is now named only ever as "международный
+    туристический клуб и платформа для путешествий", never alongside any
+    sender project/brand name."""
     name = _strip_private_contact_data(contact.get("display_name") or "")
     role = _strip_private_contact_data(contact.get("role") or "")
     project = _strip_private_contact_data(contact.get("project_name") or "")
-    business_name = _strip_private_contact_data(sender_business_name or "")
     greeting_name = _greeting_name(name)
 
     if role and project:
-        intro = f"Пишу вам, потому что вы {role} в «{project}»."
+        intro = f"Обращаюсь к вам как к {role} в «{project}»."
     elif role:
-        intro = f"Пишу вам, потому что вы {role}."
+        intro = f"Обращаюсь к вам как к {role}."
     elif project:
-        intro = f"Пишу вам в связи с «{project}»."
+        intro = f"Обращаюсь к вам в связи с «{project}»."
     else:
-        intro = "Пишу вам, чтобы коротко познакомиться."
+        intro = "Обращаюсь к вам, чтобы коротко познакомиться."
 
     lines = [f"Здравствуйте, {greeting_name}!", "", intro, ""]
-    sender_clause = f"Представляю проект «{business_name}». " if business_name else ""
     if ta_affiliated:
         lines.append(
-            f"{sender_clause}Хочу познакомить вас с Travel Advantage - международным "
+            "Хочу познакомить вас с Travel Advantage - международным "
             "туристическим клубом и платформой для путешествий."
         )
         lines.append("")
         lines.append(
-            "Это может быть интересно тем, кто напрямую работает с путешественниками "
-            "и туристической аудиторией."
+            "Думаю, этот формат может быть интересен проектам, которые напрямую "
+            "работают с путешественниками и туристической аудиторией."
         )
         lines.append("")
         lines.append(
@@ -920,7 +936,7 @@ def _fallback_outreach_draft(
             "длинной презентации."
         )
     else:
-        lines.append(f"{sender_clause}Пишу, чтобы коротко познакомиться.".strip())
+        lines.append("Пишу, чтобы коротко познакомиться.")
         lines.append("")
         lines.append("Если не возражаете, могу написать чуть подробнее.")
     return "\n".join(lines)
@@ -1130,26 +1146,24 @@ _INVITATION_LINK_COMMAND_RE = re.compile(
 
 
 def _fallback_invitation_with_link(contact: dict, enrollment_url: str) -> str:
+    """2026-10-07 wording fix: no "вижу, что вы {role}" context clause and
+    no "Регистрация по ссылке" (reads as mechanically pushing straight to
+    sign-up) - just the link, framed as "learn more", with a low-pressure
+    offer to answer questions. Never "как и обещал" or similar - this
+    system has no way to know whether the recipient actually replied to
+    the earlier cold message. enrollment_url is always THIS workspace's
+    own (see _invitation_link_for_current_contact) - unchanged."""
     name = _strip_private_contact_data(contact.get("display_name") or "")
-    role = _strip_private_contact_data(contact.get("role") or "")
-    project = _strip_private_contact_data(contact.get("project_name") or "")
     greeting_name = _greeting_name(name)
-
-    if role and project:
-        context_clause = f" - вижу, что вы {role} в «{project}»"
-    elif role:
-        context_clause = f" - вижу, что вы {role}"
-    else:
-        context_clause = ""
 
     lines = [
         f"Здравствуйте, {greeting_name}!",
         "",
-        f"Хочу прислать ссылку для знакомства с Travel Advantage{context_clause}.",
+        "Отправляю ссылку, где можно подробнее познакомиться с Travel Advantage:",
+        enrollment_url,
         "",
-        f"Регистрация по ссылке: {enrollment_url}",
-        "",
-        "Если будут вопросы - с радостью отвечу.",
+        "Если формат покажется интересным, могу коротко рассказать подробнее и "
+        "ответить на вопросы.",
     ]
     return "\n".join(lines)
 
