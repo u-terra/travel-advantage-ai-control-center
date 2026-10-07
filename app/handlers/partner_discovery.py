@@ -792,14 +792,21 @@ _OUTREACH_DRAFT_INSTRUCTIONS = """Ты помогаешь подготовить
 Роль (публично подтверждена): {role}
 Проект/сообщество: {project}
 Почему найден (public evidence): {evidence}
+Проект/бизнес отправителя (если известен): {sender_business_name}
 
-Напиши короткое (3-5 предложений), вежливое, персонализированное первое сообщение на русском языке, которое открывает диалог. СТРОГО ЗАПРЕЩЕНО:
-- утверждать или подразумевать, что человек уже заинтересован в партнёрстве, ищет дополнительный доход или хочет что-либо конкретное;
-- обещать доход, результат, окупаемость или любые гарантии;
-- придумывать детали о человеке сверх предоставленных имени/роли/проекта/evidence;
-- писать развёрнутое коммерческое предложение - это только короткое знакомство, открывающее диалог.
+Напиши короткое (4-6 предложений), вежливое, персонализированное первое сообщение на русском языке, которое ПОНЯТНО объясняет, зачем мы пишем - пустое "давайте познакомимся" без причины не годится. Структура:
+1) Обращение по имени (если из "Имя" можно уверенно выделить имя/имя-отчество - например из формата "Фамилия Имя Отчество" - используй именно имя/имя-отчество, а не полностью ФИО; если формат неясен - используй то, что есть).
+2) Коротко упомяни подтверждённые роль и проект/сообщество.
+3) Объясни причину обращения, при наличии "Проект/бизнес отправителя" упомяни его (например: "Представляю проект «...»").{ta_instruction}
+4) Заверши простым низкопороговым вопросом/предложением - например, можно ли коротко рассказать или прислать информацию, без развёрнутой презентации.
 
-Используй имя, роль и проект для персонализации (например, упомяни именно ту работу/роль, которая подтверждена).{ta_instruction}
+СТРОГО ЗАПРЕЩЕНО:
+- начинать с "Увидел(а) вашу страницу" или любой похожей шаблонной фразы;
+- утверждать или подразумевать, что человек уже заинтересован, нуждается в Travel Advantage или ищет что-либо конкретное;
+- упоминать доход, заработок, окупаемость или любой гарантированный результат;
+- придумывать детали о человеке или об отправителе сверх предоставленных полей.
+
+ГРАММАТИЧЕСКИ ОБЯЗАТЕЛЬНО - сообщение пишется от лица отправителя, чей пол НЕИЗВЕСТЕН и не должен угадываться: используй ТОЛЬКО глагольные формы, не зависящие от рода (настоящее время/инфинитив/безличные конструкции): "пишу", "представляю", "хочу познакомить", "могу коротко рассказать" и подобные. СТРОГО ЗАПРЕЩЕНЫ любые родовые формы прошедшего времени или конструкции с "(а)": "нашёл/нашла", "увидел/увидела", "хотел/хотела", "решил/решила", "был/была", "рад/рада" и любые их варианты с "(а)".
 
 Верни только текст сообщения на русском языке, без пояснений, без markdown, без кавычек вокруг всего текста."""
 
@@ -808,65 +815,118 @@ _OUTREACH_DRAFT_INSTRUCTIONS = """Ты помогаешь подготовить
 # Advantage as a possible tool for an introduction, same fail-closed posture
 # as _TA_AFFILIATED_ENRICHMENT_CLAUSE above.
 _TA_AFFILIATED_DRAFT_INSTRUCTION = (
-    " Если уместно, можно кратко и фактически упомянуть Travel Advantage как "
-    "возможный дополнительный инструмент для этого человека и его аудитории - "
-    "только как повод для знакомства, не обещая конкретных результатов и не "
-    "утверждая, что человек в этом уже заинтересован."
+    " Явно и содержательно, но коротко объясни, что Travel Advantage - это "
+    "международный туристический клуб и платформа для путешествий, и что это "
+    "может быть интересно человеку, который напрямую работает с "
+    "путешественниками и туристической аудиторией - только как возможность, "
+    "не обещая конкретных результатов и не утверждая, что человек в этом уже "
+    "заинтересован или нуждается."
 )
 
 
-def _build_outreach_draft_prompt(contact: dict, ta_affiliated: bool) -> str:
+def _greeting_name(display_name: str) -> str:
+    """Best-effort "Имя Отчество" extraction from a "Фамилия Имя Отчество"
+    -shaped Russian display_name (e.g. "Ярмоленко Людмила Борисовна" ->
+    "Людмила Борисовна") - a greeting by full ФИО reads as noticeably more
+    formal/impersonal than addressing someone by name. Conservative: only
+    applied for a confident 3-space-separated-token shape; anything else
+    (a single name, a Western "Имя Фамилия" pair, a brand/project name with
+    no clear person-name shape) is used exactly as given rather than
+    guessing which token is which - never invents a name that isn't there."""
+    parts = [p for p in (display_name or "").split() if p]
+    if len(parts) == 3:
+        return f"{parts[1]} {parts[2]}"
+    return display_name or ""
+
+
+def _build_outreach_draft_prompt(
+    contact: dict, ta_affiliated: bool, sender_business_name: str | None,
+) -> str:
     return _OUTREACH_DRAFT_INSTRUCTIONS.format(
         name=_strip_private_contact_data(contact.get("display_name") or ""),
         role=_strip_private_contact_data(contact.get("role") or "") or "не указана",
         project=_strip_private_contact_data(contact.get("project_name") or ""),
         evidence=_strip_private_contact_data(contact.get("evidence_text") or "")[:600] or "(нет)",
+        sender_business_name=_strip_private_contact_data(sender_business_name or "") or "(не указан)",
         ta_instruction=_TA_AFFILIATED_DRAFT_INSTRUCTION if ta_affiliated else "",
     )
 
 
-def _fallback_outreach_draft(contact: dict, ta_affiliated: bool) -> str:
+def _fallback_outreach_draft(
+    contact: dict, ta_affiliated: bool, sender_business_name: str | None = None,
+) -> str:
     """Deterministic, noise-free fallback - same safety posture as
-    _apply_fallback_enrichment: no LLM required, never invents motive."""
+    _apply_fallback_enrichment: no LLM required, never invents motive.
+
+    Fully gender-neutral by construction (2026-10-07 fix): every
+    self-referential verb is present-tense/modal ("пишу", "представляю",
+    "хочу", "могу") - none of these decline by the sender's grammatical
+    gender, unlike the earlier "увидел(а)"/"решил(а)" phrasing this
+    replaces. The sender's own BusinessProfile.business_name is used when
+    available (never a hardcoded project/name) - when it isn't known, the
+    sentence that would have named it is simply omitted, never invented."""
     name = _strip_private_contact_data(contact.get("display_name") or "")
     role = _strip_private_contact_data(contact.get("role") or "")
     project = _strip_private_contact_data(contact.get("project_name") or "")
-    role_clause = f" ({role})" if role else ""
-    lines = [
-        f"Здравствуйте, {name}!",
-        "",
-        f"Увидел(а) вашу публичную страницу{role_clause} в связи с «{project}» и решил(а) написать напрямую.",
-    ]
+    business_name = _strip_private_contact_data(sender_business_name or "")
+    greeting_name = _greeting_name(name)
+
+    if role and project:
+        intro = f"Пишу вам, потому что вы {role} в «{project}»."
+    elif role:
+        intro = f"Пишу вам, потому что вы {role}."
+    elif project:
+        intro = f"Пишу вам в связи с «{project}»."
+    else:
+        intro = "Пишу вам, чтобы коротко познакомиться."
+
+    lines = [f"Здравствуйте, {greeting_name}!", "", intro, ""]
+    sender_clause = f"Представляю проект «{business_name}». " if business_name else ""
     if ta_affiliated:
         lines.append(
-            "Я работаю с Travel Advantage и был(а) бы рад(а) коротко рассказать, чем "
-            "платформа может быть полезна вам и вашей аудитории, если это интересно."
+            f"{sender_clause}Хочу познакомить вас с Travel Advantage - международным "
+            "туристическим клубом и платформой для путешествий."
         )
-    lines.append("Было бы здорово познакомиться и обменяться парой слов.")
-    lines.append("")
-    lines.append("С уважением")
+        lines.append("")
+        lines.append(
+            "Это может быть интересно тем, кто напрямую работает с путешественниками "
+            "и туристической аудиторией."
+        )
+        lines.append("")
+        lines.append(
+            "Если не возражаете, могу коротко рассказать, как это работает - без "
+            "длинной презентации."
+        )
+    else:
+        lines.append(f"{sender_clause}Пишу, чтобы коротко познакомиться.".strip())
+        lines.append("")
+        lines.append("Если не возражаете, могу написать чуть подробнее.")
     return "\n".join(lines)
 
 
 async def _generate_outreach_draft(
-    contact: dict, llm_provider: OpenAIChatProvider | None, *, ta_affiliated: bool,
+    contact: dict,
+    llm_provider: OpenAIChatProvider | None,
+    *,
+    ta_affiliated: bool,
+    sender_business_name: str | None = None,
 ) -> str:
     """Always returns a usable draft string - never None, never raises past
     this function. Any failure (no provider, no credentials, transport
     error, empty response) falls back to the deterministic template."""
     if llm_provider is None or not llm_provider.config.api_key:
-        return _fallback_outreach_draft(contact, ta_affiliated)
+        return _fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
 
-    prompt = _build_outreach_draft_prompt(contact, ta_affiliated)
+    prompt = _build_outreach_draft_prompt(contact, ta_affiliated, sender_business_name)
     try:
         result = await asyncio.to_thread(llm_provider.generate, message=prompt)
     except Exception:
         log.warning("partner_discovery: outreach draft llm call failed", exc_info=True)
-        return _fallback_outreach_draft(contact, ta_affiliated)
+        return _fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
 
     draft = _sanitize_enrichment_field(result.text, 1000)
     if not draft:
-        return _fallback_outreach_draft(contact, ta_affiliated)
+        return _fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
     return draft
 
 
@@ -877,18 +937,29 @@ async def _draft_for_current_contact(
     partner_enrichment_llm_provider: OpenAIChatProvider | None,
 ) -> str | None:
     """Returns the generated draft, or None when there is no PERSON contact
-    currently in FSM state (caller decides how to respond to that case)."""
+    currently in FSM state (caller decides how to respond to that case).
+
+    One profile fetch for both ta_affiliated and the sender's own
+    business_name (2026-10-07) - same BusinessProfile, same authoritative,
+    fail-closed source as _is_ta_affiliated; business_name is never
+    hardcoded, it comes from THIS workspace's own profile, so a different
+    tenant naturally gets a different value from the exact same code."""
     data = await state.get_data()
     contact: dict | None = data.get(_STATE_CONTACT)
     if not contact or contact.get("contact_type") != "person":
         return None
 
-    ta_affiliated = (
-        await _is_ta_affiliated(partner_repository, workspace_context)
-        if partner_repository is not None else False
-    )
+    ta_affiliated = False
+    sender_business_name: str | None = None
+    if partner_repository is not None and workspace_context is not None:
+        profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
+        if profile is not None:
+            ta_affiliated = bool(getattr(profile, "ta_affiliated", False))
+            sender_business_name = getattr(profile, "business_name", None) or None
+
     return await _generate_outreach_draft(
-        contact, partner_enrichment_llm_provider, ta_affiliated=ta_affiliated,
+        contact, partner_enrichment_llm_provider,
+        ta_affiliated=ta_affiliated, sender_business_name=sender_business_name,
     )
 
 

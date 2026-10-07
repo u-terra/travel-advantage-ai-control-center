@@ -352,8 +352,10 @@ def _workspace(workspace_id: int = 1) -> WorkspaceContext:
     return WorkspaceContext(100, workspace_id, "owner", "active")
 
 
-def _partner_repository(ta_affiliated: bool = False):
-    profile = SimpleNamespace(business_type="club_partner", ta_affiliated=ta_affiliated)
+def _partner_repository(ta_affiliated: bool = False, business_name: str | None = None):
+    profile = SimpleNamespace(
+        business_type="club_partner", ta_affiliated=ta_affiliated, business_name=business_name,
+    )
     return SimpleNamespace(get_business_profile=AsyncMock(return_value=profile))
 
 
@@ -393,7 +395,9 @@ def test_draft_button_callback_produces_fallback_draft_without_llm_provider():
     ))
 
     text, _ = callback.message.answers[0]
-    assert "Ярмоленко Людмила Борисовна" in text
+    # Greeted by "Имя Отчество" (patronymic extraction), not the full ФИО -
+    # see _greeting_name.
+    assert "Людмила Борисовна" in text
     assert "экскурсовод" in text
     assert "Магазин Путешествий" in text
     assert "проверьте" in text.lower()  # draft header, review-before-send framing
@@ -463,6 +467,100 @@ def test_draft_never_promises_income_or_results():
         assert forbidden not in lowered
 
 
+def test_draft_is_fully_gender_neutral():
+    """2026-10-07 fix: no self-referential verb/construction may decline by
+    the sender's (unknown) grammatical gender - "увидел(а)"/"решил(а)" and
+    similar are banned outright, not just their "(а)" suffix form."""
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+
+    run(on_partner_contact_draft(
+        callback, state,
+        partner_repository=_partner_repository(ta_affiliated=True, business_name="Südwind Travel Club"),
+        workspace_context=_workspace(),
+    ))
+
+    text, _ = callback.message.answers[0]
+    lowered = text.lower()
+    forbidden_gendered_forms = (
+        "(а)", "нашёл", "нашла", "увидел", "увидела", "хотел", "хотела",
+        "решил", "решила", "был бы", "была бы", "рад(", "рада",
+    )
+    for forbidden in forbidden_gendered_forms:
+        assert forbidden not in lowered, f"found gendered form: {forbidden!r} in draft"
+
+
+def test_draft_uses_sender_business_name_when_known():
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+
+    run(on_partner_contact_draft(
+        callback, state,
+        partner_repository=_partner_repository(ta_affiliated=True, business_name="Südwind Travel Club"),
+        workspace_context=_workspace(),
+    ))
+
+    text, _ = callback.message.answers[0]
+    assert "Südwind Travel Club" in text
+
+
+def test_draft_omits_sender_business_name_when_unknown_without_inventing_one():
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+
+    run(on_partner_contact_draft(
+        callback, state,
+        partner_repository=_partner_repository(ta_affiliated=True, business_name=None),
+        workspace_context=_workspace(),
+    ))
+
+    text, _ = callback.message.answers[0]
+    assert "Представляю проект" not in text
+    assert "«None»" not in text
+
+
+def test_draft_differs_across_two_tenants_with_the_same_code_path():
+    """Proves no hardcoding: same code, two different (profile, contact)
+    inputs -> two different drafts, each reflecting ITS OWN tenant's
+    business_name and ITS OWN found PERSON - never Vladimir/a fixed
+    project/a fixed recipient baked into the template."""
+    other_person = {
+        "contact_type": "person",
+        "display_name": "Петров Андрей Викторович",
+        "role": "организатор туров",
+        "project_name": "Клуб Путешественников Атлас",
+        "public_url": "https://atlas-club.example/",
+        "evidence_text": "Петров Андрей Викторович - организатор туров клуба Атлас.",
+        "evidence_url": "https://atlas-club.example/about",
+        "confidence": "MEDIUM",
+        "provenance": "professional_search",
+    }
+
+    state_a = State({"partner_discovery_contact": _person_contact_dict()})
+    callback_a = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback_a, state_a,
+        partner_repository=_partner_repository(ta_affiliated=True, business_name="Südwind Travel Club"),
+        workspace_context=_workspace(1),
+    ))
+    text_a, _ = callback_a.message.answers[0]
+
+    state_b = State({"partner_discovery_contact": other_person})
+    callback_b = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        callback_b, state_b,
+        partner_repository=_partner_repository(ta_affiliated=True, business_name="Atlas Partners"),
+        workspace_context=_workspace(2),
+    ))
+    text_b, _ = callback_b.message.answers[0]
+
+    assert "Людмила Борисовна" in text_a and "Südwind Travel Club" in text_a
+    assert "Андрей Викторович" in text_b and "Atlas Partners" in text_b
+    assert text_a != text_b
+    assert "Андрей Викторович" not in text_a
+    assert "Südwind Travel Club" not in text_b
+
+
 # ── 12. Free-text draft commands continue the same contact context ─────────
 
 def test_draft_command_filter_requires_person_contact_in_state():
@@ -510,7 +608,7 @@ def test_on_draft_command_text_produces_the_same_draft_as_the_button():
     ))
 
     text, _ = message.answers[0]
-    assert "Ярмоленко Людмила Борисовна" in text
+    assert "Людмила Борисовна" in text
 
 
 # ── 13. Ordinary discovery flow still unaffected by the new draft button ───
