@@ -79,8 +79,11 @@ already is.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import html
 import json
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
 from app.chat_provider import OpenAIChatProvider
 from app.domain.contacts import ContactCandidate, ContactConfidence, ContactType
@@ -147,6 +150,48 @@ _PAGE_EXTRACTION_INSTRUCTIONS = """Ты обрабатываешь данные 
 
 ТЕКСТ СТРАНИЦЫ:
 {page_text}"""
+
+# Dangling, valueless query-string tokens that are a known AMP-link markup
+# artifact (e.g. a site's own `?amp` canonical-link variant, or a trailing
+# `&amp;` left over from an un-decoded HTML entity producing an empty
+# second segment) - never a real parameter, which always carries either a
+# value or a recognizable name of its own. See _normalize_result_url.
+_URL_ARTIFACT_QUERY_TOKENS = frozenset({"amp", ""})
+
+
+def _normalize_result_url(url: str) -> str:
+    """Defensive cleanup applied to every search-result URL (and therefore
+    to any evidence_url built from one) before it is shown to the LLM or
+    returned to a caller - never invents or rewrites a URL's real content.
+
+    Fixes two observed artifacts, both confirmed on real production search
+    results for a prospect with an AMP-enabled page:
+    1. Literal HTML entities (e.g. "&amp;") that slipped through
+       un-decoded from an upstream HTML source - html.unescape() decodes
+       these back to their real character ("&amp;" -> "&").
+    2. A resulting bare, valueless "amp" query token (or the empty token
+       left behind by a decoded trailing "&") - stripped only when the
+       token is an EXACT, valueless match; a real parameter that merely
+       contains "amp" (e.g. "utm_source=amp") is untouched, since it is a
+       different string entirely.
+    """
+    if not url:
+        return url
+    decoded = html.unescape(url)
+    parts = urlsplit(decoded)
+    if not parts.query:
+        return urlunsplit(parts)
+    kept = [
+        token for token in parts.query.split("&")
+        if token not in _URL_ARTIFACT_QUERY_TOKENS
+    ]
+    new_query = "&".join(kept)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
+
+
+def _normalize_search_results(results: list[SearchResult]) -> list[SearchResult]:
+    return [dataclasses.replace(result, url=_normalize_result_url(result.url)) for result in results]
+
 
 _SEARCH_VALIDATION_INSTRUCTIONS = """Ты обрабатываешь данные для внутреннего инструмента Partner Discovery. Это НЕ диалог с пользователем - разовая техническая задача. Отвечай только данными, без приветствий и комментариев.
 
@@ -301,7 +346,7 @@ def _run_targeted_searches(
             continue
         if response is not None:
             results.extend(response.results)
-    return results
+    return _normalize_search_results(results)
 
 
 def _format_results_block(results: list[SearchResult]) -> str:
@@ -385,7 +430,7 @@ def _run_professional_searches(
             continue
         if response is not None:
             results.extend(response.results)
-    return results
+    return _normalize_search_results(results)
 
 
 async def _validate_professional_search_results(

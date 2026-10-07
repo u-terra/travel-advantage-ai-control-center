@@ -21,12 +21,15 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def _candidate_dict(name="Example Club", url="https://example-club.ru/"):
-    return {
+def _candidate_dict(name="Example Club", url="https://example-club.ru/", display_name=None):
+    candidate = {
         "name": name, "url": url, "prospect_type": "travel_club",
         "query": "клуб путешественников", "evidence": "ev", "evidence_source": "page",
         "fit": "STRONG",
     }
+    if display_name is not None:
+        candidate["display_name"] = display_name
+    return candidate
 
 
 class Message:
@@ -110,6 +113,55 @@ def test_handler_passes_current_prospect_to_find_contact():
 
     assert captured["prospect"].name == "B"
     assert captured["prospect"].url == "https://b.ru/"
+
+
+# ── 2b. UX fix (2026-10-07): prospect passed to find_contact uses the ──────
+# already-enriched display_name, not the raw/possibly-URL-ish name ─────────
+
+def test_handler_passes_enriched_display_name_as_prospect_name():
+    """Real production bug: ProspectCandidate.name is the raw search
+    result title (occasionally the bare URL when a result had no real
+    title) - the PERSON card's "Проект:" line must show the pretty,
+    already-enriched name ("Гильдия гидов Magput") shown everywhere else
+    for this same prospect, not that raw value."""
+    candidates_data = [_candidate_dict(
+        name="https://magput.ru/tours/gildiya-gidov-magput",
+        url="https://magput.ru/tours/gildiya-gidov-magput",
+        display_name="Гильдия гидов Magput",
+    )]
+    state = State({"partner_discovery_candidates": candidates_data, "partner_discovery_index": 0})
+    callback = Callback(PARTNER_CONTACT_FIND)
+
+    captured = {}
+
+    async def _fake_find_contact(prospect, *, llm_provider, web_search_provider):
+        captured["prospect"] = prospect
+        return _project_contact()
+
+    with patch("app.handlers.partner_discovery.find_contact", _fake_find_contact):
+        run(on_partner_contact_find(callback, state))
+
+    assert captured["prospect"].name == "Гильдия гидов Magput"
+
+
+def test_handler_falls_back_to_raw_name_when_no_display_name():
+    """No enrichment ran (e.g. no LLM provider) - falls back to the raw
+    name exactly as before this fix, same as test_handler_passes_current_
+    prospect_to_find_contact above."""
+    candidates_data = [_candidate_dict(name="Raw Name", url="https://a.ru/")]
+    state = State({"partner_discovery_candidates": candidates_data, "partner_discovery_index": 0})
+    callback = Callback(PARTNER_CONTACT_FIND)
+
+    captured = {}
+
+    async def _fake_find_contact(prospect, *, llm_provider, web_search_provider):
+        captured["prospect"] = prospect
+        return _project_contact()
+
+    with patch("app.handlers.partner_discovery.find_contact", _fake_find_contact):
+        run(on_partner_contact_find(callback, state))
+
+    assert captured["prospect"].name == "Raw Name"
 
 
 # ── 3. PERSON / HIGH renders correctly ──────────────────────────────────────

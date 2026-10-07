@@ -408,9 +408,20 @@ def _dict_to_prospect(candidate: dict) -> ProspectCandidate:
     """Rebuilds the ProspectCandidate that _candidate_to_dict flattened for
     FSM storage. rank_score is not stored (it is an internal ranking aid,
     never needed again once a prospect is already chosen) - 0 is a safe
-    placeholder since contact_discovery.find_contact never reads it."""
+    placeholder since contact_discovery.find_contact never reads it.
+
+    UX fix (2026-10-07): uses the already-enriched "display_name" when
+    present (set once by _enrich_candidates right after search - see
+    _render_card, which already shows this same name on the prospect
+    card), falling back to the raw "name" (candidate.name - a search
+    result's title, occasionally the bare URL when a result had no real
+    title) only when no enrichment ran. Contact Discovery's own
+    _project_name() falls back to prospect.url when prospect.name is
+    falsy, and without this fix a PERSON card's "Проект:" line could
+    show that raw/URL-ish name instead of the pretty one already shown
+    everywhere else for this same prospect."""
     return ProspectCandidate(
-        name=candidate["name"],
+        name=candidate.get("display_name") or candidate["name"],
         url=candidate["url"],
         prospect_type=ProspectType(candidate["prospect_type"]),
         query=candidate["query"],

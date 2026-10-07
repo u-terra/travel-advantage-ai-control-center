@@ -508,6 +508,76 @@ def test_existing_owner_flow_unaffected_by_professional_fallback(monkeypatch):
     assert search_provider.queries == []
 
 
+# ── URL normalization (evidence_url / search-result URL hygiene) ───────────
+
+def test_amp_artifact_is_stripped_from_result_url():
+    """Real production artifact: a search result URL for an AMP-enabled
+    page came back as ".../gildiya-gidov-magput?amp&amp" - a dangling,
+    valueless "amp" query token, not a real parameter."""
+    dirty = "https://magput.ru/tours/gildiya-gidov-magput?amp&amp"
+
+    assert contact_discovery._normalize_result_url(dirty) == (
+        "https://magput.ru/tours/gildiya-gidov-magput"
+    )
+
+
+def test_normal_query_parameters_are_not_touched():
+    """A real parameter that merely contains the substring "amp" (e.g. a
+    utm tag) must survive untouched - only the exact, valueless "amp"
+    artifact token is ever stripped."""
+    clean = "https://example.com/page?utm_source=amp&id=5"
+
+    assert contact_discovery._normalize_result_url(clean) == clean
+
+
+def test_url_with_no_query_is_unchanged():
+    url = "https://magput.ru/tours/gildiya-gidov-magput"
+
+    assert contact_discovery._normalize_result_url(url) == url
+
+
+def test_html_entity_ampersand_is_decoded():
+    dirty = "https://example.com/page?a=1&amp;b=2"
+
+    assert contact_discovery._normalize_result_url(dirty) == "https://example.com/page?a=1&b=2"
+
+
+def test_evidence_url_from_dirty_search_result_is_normalized_end_to_end(monkeypatch):
+    """The normalization must actually reach the final ContactCandidate,
+    not just the standalone helper - the fake search provider returns the
+    exact dirty production URL, and the LLM echoes it back verbatim (as a
+    real LLM would, copying the URL it was shown) - the membership check
+    against already-normalized results must still accept it, and the
+    final evidence_url must be clean."""
+    prospect = _community_prospect()
+    _patch_fetch(monkeypatch, None, raises=True)
+    dirty_url = "https://magput.ru/tours/gildiya-gidov-magput?amp&amp"
+    clean_url = "https://magput.ru/tours/gildiya-gidov-magput"
+    hit = _result(
+        "Гильдия гидов Magput", dirty_url,
+        "Ярмоленко Людмила Борисовна, экскурсовод Гильдии гидов Magput.",
+    )
+    llm = _FakeLLM([
+        json.dumps({"found": False}),  # step D (owner search)
+        json.dumps({
+            "found": True,
+            "display_name": "Ярмоленко Людмила Борисовна",
+            "role": "экскурсовод",
+            "evidence_text": "Ярмоленко Людмила Борисовна, экскурсовод Гильдии гидов Magput.",
+            "evidence_url": clean_url,  # LLM copies the URL as shown to it - already normalized
+        }),
+    ])
+    search_provider = _FakeSearchProvider({"гид": [hit]})
+
+    contact = run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    assert contact.contact_type == ContactType.PERSON
+    assert contact.evidence_url == clean_url
+    assert "amp&amp" not in contact.evidence_url
+
+
 # ── Safe fallback on failure ─────────────────────────────────────────────────
 
 def test_llm_exception_falls_back_to_project(monkeypatch):
