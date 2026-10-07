@@ -42,8 +42,8 @@ def _output(text: str) -> dict:
     }
 
 
-def _capture_payload(message="Представься", **generate_kwargs) -> dict:
-    provider = OpenAIChatProvider(ChatConfig(api_key="test-key"))
+def _capture_payload(message="Представься", model="gpt-5.6-terra", **generate_kwargs) -> dict:
+    provider = OpenAIChatProvider(ChatConfig(api_key="test-key", model=model))
     captured: dict = {}
 
     def fake_urlopen(req, timeout=None):
@@ -83,6 +83,24 @@ def test_instructions_tell_the_model_its_identity_overrides_dynamic_context():
     knowledge_index = instructions.index("ПРОФИЛЬ БИЗНЕСА")
     assert identity_index < knowledge_index
     assert "устаревш" in instructions.lower()
+
+
+# ── reasoning.effort: only reasoning-capable models accept it ──────────────
+# Real production defect this guards: gpt-4o-mini (used by a different
+# ChatConfig/call site in this codebase) got "reasoning": {"effort": "low"}
+# unconditionally and the Responses API rejected the whole request with
+# HTTP 400 "Unsupported parameter: 'reasoning.effort'".
+
+def test_non_reasoning_model_omits_reasoning_param():
+    payload = _capture_payload(model="gpt-4o-mini")
+
+    assert "reasoning" not in payload
+
+
+def test_reasoning_capable_model_keeps_reasoning_param():
+    payload = _capture_payload(model="gpt-5.6-terra")
+
+    assert payload["reasoning"] == {"effort": "low"}
 
 
 # ── attachments: current-turn multimodal input, no-attachment path unchanged ──

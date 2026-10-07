@@ -9,6 +9,21 @@ from app.domain.usage import LLMUsage
 
 _RESPONSES_URL = "https://api.openai.com/v1/responses"
 
+# "reasoning.effort" is only accepted by reasoning-capable models (the o-
+# series and gpt-5.x family this codebase's default ChatConfig.model
+# already targets) - sending it to a non-reasoning model (e.g. gpt-4o-mini,
+# used elsewhere in this codebase via a different ChatConfig) makes the
+# Responses API reject the whole request with HTTP 400 "Unsupported
+# parameter: 'reasoning.effort'". Prefix check, not an exhaustive model
+# registry: every model name actually used in this codebase today
+# unambiguously starts with one of these two prefixes, and a new
+# non-reasoning model would need a real code change to be wired in anyway.
+_REASONING_CAPABLE_MODEL_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+
+
+def _supports_reasoning_effort(model: str) -> bool:
+    return (model or "").lower().startswith(_REASONING_CAPABLE_MODEL_PREFIXES)
+
 
 @dataclass(frozen=True)
 class ChatConfig:
@@ -188,9 +203,10 @@ class OpenAIChatProvider:
             "model": self.config.model,
             "instructions": instructions,
             "input": input_items,
-            "reasoning": {"effort": "low"},
             "max_output_tokens": 4000,
         }
+        if _supports_reasoning_effort(self.config.model):
+            payload["reasoning"] = {"effort": "low"}
 
         req = urllib.request.Request(
             _RESPONSES_URL,

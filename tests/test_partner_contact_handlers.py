@@ -172,7 +172,9 @@ def test_project_fallback_card():
     assert "не найден" in text.lower()
     assert "не существует" not in text.lower()
     assert "Example Club" in text
-    assert "https://example-club.ru/" in text
+    # UX fix (2026-10-07): the URL must appear only once - via the
+    # "🌐 Открыть проект" button, not duplicated into the card text.
+    assert "https://example-club.ru/" not in text
     markup = kwargs["reply_markup"]
     urls = {btn.url for row in markup.inline_keyboard for btn in row if btn.url}
     assert "https://example-club.ru/" in urls

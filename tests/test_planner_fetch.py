@@ -236,6 +236,35 @@ def test_oversized_response_rejected_via_actual_body_size(monkeypatch):
         fetch_public_source_sync("http://competitor.example.com/")
 
 
+def test_response_within_raised_bounded_limit_is_accepted(monkeypatch):
+    """Contact Discovery live test (2026-10-07): a real prospect page
+    (magput.ru) was ~1.97MB and got rejected by the old 1_500_000 cap even
+    though it was perfectly legitimate public HTML. MAX_RESPONSE_BYTES was
+    raised to a still-bounded 3_000_000 - this pins that a body in the new
+    gap (old cap < body <= new cap) is now accepted, not just documented."""
+    _patch_public_dns(monkeypatch, hostname="competitor.example.com")
+    assert fetch_module.MAX_RESPONSE_BYTES > 1_500_000
+    body_size = min(fetch_module.MAX_RESPONSE_BYTES, 1_900_000)
+    html = b"<html><body><p>" + b"a" * body_size + b"</p></body></html>"
+    response = _FakeResponse(headers={"Content-Type": "text/html"}, body=html)
+    _patch_open_returning(monkeypatch, response)
+
+    result = fetch_public_source_sync("http://competitor.example.com/")
+    assert result.text
+
+
+def test_response_still_rejected_once_it_exceeds_the_raised_cap(monkeypatch):
+    """The raised cap is still a bound, not "unlimited" - a body beyond it
+    is still rejected exactly like before."""
+    _patch_public_dns(monkeypatch, hostname="competitor.example.com")
+    oversized_body = b"a" * (fetch_module.MAX_RESPONSE_BYTES + 100)
+    response = _FakeResponse(headers={"Content-Type": "text/plain"}, body=oversized_body)
+    _patch_open_returning(monkeypatch, response)
+
+    with pytest.raises(PublicSourceFetchError, match="exceeds"):
+        fetch_public_source_sync("http://competitor.example.com/")
+
+
 def test_timeout_is_reported_as_controlled_error(monkeypatch):
     _patch_public_dns(monkeypatch, hostname="competitor.example.com")
 
@@ -261,6 +290,54 @@ def test_binary_content_type_is_rejected(monkeypatch):
 
 
 # ── content extraction ──────────────────────────────────────────────────────
+
+
+def test_main_tag_content_preferred_over_surrounding_nav(monkeypatch):
+    """Contact Discovery live test (2026-10-07): a real prospect page
+    (quinta.ru) has a huge header mega-menu (country/filter list) before
+    its actual body content in document order. That nav text alone filled
+    the entire MAX_EXTRACTED_TEXT_CHARS cap, so the real page content never
+    reached the LLM. When a substantial <main> is present, its text should
+    be preferred over the full page (nav included)."""
+    _patch_public_dns(monkeypatch, hostname="competitor.example.com")
+    nav_filler = "<li>Country{}</li>".format(0)
+    nav_items = "".join(f"<li>Country{i}</li>" for i in range(200))
+    main_content = (
+        "The author of this tour is Ivan Petrov, our lead organizer and guide "
+        "for every custom itinerary we run across the region this season."
+    )
+    html = (
+        "<html><head><title>Travel Co</title></head><body>"
+        f"<nav><ul>{nav_items}</ul></nav>"
+        f"<main><p>{main_content}</p></main>"
+        "<footer>Contact us at the office</footer>"
+        "</body></html>"
+    ).encode("utf-8")
+    response = _FakeResponse(headers={"Content-Type": "text/html; charset=utf-8"}, body=html)
+    _patch_open_returning(monkeypatch, response)
+
+    result = fetch_public_source_sync("http://competitor.example.com/")
+    assert "Ivan Petrov" in result.text
+    assert "Country0" not in result.text
+    assert "Contact us at the office" not in result.text
+
+
+def test_full_page_text_used_when_no_main_or_article_tag(monkeypatch):
+    """Unchanged behavior for every page without <main>/<article> - exact
+    same extraction as before this feature existed."""
+    _patch_public_dns(monkeypatch, hostname="competitor.example.com")
+    html = (
+        b"<html><head><title>Travel Co</title></head><body>"
+        b"<nav>Home About</nav>"
+        b"<div><p>We offer custom tours across the region every season.</p></div>"
+        b"</body></html>"
+    )
+    response = _FakeResponse(headers={"Content-Type": "text/html; charset=utf-8"}, body=html)
+    _patch_open_returning(monkeypatch, response)
+
+    result = fetch_public_source_sync("http://competitor.example.com/")
+    assert "We offer custom tours" in result.text
+    assert "Home About" in result.text
 
 
 def test_html_text_extraction_strips_script_and_style(monkeypatch):

@@ -116,7 +116,16 @@ log = logging.getLogger(__name__)
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 MAX_REDIRECTS = 5
 REQUEST_TIMEOUT_SECONDS = 10.0
-MAX_RESPONSE_BYTES = 1_500_000
+# Contact Discovery diagnostic (production live test, 2026-10-07): a real
+# prospect page (magput.ru's guide-directory page) was ~1.97MB and got
+# rejected outright by the previous 1_500_000 cap, so Contact Discovery
+# never even got to read it. Raised to a still-bounded 3_000_000 (covers
+# that page with headroom) - NOT unlimited: _read_limited below still
+# aborts and discards the partial buffer the instant this cap is crossed,
+# so an arbitrarily large/hostile response is still capped in memory, just
+# at a higher, explicitly-chosen ceiling. SSRF/host/IP-pinning checks above
+# this are completely unaffected.
+MAX_RESPONSE_BYTES = 3_000_000
 ALLOWED_CONTENT_TYPE_PREFIXES = ("text/html", "text/plain")
 # Mirrors app.handlers.source_analysis's own 12_000-char cap on user-pasted
 # text (receive_source_text) - fetched content feeds the same analyze_source
@@ -426,23 +435,39 @@ def _decode_body(body: bytes, content_type: str) -> str:
 
 class _TextExtractingParser(HTMLParser):
     _SKIP_TAGS = frozenset({"script", "style", "noscript", "template"})
+    # Contact Discovery diagnostic (production live test, 2026-10-07): a
+    # real prospect page (quinta.ru) has a huge header mega-menu (country/
+    # filter list) before its actual body content in document order, which
+    # alone filled the entire MAX_EXTRACTED_TEXT_CHARS cap - the real page
+    # content never reached the LLM prompt. <main>/<article> text is
+    # tracked separately so the caller can prefer it when present and
+    # substantial, without changing extraction for pages that have neither
+    # (every page this parser handled before this still gets the exact same
+    # get_text() result).
+    _MAIN_CONTENT_TAGS = frozenset({"main", "article"})
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._chunks: list[str] = []
+        self._main_chunks: list[str] = []
         self._skip_depth = 0
+        self._main_depth = 0
         self._in_title = False
         self.title = ""
 
     def handle_starttag(self, tag: str, attrs: Any) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
+        if tag in self._MAIN_CONTENT_TAGS:
+            self._main_depth += 1
         if tag == "title":
             self._in_title = True
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self._SKIP_TAGS and self._skip_depth > 0:
             self._skip_depth -= 1
+        if tag in self._MAIN_CONTENT_TAGS and self._main_depth > 0:
+            self._main_depth -= 1
         if tag == "title":
             self._in_title = False
 
@@ -455,9 +480,14 @@ class _TextExtractingParser(HTMLParser):
         stripped = data.strip()
         if stripped:
             self._chunks.append(stripped)
+            if self._main_depth:
+                self._main_chunks.append(stripped)
 
     def get_text(self) -> str:
         return "\n".join(self._chunks)
+
+    def get_main_text(self) -> str:
+        return "\n".join(self._main_chunks)
 
 
 def _extract_html(html_text: str) -> tuple[str, str]:
@@ -467,6 +497,15 @@ def _extract_html(html_text: str) -> tuple[str, str]:
         parser.close()
     except Exception as exc:
         raise PublicSourceFetchError(f"failed to parse HTML: {exc}") from exc
+
+    # Prefer <main>/<article> text over the full page when it's present and
+    # substantial (not just a stray empty/near-empty tag) - see
+    # _TextExtractingParser's docstring comment. Below MIN_EXTRACTED_TEXT_CHARS
+    # it's not trustworthy as "the real content", so fall back to the whole
+    # page exactly as before <main>/<article> tracking existed.
+    main_text = parser.get_main_text()
+    if len(main_text) >= MIN_EXTRACTED_TEXT_CHARS:
+        return main_text, parser.title.strip()
     return parser.get_text(), parser.title.strip()
 
 

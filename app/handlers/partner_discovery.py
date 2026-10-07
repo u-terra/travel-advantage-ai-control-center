@@ -465,13 +465,16 @@ def _render_contact_card(contact: dict) -> str:
             f"Подтверждение: {confidence_label}"
         )
 
+    # UX fix (2026-10-07): the URL used to appear both here in the card
+    # text AND as the "🌐 Открыть проект" button below it (same URL,
+    # contact_dict["public_url"] in both places) - shown once now, via the
+    # button only.
     project = _strip_private_contact_data(contact["project_name"])
     return (
         "Конкретный публичный представитель проекта не найден в доступных "
         "публичных источниках.\n\n"
         "Можно обратиться через официальный канал проекта:\n\n"
-        f"{project}\n"
-        f"{contact['public_url']}"
+        f"{project}"
     )
 
 
