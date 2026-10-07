@@ -141,6 +141,14 @@ WEB_RESOURCES_BACK = "web_resources_back"
 PARTNER_DISCOVERY_NEXT = "partner_discovery:next"
 PARTNER_DISCOVERY_MORE = "partner_discovery:more"
 
+# Contact Discovery v0 (layered on top of Partner Discovery v0, same FSM
+# batch - see app/handlers/partner_discovery.py's _on_partner_contact_find/
+# _on_partner_contact_back). PARTNER_CONTACT_BACK re-renders the current
+# prospect card from the batch already in FSM state - it never triggers a
+# new PartnerDiscoveryService.find_candidates() call.
+PARTNER_CONTACT_FIND = "partner_discovery:contact_find"
+PARTNER_CONTACT_BACK = "partner_discovery:contact_back"
+
 # Ресурсы Travel Advantage: показываются только workspace с явным признаком
 # BusinessProfile.ta_affiliated (не по business_type, названию или описанию —
 # см. app/domain/business_profiles.py и app/handlers/menu.py:
@@ -247,8 +255,17 @@ def lobby_expired_keyboard() -> ReplyKeyboardMarkup:
 def partner_discovery_card_keyboard(url: str, has_more_in_batch: bool) -> InlineKeyboardMarkup:
     """One Partner Discovery v0 candidate card. "✍️ Подготовить обращение"
     is deliberately absent - a separate next step, not part of v0 (see
-    app/handlers/partner_discovery.py's module docstring)."""
-    rows = [[InlineKeyboardButton(text="🌐 Открыть", url=url)]]
+    app/handlers/partner_discovery.py's module docstring).
+
+    "👤 Найти человека для контакта" triggers Contact Discovery v0 for
+    THIS card's prospect (app.services.contact_discovery.find_contact) -
+    see app/handlers/partner_discovery.py's on_partner_contact_find."""
+    rows = [
+        [InlineKeyboardButton(text="🌐 Открыть", url=url)],
+        [InlineKeyboardButton(
+            text="👤 Найти человека для контакта", callback_data=PARTNER_CONTACT_FIND,
+        )],
+    ]
     if has_more_in_batch:
         rows.append([
             InlineKeyboardButton(text="⏭ Следующий", callback_data=PARTNER_DISCOVERY_NEXT),
@@ -264,6 +281,18 @@ def partner_discovery_retry_keyboard() -> InlineKeyboardMarkup:
     """Zero-results/end-of-batch message: only the "find more" action."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Найти ещё", callback_data=PARTNER_DISCOVERY_MORE)],
+    ])
+
+
+def partner_contact_card_keyboard(contact_type: str, url: str) -> InlineKeyboardMarkup:
+    """Contact Discovery v0 result card. "✍️ Подготовить обращение" and
+    "⏭ Другой контакт" are deliberately absent in v0 (see the task this
+    was built for). "↩️ Назад к проекту" is PARTNER_CONTACT_BACK, which
+    only re-renders the current prospect card - no new search."""
+    open_label = "🌐 Открыть профиль/источник" if contact_type == "person" else "🌐 Открыть проект"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=open_label, url=url)],
+        [InlineKeyboardButton(text="↩️ Назад к проекту", callback_data=PARTNER_CONTACT_BACK)],
     ])
 
 

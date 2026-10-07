@@ -48,17 +48,22 @@ from aiogram.types import CallbackQuery, Message
 
 from app.chat_provider import OpenAIChatProvider
 from app.domain.competitor_discovery import canonical_domain
+from app.domain.contacts import ContactCandidate
 from app.domain.partners import WorkspaceContext
-from app.domain.prospects import ProspectCandidate, ProspectType
+from app.domain.prospects import EvidenceSource, ProspectCandidate, ProspectFit, ProspectType
 from app.keyboards import (
     BTN_FIND_PARTNERS,
+    PARTNER_CONTACT_BACK,
+    PARTNER_CONTACT_FIND,
     PARTNER_DISCOVERY_MORE,
     PARTNER_DISCOVERY_NEXT,
     active_main_menu,
+    partner_contact_card_keyboard,
     partner_discovery_card_keyboard,
     partner_discovery_retry_keyboard,
 )
 from app.repositories.partner_repository import PartnerRepository
+from app.services.contact_discovery import find_contact
 from app.services.partner_discovery import PartnerDiscoveryService
 from app.services.web_search.service import WebSearchService
 
@@ -67,6 +72,7 @@ log = logging.getLogger(__name__)
 
 _STATE_CANDIDATES = "partner_discovery_candidates"
 _STATE_INDEX = "partner_discovery_index"
+_STATE_CONTACT = "partner_discovery_contact"
 
 _WORKSPACE_UNAVAILABLE = "Рабочее пространство недоступно."
 _SEARCH_FAILED = "Не удалось выполнить поиск сейчас. Попробуйте немного позже."
@@ -75,6 +81,11 @@ _NO_RESULTS = (
     "Можно попробовать ещё раз немного позже."
 )
 _BATCH_EXHAUSTED = "Это все найденные кандидаты в этой подборке."
+_CONTACT_CHECK_FAILED = (
+    "Не удалось проверить публичные контакты сейчас. Попробуйте немного позже."
+)
+
+_CONTACT_CONFIDENCE_LABELS = {"HIGH": "высокое", "MEDIUM": "среднее"}
 
 _TYPE_LABELS = {
     "travel_agent": "Турагент",
@@ -390,6 +401,80 @@ def _render_card(candidates: list[dict], index: int) -> tuple[str, bool]:
     return text, has_more
 
 
+# ── Contact Discovery v0 integration (read-only layer on top of the same
+# FSM batch; app/services/contact_discovery.py itself is not modified here) ──
+
+def _dict_to_prospect(candidate: dict) -> ProspectCandidate:
+    """Rebuilds the ProspectCandidate that _candidate_to_dict flattened for
+    FSM storage. rank_score is not stored (it is an internal ranking aid,
+    never needed again once a prospect is already chosen) - 0 is a safe
+    placeholder since contact_discovery.find_contact never reads it."""
+    return ProspectCandidate(
+        name=candidate["name"],
+        url=candidate["url"],
+        prospect_type=ProspectType(candidate["prospect_type"]),
+        query=candidate["query"],
+        evidence=candidate["evidence"],
+        evidence_source=EvidenceSource(candidate["evidence_source"]),
+        fit=ProspectFit(candidate["fit"]),
+        rank_score=0,
+    )
+
+
+def _contact_to_dict(contact: ContactCandidate) -> dict:
+    return {
+        "contact_type": contact.contact_type.value,
+        "display_name": contact.display_name,
+        "role": contact.role,
+        "project_name": contact.project_name,
+        "public_url": contact.public_url,
+        "evidence_text": contact.evidence_text,
+        "evidence_url": contact.evidence_url,
+        "confidence": contact.confidence.value if contact.confidence else None,
+        "provenance": contact.provenance,
+    }
+
+
+def _strip_private_contact_data(text: str | None) -> str:
+    """Defense in depth (privacy requirement #9): strips any phone/email
+    that might have slipped into evidence text before it reaches the user,
+    reusing the same patterns _strip_noise already applies to prospect
+    cards. contact_discovery's own prompts already forbid this content -
+    this is a second, independent guard on the render path."""
+    cleaned = _PHONE_RE.sub(" ", text or "")
+    cleaned = _EMAIL_RE.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _render_contact_card(contact: dict) -> str:
+    if contact["contact_type"] == "person":
+        name = _strip_private_contact_data(contact["display_name"])
+        role = _strip_private_contact_data(contact.get("role"))
+        project = _strip_private_contact_data(contact["project_name"])
+        evidence = _strip_private_contact_data(contact["evidence_text"])
+        confidence_label = _CONTACT_CONFIDENCE_LABELS.get(
+            contact.get("confidence"), contact.get("confidence") or "",
+        )
+        return (
+            "Найден публичный контакт\n\n"
+            f"{name}\n"
+            f"Роль: {role}\n"
+            f"Проект: {project}\n\n"
+            f"Почему выбран:\n{evidence}\n\n"
+            f"Источник:\n{contact['evidence_url']}\n\n"
+            f"Подтверждение: {confidence_label}"
+        )
+
+    project = _strip_private_contact_data(contact["project_name"])
+    return (
+        "Конкретный публичный представитель проекта не найден в доступных "
+        "публичных источниках.\n\n"
+        "Можно обратиться через официальный канал проекта:\n\n"
+        f"{project}\n"
+        f"{contact['public_url']}"
+    )
+
+
 async def _run_discovery(web_search_service: WebSearchService | None) -> list[dict] | None:
     """Returns a list of candidate dicts, an empty list on zero results, or
     None on a search failure - the three cases the caller must render
@@ -493,4 +578,76 @@ async def on_partner_discovery_more(
     if callback.message is not None:
         await callback.message.answer(
             text, reply_markup=partner_discovery_card_keyboard(candidates[0]["url"], has_more),
+        )
+
+
+@router.callback_query(F.data == PARTNER_CONTACT_FIND)
+async def on_partner_contact_find(
+    callback: CallbackQuery,
+    state: FSMContext,
+    web_search_service: WebSearchService | None = None,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+) -> None:
+    """Contact Discovery v0 for the CURRENT prospect card only - reads the
+    already-chosen candidate out of the same FSM batch on-screen, never
+    starts a new Partner Discovery search. Reuses the already-deployed
+    LLM provider and web search provider - no new vendor, no DB write.
+
+    app.services.contact_discovery.find_contact already resolves every
+    internal failure to a safe ContactType.PROJECT fallback and never
+    raises by design; this try/except is integration-level defense in
+    depth only (e.g. a provider wiring error), per task requirement #8 -
+    the user must never see a traceback."""
+    await callback.answer()
+    data = await state.get_data()
+    candidates: list[dict] = data.get(_STATE_CANDIDATES) or []
+    index: int = data.get(_STATE_INDEX, 0)
+    if not candidates or index >= len(candidates):
+        return
+
+    prospect = _dict_to_prospect(candidates[index])
+    web_search_provider = (
+        web_search_service.provider if web_search_service is not None else None
+    )
+    try:
+        contact = await find_contact(
+            prospect,
+            llm_provider=partner_enrichment_llm_provider,
+            web_search_provider=web_search_provider,
+        )
+    except Exception:
+        log.warning("partner_discovery: contact discovery failed", exc_info=True)
+        if callback.message is not None:
+            await callback.message.answer(_CONTACT_CHECK_FAILED)
+        return
+
+    contact_dict = _contact_to_dict(contact)
+    await state.update_data(**{_STATE_CONTACT: contact_dict})
+    text = _render_contact_card(contact_dict)
+    url = (
+        contact_dict["evidence_url"] if contact_dict["contact_type"] == "person"
+        else contact_dict["public_url"]
+    )
+    if callback.message is not None:
+        await callback.message.answer(
+            text, reply_markup=partner_contact_card_keyboard(contact_dict["contact_type"], url),
+        )
+
+
+@router.callback_query(F.data == PARTNER_CONTACT_BACK)
+async def on_partner_contact_back(callback: CallbackQuery, state: FSMContext) -> None:
+    """Returns to the same prospect card already in FSM state - no new
+    PartnerDiscoveryService.find_candidates() call (task requirement #7)."""
+    await callback.answer()
+    data = await state.get_data()
+    candidates: list[dict] = data.get(_STATE_CANDIDATES) or []
+    index: int = data.get(_STATE_INDEX, 0)
+    if not candidates or index >= len(candidates):
+        return
+
+    text, has_more = _render_card(candidates, index)
+    if callback.message is not None:
+        await callback.message.answer(
+            text,
+            reply_markup=partner_discovery_card_keyboard(candidates[index]["url"], has_more),
         )
