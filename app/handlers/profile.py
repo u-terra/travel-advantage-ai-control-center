@@ -23,7 +23,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from app.domain.business_profiles import BusinessProfile
+from app.domain.business_profiles import (
+    BusinessProfile,
+    InvalidTaEnrollmentUrlError,
+    validate_ta_enrollment_url,
+)
 from app.domain.partners import WorkspaceContext, WorkspaceUserPreferences
 from app.keyboards import (
     BTN_V2_PROFILE,
@@ -101,6 +105,19 @@ _COMPANY_FIELD_PROMPTS: dict[str, str] = {
 }
 _LIST_COMPANY_FIELDS = frozenset({"specializations", "destinations", "audiences"})
 
+_TA_ENROLLMENT_URL_PROMPT = (
+    "🔗 Ваша персональная ссылка Travel Advantage\n\n"
+    "Пришлите ссылку (http:// или https://), по которой новый Member/Partner "
+    "сможет зарегистрироваться через вас. Эта ссылка видна только вам и "
+    "используется только в ваших исходящих сообщениях - у других workspace "
+    "есть собственные ссылки, они никогда не смешиваются.\n\n"
+    "Чтобы удалить сохранённую ссылку, отправьте «-»."
+)
+_TA_ENROLLMENT_URL_INVALID = (
+    "Не похоже на корректную ссылку (должна начинаться с http:// или "
+    "https://). Проверьте и пришлите ещё раз."
+)
+
 
 class ProfileEdit(StatesGroup):
     waiting_for_company_field = State()
@@ -108,6 +125,12 @@ class ProfileEdit(StatesGroup):
     waiting_for_style_description = State()
     waiting_for_example_post = State()
     waiting_for_avoid_phrases = State()
+    # 2026-10-07: own dedicated state (not waiting_for_company_field) -
+    # this field has its own URL-shape validation
+    # (validate_ta_enrollment_url) and is stored via its own repository
+    # method (update_ta_enrollment_url), not the generic
+    # _apply_company_field_and_save/BusinessProfileService.update() path.
+    waiting_for_ta_enrollment_url = State()
 
 
 def _parse_list(raw: str) -> list[str]:
@@ -153,6 +176,9 @@ def _profile_text(profile: BusinessProfile) -> str:
     tone = str(context.communication.get("tone") or "").strip()
     if tone:
         lines.append(f"Стиль общения компании: {tone}")
+
+    if profile.ta_affiliated and profile.ta_enrollment_url:
+        lines.append(f"Моя ссылка Travel Advantage: {profile.ta_enrollment_url}")
 
     contact_parts = [
         f"{key}: {value.strip()}"
@@ -253,7 +279,10 @@ async def on_profile_company_menu(
         return
     await callback.message.edit_text(
         _COMPANY_INTRO,
-        reply_markup=profile_company_fields_keyboard(show_business_type=not profile.ta_affiliated),
+        reply_markup=profile_company_fields_keyboard(
+            show_business_type=not profile.ta_affiliated,
+            show_ta_enrollment_url=profile.business_type == "club_partner" and profile.ta_affiliated,
+        ),
     )
 
 
@@ -265,7 +294,7 @@ async def on_profile_field_selected(
     partner_repository: PartnerRepository,
 ) -> None:
     field = (callback.data or "").removeprefix(PROFILE_FIELD_PREFIX)
-    if field not in _COMPANY_FIELD_PROMPTS and field != "business_type":
+    if field not in _COMPANY_FIELD_PROMPTS and field not in {"business_type", "ta_enrollment_url"}:
         await callback.answer(_STALE_TEXT, show_alert=True)
         return
     await callback.answer()
@@ -277,6 +306,17 @@ async def on_profile_field_selected(
     profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
     if profile is None:
         await callback.message.edit_text(_PROFILE_MISSING, reply_markup=profile_back_keyboard())
+        return
+
+    if field == "ta_enrollment_url":
+        if not (profile.business_type == "club_partner" and profile.ta_affiliated):
+            await callback.answer(_STALE_TEXT, show_alert=True)
+            return
+        await state.set_state(ProfileEdit.waiting_for_ta_enrollment_url)
+        prompt = _TA_ENROLLMENT_URL_PROMPT
+        if profile.ta_enrollment_url:
+            prompt = f"Сейчас: {profile.ta_enrollment_url}\n\n{prompt}"
+        await callback.message.edit_text(prompt)
         return
 
     if field == "business_type":
@@ -373,6 +413,44 @@ async def on_company_field_answer(
         await state.clear()
         await message.answer(_COMPANY_WRITE_BLOCKED)
         return
+    await state.clear()
+    await message.answer("Сохранено.")
+    await _show_menu(message)
+
+
+@router.message(ProfileEdit.waiting_for_ta_enrollment_url, F.text & ~F.text.startswith("/"))
+async def on_ta_enrollment_url_answer(
+    message: Message,
+    state: FSMContext,
+    workspace_context: WorkspaceContext | None,
+    partner_repository: PartnerRepository,
+) -> None:
+    """Saves/clears ONLY this workspace's own ta_enrollment_url - see
+    PartnerRepository.update_ta_enrollment_url. "-" clears the link
+    (Оркестратор must never invent one when it's empty - see
+    app/handlers/partner_discovery.py); anything else must pass
+    validate_ta_enrollment_url (http(s):// shape only) before being saved."""
+    if workspace_context is None:
+        await state.clear()
+        await message.answer(_STALE_TEXT)
+        return
+    if workspace_context.role not in {"owner", "admin"}:
+        await state.clear()
+        await message.answer(_COMPANY_WRITE_BLOCKED)
+        return
+    raw = (message.text or "").strip()
+    if raw == "-":
+        await partner_repository.update_ta_enrollment_url(workspace_context.workspace_id, None)
+        await state.clear()
+        await message.answer("Ссылка удалена.")
+        await _show_menu(message)
+        return
+    try:
+        validated_url = validate_ta_enrollment_url(raw)
+    except InvalidTaEnrollmentUrlError:
+        await message.answer(_TA_ENROLLMENT_URL_INVALID)
+        return
+    await partner_repository.update_ta_enrollment_url(workspace_context.workspace_id, validated_url)
     await state.clear()
     await message.answer("Сохранено.")
     await _show_menu(message)

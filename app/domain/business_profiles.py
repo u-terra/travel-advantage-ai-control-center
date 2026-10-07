@@ -67,3 +67,31 @@ class BusinessProfile:
     # workspace (владелец сервиса, provisioning), никогда через самостоятельное
     # редактирование профиля.
     ta_affiliated: bool = False
+    # Персональная referral/enrollment ссылка ВЛАДЕЛЬЦА ИМЕННО ЭТОГО workspace
+    # на Travel Advantage (2026-10-07). В отличие от ta_affiliated, это поле
+    # САМОСТОЯТЕЛЬНО редактируется владельцем/админом через «⚙️ Профиль»
+    # (app/handlers/profile.py) - см. PartnerRepository.update_ta_enrollment_url.
+    # Строго tenant-specific: никогда не используется как общий/дефолтный URL
+    # для другого workspace, никогда не имеет глобального fallback. Пусто,
+    # пока владелец не укажет свою ссылку - Оркестратор не придумывает и не
+    # подставляет чужую ссылку вместо неё (см. app/handlers/partner_discovery.py).
+    ta_enrollment_url: str | None = None
+
+
+class InvalidTaEnrollmentUrlError(ValueError):
+    pass
+
+
+def validate_ta_enrollment_url(raw: str) -> str:
+    """Minimal validation only - http(s):// scheme, not arbitrary text. No
+    referral-path/domain pattern is enforced (MWR Life's real enrollment
+    link format is not confirmed yet - see the task this was built for),
+    so any http(s) URL is accepted as-is, trimmed of whitespace."""
+    value = (raw or "").strip()
+    if not value.lower().startswith(("http://", "https://")):
+        raise InvalidTaEnrollmentUrlError(
+            "Ссылка должна начинаться с http:// или https://"
+        )
+    if " " in value or len(value) > 2048:
+        raise InvalidTaEnrollmentUrlError("Похоже, это не ссылка - проверьте формат")
+    return value

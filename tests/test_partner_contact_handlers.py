@@ -13,7 +13,9 @@ from app.domain.contacts import ContactCandidate, ContactConfidence, ContactType
 from app.domain.partners import WorkspaceContext
 from app.handlers.partner_discovery import (
     _looks_like_draft_command,
+    _looks_like_invitation_link_command,
     on_draft_command_text,
+    on_invitation_link_command_text,
     on_partner_contact_back,
     on_partner_contact_draft,
     on_partner_contact_find,
@@ -352,9 +354,13 @@ def _workspace(workspace_id: int = 1) -> WorkspaceContext:
     return WorkspaceContext(100, workspace_id, "owner", "active")
 
 
-def _partner_repository(ta_affiliated: bool = False, business_name: str | None = None):
+def _partner_repository(
+    ta_affiliated: bool = False, business_name: str | None = None,
+    ta_enrollment_url: str | None = None,
+):
     profile = SimpleNamespace(
         business_type="club_partner", ta_affiliated=ta_affiliated, business_name=business_name,
+        ta_enrollment_url=ta_enrollment_url,
     )
     return SimpleNamespace(get_business_profile=AsyncMock(return_value=profile))
 
@@ -617,3 +623,124 @@ def test_prospect_card_keyboard_unaffected_by_draft_feature():
     markup = partner_discovery_card_keyboard("https://a.ru/", has_more_in_batch=True)
     callback_datas = {btn.callback_data for row in markup.inline_keyboard for btn in row if btn.callback_data}
     assert PARTNER_CONTACT_DRAFT not in callback_datas
+
+
+# ── 14. Multi-tenant ta_enrollment_url - cold draft never includes a link ──
+
+class TextMessage:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.answers = []
+
+    async def answer(self, text, **kwargs):
+        self.answers.append((text, kwargs))
+
+
+def test_cold_draft_never_contains_a_url_even_with_ta_enrollment_url_set():
+    """Task requirement #1: the FIRST cold-open message to a freshly-found
+    PERSON never auto-inserts ta_enrollment_url, even when it's set."""
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+
+    run(on_partner_contact_draft(
+        callback, state,
+        partner_repository=_partner_repository(
+            ta_affiliated=True, business_name="Südwind Travel Club",
+            ta_enrollment_url="https://mwrlife.example/enroll/workspace-a",
+        ),
+        workspace_context=_workspace(1),
+    ))
+
+    text, _ = callback.message.answers[0]
+    assert "http" not in text.lower()
+
+
+def test_workspace_a_and_b_get_their_own_enrollment_url_never_mixed():
+    """Task requirement: tenant-specific link, never another workspace's."""
+    state_a = State({"partner_discovery_contact": _person_contact_dict()})
+    message_a = TextMessage("дай ему мою ссылку")
+    run(on_invitation_link_command_text(
+        message_a, state_a,
+        partner_repository=_partner_repository(
+            ta_affiliated=True, ta_enrollment_url="https://mwrlife.example/enroll/workspace-a",
+        ),
+        workspace_context=_workspace(1),
+    ))
+    text_a, _ = message_a.answers[0]
+
+    other_person = {
+        "contact_type": "person", "display_name": "Петров Андрей Викторович",
+        "role": "организатор туров", "project_name": "Клуб Путешественников Атлас",
+        "public_url": "https://atlas-club.example/", "evidence_text": "ev",
+        "evidence_url": "https://atlas-club.example/about", "confidence": "MEDIUM",
+        "provenance": "professional_search",
+    }
+    state_b = State({"partner_discovery_contact": other_person})
+    message_b = TextMessage("отправь ссылку для регистрации")
+    run(on_invitation_link_command_text(
+        message_b, state_b,
+        partner_repository=_partner_repository(
+            ta_affiliated=True, ta_enrollment_url="https://mwrlife.example/enroll/workspace-b",
+        ),
+        workspace_context=_workspace(2),
+    ))
+    text_b, _ = message_b.answers[0]
+
+    assert "https://mwrlife.example/enroll/workspace-a" in text_a
+    assert "https://mwrlife.example/enroll/workspace-b" not in text_a
+    assert "https://mwrlife.example/enroll/workspace-b" in text_b
+    assert "https://mwrlife.example/enroll/workspace-a" not in text_b
+
+
+def test_missing_enrollment_url_does_not_fall_back_to_anything():
+    """Task requirement: empty ta_enrollment_url must never get a global/
+    shared/other-tenant fallback - only a clear message telling the owner
+    to set their own link first."""
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    message = TextMessage("подготовь приглашение со ссылкой")
+
+    run(on_invitation_link_command_text(
+        message, state,
+        partner_repository=_partner_repository(ta_affiliated=True, ta_enrollment_url=None),
+        workspace_context=_workspace(1),
+    ))
+
+    text, _ = message.answers[0]
+    assert "http" not in text.lower()
+    assert "укажите свою" in text.lower()
+
+
+def test_explicit_invitation_request_uses_current_workspace_link():
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    message = TextMessage("Подготовь приглашение со ссылкой")
+
+    run(on_invitation_link_command_text(
+        message, state,
+        partner_repository=_partner_repository(
+            ta_affiliated=True, ta_enrollment_url="https://mwrlife.example/enroll/workspace-a",
+        ),
+        workspace_context=_workspace(1),
+    ))
+
+    text, _ = message.answers[0]
+    assert "https://mwrlife.example/enroll/workspace-a" in text
+    assert "Людмила Борисовна" in text
+
+
+def test_invitation_link_filter_requires_person_contact_in_state():
+    message = SimpleNamespace(text="дай ему мою ссылку")
+    state_with_person = State({"partner_discovery_contact": _person_contact_dict()})
+    state_empty = State({})
+
+    assert run(_looks_like_invitation_link_command(message, state_with_person)) is True
+    assert run(_looks_like_invitation_link_command(message, state_empty)) is False
+
+
+def test_invitation_link_filter_does_not_steal_cold_draft_commands():
+    """The two natural-language intents must not collide - a plain
+    "подготовь письмо" must never be caught by the link-specific filter."""
+    message = SimpleNamespace(text="Подготовь письмо Ярмоленко")
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+
+    assert run(_looks_like_invitation_link_command(message, state)) is False
+    assert run(_looks_like_draft_command(message, state)) is True

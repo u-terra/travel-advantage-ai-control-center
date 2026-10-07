@@ -9,7 +9,9 @@ import pytest
 
 from app.domain.business_profiles import (
     BusinessProfileValidationError,
+    InvalidTaEnrollmentUrlError,
     StaleBusinessProfileError,
+    validate_ta_enrollment_url,
 )
 from app.domain.partners import WorkspaceContext
 from app.repositories import partner_repository as partner_module
@@ -131,9 +133,10 @@ def test_pre_ta_affiliated_schema_gets_column_and_grandfathers_ta_owner_only(
     (не любой club_partner)."""
     db_path = tmp_path / "db.sqlite3"
     pre_ddl = partner_module._PROFILE_SCHEMA.replace(
-        "ta_affiliated INTEGER NOT NULL DEFAULT 0,\n    ", ""
+        "ta_affiliated INTEGER NOT NULL DEFAULT 0,\n    ta_enrollment_url TEXT,\n    ", ""
     )
     assert "ta_affiliated" not in pre_ddl
+    assert "ta_enrollment_url" not in pre_ddl
     with sqlite3.connect(db_path) as db:
         db.executescript("""CREATE TABLE partner_workspaces (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
@@ -379,3 +382,99 @@ def test_claims_and_purpose_specific_safe_projections(tmp_path: Path) -> None:
         "workspace_id", "competitors", "credentials", "crm_token", "source_subscriptions",
     }
     assert forbidden.isdisjoint(assistant)
+
+
+# ── ta_enrollment_url (2026-10-07): tenant-specific Travel Advantage link ───
+
+def test_validate_ta_enrollment_url_accepts_http_and_https():
+    assert validate_ta_enrollment_url("https://mwrlife.example/enroll/abc") == (
+        "https://mwrlife.example/enroll/abc"
+    )
+    assert validate_ta_enrollment_url("http://mwrlife.example/enroll/abc") == (
+        "http://mwrlife.example/enroll/abc"
+    )
+
+
+def test_validate_ta_enrollment_url_rejects_arbitrary_text():
+    for bad in ("не ссылка", "www.example.com", "ftp://example.com/x", ""):
+        with pytest.raises(InvalidTaEnrollmentUrlError):
+            validate_ta_enrollment_url(bad)
+
+
+def test_business_profile_defaults_ta_enrollment_url_to_none(tmp_path: Path) -> None:
+    repo = PartnerRepository(tmp_path / "db.sqlite3")
+    run(repo.init())
+    ws = workspace(repo.db_path, "one")
+    profile = run(repo.create_business_profile(ws, **profile_values()))
+    assert profile.ta_enrollment_url is None
+
+
+def test_update_ta_enrollment_url_is_tenant_specific_and_never_mixed(tmp_path: Path) -> None:
+    """Two different workspaces set two different links; reading one must
+    never return the other's (no shared/global fallback of any kind)."""
+    repo = PartnerRepository(tmp_path / "db.sqlite3")
+    run(repo.init())
+    ws_a = workspace(repo.db_path, "a")
+    ws_b = workspace(repo.db_path, "b")
+    run(repo.create_business_profile(ws_a, **profile_values()))
+    run(repo.create_business_profile(ws_b, **profile_values()))
+
+    run(repo.update_ta_enrollment_url(ws_a, "https://mwrlife.example/enroll/workspace-a"))
+    run(repo.update_ta_enrollment_url(ws_b, "https://mwrlife.example/enroll/workspace-b"))
+
+    profile_a = run(repo.get_business_profile(ws_a))
+    profile_b = run(repo.get_business_profile(ws_b))
+    assert profile_a.ta_enrollment_url == "https://mwrlife.example/enroll/workspace-a"
+    assert profile_b.ta_enrollment_url == "https://mwrlife.example/enroll/workspace-b"
+    assert profile_a.ta_enrollment_url != profile_b.ta_enrollment_url
+
+
+def test_update_ta_enrollment_url_can_clear_without_inventing_a_value(tmp_path: Path) -> None:
+    repo = PartnerRepository(tmp_path / "db.sqlite3")
+    run(repo.init())
+    ws = workspace(repo.db_path, "one")
+    run(repo.create_business_profile(ws, **profile_values()))
+    run(repo.update_ta_enrollment_url(ws, "https://mwrlife.example/enroll/abc"))
+
+    cleared = run(repo.update_ta_enrollment_url(ws, None))
+
+    assert cleared.ta_enrollment_url is None
+
+
+def test_pre_ta_enrollment_url_schema_migrates_with_null_default(tmp_path: Path) -> None:
+    """A Stage-5 DB (ta_affiliated already exists, ta_enrollment_url does
+    not yet) must migrate additively - existing rows get NULL, nothing
+    invented, nothing lost."""
+    db_path = tmp_path / "db.sqlite3"
+    pre_ddl = partner_module._PROFILE_SCHEMA.replace(
+        "ta_enrollment_url TEXT,\n    ", ""
+    )
+    assert "ta_enrollment_url" not in pre_ddl
+    with sqlite3.connect(db_path) as db:
+        db.executescript("""CREATE TABLE partner_workspaces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );""")
+        db.execute(pre_ddl.format(table_name="partner_profiles"))
+        db.execute(
+            "INSERT INTO partner_workspaces VALUES (1, 'A', 'a', 'active', 'w', 'w')"
+        )
+        columns = (
+            "id, workspace_id, telegram_user_id, partner_name, project_name, "
+            "business_description, communication_style, business_name, business_type, "
+            "ta_affiliated, short_description, profile_status, schema_version, revision, "
+            "context_json, created_at, updated_at"
+        )
+        db.execute(
+            f"INSERT INTO partner_profiles ({columns}) VALUES "
+            "(1, 1, 100, 'Owner', 'Club', 'Описание', 'Спокойный', "
+            "'Club', 'club_partner', 1, 'Описание', 'incomplete', 1, 1, '{}', 'c', 'u')"
+        )
+
+    run(PartnerRepository(db_path).init())
+    run(PartnerRepository(db_path).init())  # идемпотентность
+
+    profile = run(PartnerRepository(db_path).get_business_profile(1))
+    assert profile.ta_enrollment_url is None
+    assert profile.ta_affiliated is True

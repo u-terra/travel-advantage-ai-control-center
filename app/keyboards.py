@@ -705,10 +705,17 @@ def profile_menu_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def profile_company_fields_keyboard(*, show_business_type: bool) -> InlineKeyboardMarkup:
+def profile_company_fields_keyboard(
+    *, show_business_type: bool, show_ta_enrollment_url: bool = False,
+) -> InlineKeyboardMarkup:
     """show_business_type=False для ta_affiliated workspace — тип бизнеса
 
-    там задан системно и пользователю недоступен для редактирования."""
+    там задан системно и пользователю недоступен для редактирования.
+
+    show_ta_enrollment_url=True (2026-10-07) only for club_partner +
+    ta_affiliated workspaces - see app/handlers/profile.py's
+    _ta_enrollment_url_field_prompt/on_ta_enrollment_url_answer and
+    app.domain.business_profiles.BusinessProfile.ta_enrollment_url."""
     rows = [
         [InlineKeyboardButton(
             text="Название бизнеса", callback_data=f"{PROFILE_FIELD_PREFIX}business_name",
@@ -717,6 +724,11 @@ def profile_company_fields_keyboard(*, show_business_type: bool) -> InlineKeyboa
     if show_business_type:
         rows.append([InlineKeyboardButton(
             text="Тип бизнеса", callback_data=f"{PROFILE_FIELD_PREFIX}business_type",
+        )])
+    if show_ta_enrollment_url:
+        rows.append([InlineKeyboardButton(
+            text="🔗 Моя ссылка Travel Advantage",
+            callback_data=f"{PROFILE_FIELD_PREFIX}ta_enrollment_url",
         )])
     rows.extend([
         [InlineKeyboardButton(

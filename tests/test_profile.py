@@ -27,6 +27,7 @@ from app.handlers.profile import (
     on_profile_avoid_menu,
     on_profile_view,
     on_style_description_answer,
+    on_ta_enrollment_url_answer,
     show_profile_menu,
 )
 from app.keyboards import PROFILE_FIELD_PREFIX
@@ -286,6 +287,105 @@ def test_independent_workspace_can_edit_business_type_via_buttons(tmp_path: Path
 
     profile = _run(repo.get_business_profile(workspace_id))
     assert profile.business_type == "travel_company"
+
+
+# --- 🔗 Моя ссылка Travel Advantage (2026-10-07) ----------------------------
+
+def test_ta_enrollment_url_field_shown_only_for_club_partner_ta_affiliated(
+    tmp_path: Path,
+) -> None:
+    repo = PartnerRepository(tmp_path / "ta.sqlite3")
+    _run(repo.init())
+    membership = _run(repo.bootstrap_owner_membership(OWNER_ID))
+    workspace_id = membership.workspace_id
+
+    company_menu = _Callback("profile_menu:company")
+    _run(on_profile_company_menu(company_menu, _ctx(workspace_id), repo))
+    labels = [
+        b.text for row in company_menu.message.edits[0][1].inline_keyboard for b in row
+    ]
+    assert "🔗 Моя ссылка Travel Advantage" in labels
+
+
+def test_ta_enrollment_url_field_absent_for_ordinary_workspace(tmp_path: Path) -> None:
+    repo, workspace_id = _run(_independent_stack(tmp_path))
+    company_menu = _Callback("profile_menu:company")
+    _run(on_profile_company_menu(company_menu, _ctx(workspace_id), repo))
+    labels = [
+        b.text for row in company_menu.message.edits[0][1].inline_keyboard for b in row
+    ]
+    assert "🔗 Моя ссылка Travel Advantage" not in labels
+
+
+def test_owner_can_set_ta_enrollment_url(tmp_path: Path) -> None:
+    repo = PartnerRepository(tmp_path / "ta.sqlite3")
+    _run(repo.init())
+    membership = _run(repo.bootstrap_owner_membership(OWNER_ID))
+    workspace_id = membership.workspace_id
+    state = _State()
+
+    select = _Callback(f"{PROFILE_FIELD_PREFIX}ta_enrollment_url")
+    _run(on_profile_field_selected(select, state, _ctx(workspace_id), repo))
+    assert state.state == ProfileEdit.waiting_for_ta_enrollment_url
+
+    message = _Message("https://mwrlife.example/enroll/vladimir")
+    _run(on_ta_enrollment_url_answer(message, state, _ctx(workspace_id), repo))
+
+    profile = _run(repo.get_business_profile(workspace_id))
+    assert profile.ta_enrollment_url == "https://mwrlife.example/enroll/vladimir"
+    assert state.state is None
+
+
+def test_ta_enrollment_url_rejects_non_url_text(tmp_path: Path) -> None:
+    repo = PartnerRepository(tmp_path / "ta.sqlite3")
+    _run(repo.init())
+    membership = _run(repo.bootstrap_owner_membership(OWNER_ID))
+    workspace_id = membership.workspace_id
+    state = _State()
+    _run(on_profile_field_selected(
+        _Callback(f"{PROFILE_FIELD_PREFIX}ta_enrollment_url"), state, _ctx(workspace_id), repo,
+    ))
+
+    message = _Message("это не ссылка")
+    _run(on_ta_enrollment_url_answer(message, state, _ctx(workspace_id), repo))
+
+    profile = _run(repo.get_business_profile(workspace_id))
+    assert profile.ta_enrollment_url is None
+    assert state.state == ProfileEdit.waiting_for_ta_enrollment_url  # stays, lets retry
+
+
+def test_ta_enrollment_url_dash_clears_it(tmp_path: Path) -> None:
+    repo = PartnerRepository(tmp_path / "ta.sqlite3")
+    _run(repo.init())
+    membership = _run(repo.bootstrap_owner_membership(OWNER_ID))
+    workspace_id = membership.workspace_id
+    _run(repo.update_ta_enrollment_url(workspace_id, "https://mwrlife.example/enroll/vladimir"))
+    state = _State()
+    _run(on_profile_field_selected(
+        _Callback(f"{PROFILE_FIELD_PREFIX}ta_enrollment_url"), state, _ctx(workspace_id), repo,
+    ))
+
+    _run(on_ta_enrollment_url_answer(_Message("-"), state, _ctx(workspace_id), repo))
+
+    profile = _run(repo.get_business_profile(workspace_id))
+    assert profile.ta_enrollment_url is None
+
+
+def test_ta_enrollment_url_is_scoped_to_its_own_workspace(tmp_path: Path) -> None:
+    repo_a = PartnerRepository(tmp_path / "ta_a.sqlite3")
+    _run(repo_a.init())
+    membership_a = _run(repo_a.bootstrap_owner_membership(OWNER_ID))
+    repo_b = PartnerRepository(tmp_path / "ta_b.sqlite3")
+    _run(repo_b.init())
+    membership_b = _run(repo_b.bootstrap_owner_membership(OWNER_ID + 1))
+
+    _run(repo_a.update_ta_enrollment_url(membership_a.workspace_id, "https://mwrlife.example/enroll/a"))
+    _run(repo_b.update_ta_enrollment_url(membership_b.workspace_id, "https://mwrlife.example/enroll/b"))
+
+    profile_a = _run(repo_a.get_business_profile(membership_a.workspace_id))
+    profile_b = _run(repo_b.get_business_profile(membership_b.workspace_id))
+    assert profile_a.ta_enrollment_url == "https://mwrlife.example/enroll/a"
+    assert profile_b.ta_enrollment_url == "https://mwrlife.example/enroll/b"
 
 
 # --- ✍️ Мой стиль общения ----------------------------------------------------

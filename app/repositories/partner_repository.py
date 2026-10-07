@@ -190,6 +190,7 @@ _PROFILE_SCHEMA = """CREATE TABLE {table_name} (
         business_type IN ('independent_agent', 'club_partner', 'agency', 'travel_company', 'other')
     ),
     ta_affiliated INTEGER NOT NULL DEFAULT 0,
+    ta_enrollment_url TEXT,
     short_description TEXT NOT NULL,
     profile_status TEXT NOT NULL CHECK (profile_status IN ('incomplete', 'usable')),
     schema_version INTEGER NOT NULL CHECK (schema_version = 1),
@@ -233,6 +234,12 @@ _STAGE5_PROFILE_COLUMNS = _LEGACY_PROFILE_COLUMNS | frozenset({
 # распознать более раннюю базу и безопасно доехать ALTER TABLE ADD COLUMN,
 # не трогая остальные данные.
 _PRE_TA_AFFILIATED_PROFILE_COLUMNS = _STAGE5_PROFILE_COLUMNS - {"ta_affiliated"}
+# Stage6 (2026-10-07): добавлена ta_enrollment_url - персональная referral/
+# enrollment ссылка владельца конкретного workspace (см.
+# app.domain.business_profiles.BusinessProfile.ta_enrollment_url). Нужен
+# отдельный frozenset и своя additive-миграция, так как _init_profiles
+# требует точного совпадения набора столбцов с одним из известных состояний.
+_STAGE6_PROFILE_COLUMNS = _STAGE5_PROFILE_COLUMNS | frozenset({"ta_enrollment_url"})
 
 # Точная сигнатура internal-профиля Travel Advantage, создаваемого
 # ensure_owner_workspace/_create_initial_owner. Используется только для
@@ -343,17 +350,27 @@ class PartnerRepository:
             for row in await (await db.execute("PRAGMA table_info(partner_profiles)")).fetchall()
         }
         column_names = frozenset(columns)
-        if column_names == _STAGE5_PROFILE_COLUMNS:
-            await _assert_stage5_profile_schema(db, columns)
+        if column_names == _STAGE6_PROFILE_COLUMNS:
+            await _assert_stage6_profile_schema(db, columns)
             await _assert_foreign_keys(db)
             return
-        if column_names == _PRE_TA_AFFILIATED_PROFILE_COLUMNS:
-            await self._add_ta_affiliated_column(db)
+        if column_names == _STAGE5_PROFILE_COLUMNS:
+            await self._add_ta_enrollment_url_column(db)
             columns = {
                 row["name"]: row for row in
                 await (await db.execute("PRAGMA table_info(partner_profiles)")).fetchall()
             }
-            await _assert_stage5_profile_schema(db, columns)
+            await _assert_stage6_profile_schema(db, columns)
+            await _assert_foreign_keys(db)
+            return
+        if column_names == _PRE_TA_AFFILIATED_PROFILE_COLUMNS:
+            await self._add_ta_affiliated_column(db)
+            await self._add_ta_enrollment_url_column(db)
+            columns = {
+                row["name"]: row for row in
+                await (await db.execute("PRAGMA table_info(partner_profiles)")).fetchall()
+            }
+            await _assert_stage6_profile_schema(db, columns)
             await _assert_foreign_keys(db)
             return
         if column_names != _LEGACY_PROFILE_COLUMNS:
@@ -424,6 +441,21 @@ class PartnerRepository:
                 "UPDATE partner_profiles SET ta_affiliated = 1 "
                 "WHERE project_name = ? AND business_description = ?",
                 (_TA_OWNER_PROJECT_NAME, _TA_OWNER_BUSINESS_DESCRIPTION),
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+
+    @staticmethod
+    async def _add_ta_enrollment_url_column(db: aiosqlite.Connection) -> None:
+        """Additive миграция для баз, созданных до ta_enrollment_url (2026-10-07).
+        Nullable, без backfill - ни у одного существующего workspace ещё нет
+        персональной ссылки, и выдумывать её здесь нельзя."""
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute(
+                "ALTER TABLE partner_profiles ADD COLUMN ta_enrollment_url TEXT"
             )
             await db.commit()
         except BaseException:
@@ -1417,6 +1449,31 @@ class PartnerRepository:
             raise RuntimeError("Business Profile исчез после обновления")
         return _business_profile_from_row(row)
 
+    async def update_ta_enrollment_url(
+        self, workspace_id: int, ta_enrollment_url: str | None,
+    ) -> BusinessProfile:
+        """Sets/clears ONLY this workspace's own personal Travel Advantage
+        referral/enrollment link (2026-10-07) - see BusinessProfile.
+        ta_enrollment_url. Caller (app/handlers/profile.py) is responsible
+        for validating the URL shape (validate_ta_enrollment_url) and for
+        gating WHO may call this (owner/admin of THIS workspace only) -
+        this method itself only ever touches the row matching the given
+        workspace_id, so one tenant's link can never leak into another's."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "UPDATE partner_profiles SET ta_enrollment_url = ?, revision = revision + 1, "
+                "updated_at = ? WHERE workspace_id = ?",
+                (ta_enrollment_url, _now(), workspace_id),
+            )
+            await db.commit()
+            row = await (await db.execute(
+                "SELECT * FROM partner_profiles WHERE workspace_id = ?", (workspace_id,)
+            )).fetchone()
+        if row is None:
+            raise RuntimeError("Business Profile не найден при обновлении ta_enrollment_url")
+        return _business_profile_from_row(row)
+
     async def update_profile(
         self,
         workspace_id: int,
@@ -1596,6 +1653,7 @@ def _business_profile_from_row(row: aiosqlite.Row) -> BusinessProfile:
         schema_version=row["schema_version"], revision=row["revision"],
         context=_context_dto(normalized), created_at=row["created_at"],
         updated_at=row["updated_at"], ta_affiliated=bool(row["ta_affiliated"]),
+        ta_enrollment_url=row["ta_enrollment_url"],
     )
 
 
@@ -1840,6 +1898,38 @@ async def _assert_stage5_profile_schema(
     )
     if any(fragment not in normalized for fragment in fragments):
         raise BusinessProfileSchemaError("Нарушены Stage-5 CHECK constraints")
+
+
+async def _assert_stage6_profile_schema(
+    db: aiosqlite.Connection, columns: Mapping[str, aiosqlite.Row]
+) -> None:
+    """Same as Stage-5, plus ta_enrollment_url - which must stay NULLable
+    (most workspaces have no personal link yet, and none should be invented)."""
+    if columns["id"]["pk"] != 1:
+        raise BusinessProfileSchemaError("partner_profiles.id не является primary key")
+    required_not_null = _STAGE6_PROFILE_COLUMNS - {"id", "telegram_user_id", "ta_enrollment_url"}
+    if any(columns[name]["notnull"] != 1 for name in required_not_null):
+        raise BusinessProfileSchemaError("Нарушена Stage-6 nullability partner_profiles")
+    if columns["telegram_user_id"]["notnull"] != 0:
+        raise BusinessProfileSchemaError("telegram_user_id должен быть nullable")
+    if columns["ta_enrollment_url"]["notnull"] != 0:
+        raise BusinessProfileSchemaError("ta_enrollment_url должен быть nullable")
+    default = str(columns["revision"]["dflt_value"] or "").strip("'\"() ")
+    if default != "1":
+        raise BusinessProfileSchemaError("revision должен иметь default 1")
+    await _assert_unique_and_fk(db)
+    sql_row = await (await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='partner_profiles'"
+    )).fetchone()
+    normalized = "".join(str(sql_row["sql"] or "").lower().split())
+    fragments = (
+        "check(business_typein('independent_agent','club_partner','agency','travel_company','other'))",
+        "check(profile_statusin('incomplete','usable'))",
+        "check(schema_version=1)",
+        "check(revision>=1)",
+    )
+    if any(fragment not in normalized for fragment in fragments):
+        raise BusinessProfileSchemaError("Нарушены Stage-6 CHECK constraints")
 
 
 async def _assert_legacy_profile_schema(

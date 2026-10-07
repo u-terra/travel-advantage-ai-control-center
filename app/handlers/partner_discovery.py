@@ -1024,3 +1024,110 @@ async def on_draft_command_text(
         await message.answer(_DRAFT_UNAVAILABLE)
         return
     await message.answer(_DRAFT_HEADER + draft)
+
+
+# ── Invitation WITH enrollment link (2026-10-07) - explicit intent only ────
+# Separate from the cold-open draft above by design (task requirement #1/#2):
+# the FIRST message to a freshly-found PERSON never includes a link, even
+# when BusinessProfile.ta_enrollment_url is set. This second, explicitly-
+# triggered intent is the ONLY place that URL is ever surfaced - and only
+# for the workspace it belongs to (BusinessProfile.ta_enrollment_url is read
+# via THIS workspace_context.workspace_id alone, so one tenant's link can
+# never appear in another tenant's outreach). No LLM call here on purpose -
+# a confirmed URL must never pass through a model that could alter/invent
+# it; this is a plain deterministic template over already-confirmed fields.
+
+_INVITATION_LINK_MISSING = (
+    "Чтобы подготовить приглашение со ссылкой, сначала укажите свою "
+    "персональную ссылку Travel Advantage: «⚙️ Профиль» → «🏢 Профиль "
+    "компании» → «🔗 Моя ссылка Travel Advantage»."
+)
+
+_INVITATION_LINK_COMMAND_RE = re.compile(
+    r"(дай\w*|пришли\w*|отправ\w*|подготов\w*).*ссылк"
+    r"|приглашени\w*.*ссылк"
+    r"|ссылк\w*.*регистрац",
+    re.IGNORECASE,
+)
+
+
+def _fallback_invitation_with_link(contact: dict, enrollment_url: str) -> str:
+    name = _strip_private_contact_data(contact.get("display_name") or "")
+    role = _strip_private_contact_data(contact.get("role") or "")
+    project = _strip_private_contact_data(contact.get("project_name") or "")
+    greeting_name = _greeting_name(name)
+
+    if role and project:
+        context_clause = f" - вижу, что вы {role} в «{project}»"
+    elif role:
+        context_clause = f" - вижу, что вы {role}"
+    else:
+        context_clause = ""
+
+    lines = [
+        f"Здравствуйте, {greeting_name}!",
+        "",
+        f"Хочу прислать ссылку для знакомства с Travel Advantage{context_clause}.",
+        "",
+        f"Регистрация по ссылке: {enrollment_url}",
+        "",
+        "Если будут вопросы - с радостью отвечу.",
+    ]
+    return "\n".join(lines)
+
+
+async def _invitation_link_for_current_contact(
+    state: FSMContext,
+    partner_repository: PartnerRepository | None,
+    workspace_context: WorkspaceContext | None,
+) -> tuple[dict | None, str | None]:
+    """Returns (contact, invitation_text). contact is None when there is no
+    PERSON contact in FSM state. invitation_text is None when a contact
+    exists but THIS workspace has no ta_enrollment_url set - the caller
+    must then show _INVITATION_LINK_MISSING, never substitute another
+    workspace's link or a global default."""
+    data = await state.get_data()
+    contact: dict | None = data.get(_STATE_CONTACT)
+    if not contact or contact.get("contact_type") != "person":
+        return None, None
+
+    enrollment_url: str | None = None
+    if partner_repository is not None and workspace_context is not None:
+        profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
+        if profile is not None:
+            enrollment_url = getattr(profile, "ta_enrollment_url", None) or None
+
+    if not enrollment_url:
+        return contact, None
+    return contact, _fallback_invitation_with_link(contact, enrollment_url)
+
+
+async def _looks_like_invitation_link_command(message: Message, state: FSMContext) -> bool:
+    """Same gating pattern as _looks_like_draft_command - only matches with
+    a PERSON contact already in FSM state, so an unrelated message always
+    falls through unaffected."""
+    text = message.text or ""
+    if not _INVITATION_LINK_COMMAND_RE.search(text):
+        return False
+    data = await state.get_data()
+    contact = data.get(_STATE_CONTACT)
+    return bool(contact and contact.get("contact_type") == "person")
+
+
+@router.message(_looks_like_invitation_link_command)
+async def on_invitation_link_command_text(
+    message: Message,
+    state: FSMContext,
+    partner_repository: PartnerRepository | None = None,
+    workspace_context: WorkspaceContext | None = None,
+) -> None:
+    contact, invitation = await _invitation_link_for_current_contact(
+        state, partner_repository, workspace_context,
+    )
+    if contact is None:
+        await message.answer(_DRAFT_UNAVAILABLE)
+        return
+    if invitation is None:
+        await message.answer(_INVITATION_LINK_MISSING)
+        return
+    await message.answer(_DRAFT_HEADER + invitation)
