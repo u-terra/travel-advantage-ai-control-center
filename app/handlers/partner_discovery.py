@@ -30,9 +30,19 @@ candidate in the batch falls back to that same safe, noise-free text -
 the batch never partially succeeds in a way that could expose raw
 page/snippet noise.
 
-Not yet built (separate step, after this UX is validated): "✍️ Подготовить
-обращение"/outreach drafting, auto-send, persistence of discovered
-candidates.
+Outreach draft v0 (2026-10-07): "✉️ Подготовить первое сообщение" on a
+PERSON contact card (see on_partner_contact_draft), plus free-text commands
+("Подготовь письмо Ярмоленко", "Что ей написать?" etc. - see
+_DRAFT_COMMAND_RE/on_draft_command_text) that continue the SAME Contact
+Discovery context already in FSM state. Draft only - never auto-sent,
+always requires human approval before sending; never invents the
+candidate's interest/motive/need, never promises income or results.
+Travel-Advantage-specific wording is only ever added when the workspace is
+BusinessProfile.ta_affiliated (see _is_ta_affiliated) - club_partner alone
+never implies it, same established separation as the rest of this module.
+
+Still not built: auto-send, persistence of discovered candidates/drafts to
+a database.
 """
 
 from __future__ import annotations
@@ -54,6 +64,7 @@ from app.domain.prospects import EvidenceSource, ProspectCandidate, ProspectFit,
 from app.keyboards import (
     BTN_FIND_PARTNERS,
     PARTNER_CONTACT_BACK,
+    PARTNER_CONTACT_DRAFT,
     PARTNER_CONTACT_FIND,
     PARTNER_DISCOVERY_MORE,
     PARTNER_DISCOVERY_NEXT,
@@ -101,11 +112,41 @@ _FIT_LABELS = {"STRONG": "высокое", "POSSIBLE": "возможное"}
 _TYPE_SENTENCE = {
     "travel_agent": "Работает как турагентство/туроператор.",
     "tour_organizer": "Организует туры и путешествия.",
-    "guide": "Работает гидом/экскурсоводом.",
-    "travel_creator": "Ведёт публичный travel-блог/канал о путешествиях.",
-    "travel_club": "Объединяет сообщество путешественников.",
+    # 2026-10-07: guide/travel_creator/travel_club get an explicit
+    # club_partner fit rationale (own audience/community - a public signal,
+    # never a claim that the subject wants a partnership or income) per the
+    # task this was built for. travel_agent/tour_organizer/other stay
+    # unchanged - they are the generic/company case this task asks to rank
+    # below personalized candidates (see _PERSONALIZED_PROSPECT_TYPES), not
+    # to rewrite into a false personal-fit claim.
+    "guide": (
+        "Работает гидом/экскурсоводом - личная аудитория путешественников, "
+        "для которой дополнительный travel-инструмент потенциально может быть полезен."
+    ),
+    "travel_creator": (
+        "Ведёт публичный travel-блог/канал о путешествиях - собственная аудитория, "
+        "интересующаяся темой путешествий."
+    ),
+    "travel_club": (
+        "Объединяет сообщество путешественников/гидов - внутри такого ресурса часто "
+        "можно найти несколько конкретных людей, работающих с путешественниками."
+    ),
     "other_travel_project": "Публичный travel-проект.",
 }
+
+# club_partner fit demotion (2026-10-07): a "has its own audience/community"
+# signal (guide/travel_creator/travel_club) is ranked above a generic
+# business-only match (travel_agent/tour_organizer/other) WITHIN a batch -
+# display order only, a stable sort over what
+# app.services.partner_discovery.PartnerDiscoveryService already returned.
+# Never touches that service's own query/scoring/dedupe/ranking.
+_PERSONALIZED_PROSPECT_TYPES = frozenset({"guide", "travel_creator", "travel_club"})
+
+
+def _rank_for_club_partner_fit(candidates: list[dict]) -> list[dict]:
+    return sorted(
+        candidates, key=lambda c: c["prospect_type"] not in _PERSONALIZED_PROSPECT_TYPES,
+    )
 
 # ── Presentation-only cleanup (card name & explanation) ─────────────────────
 # Everything below only reshapes what the service already returned for
@@ -225,12 +266,29 @@ _ENRICHMENT_INSTRUCTIONS = """Ты обрабатываешь данные дл�
   TITLE "Гильдия гидов - Магазин Путешествий" -> display_name "Магазин Путешествий" (вторая часть - название, первая - описание).
   TITLE пустой или нечитаемый, EVIDENCE не называет субъекта по имени -> допустим hostname.
 
-- "reason": 1-2 коротких предложения, только на основе предоставленного public evidence. Опиши (а) чем публично занимается субъект и (б) почему это делает его релевантным потенциальным контактом для travel/club-partner use case. СТРОГО ЗАПРЕЩЕНО: утверждать или намекать, что субъект хочет партнёрство; упоминать интерес к доходу или выгоде; обещать какой-либо результат; упоминать Travel Advantage без явного фактического основания в evidence; включать телефоны, email, пункты меню, cookie/согласие, формы заявок, цены/рассрочки или любой служебный текст сайта.
+- "reason": 1-2 коротких предложения, только на основе предоставленного public evidence. Опиши:
+  (а) чем публично занимается субъект;
+  (б) ПОЧЕМУ именно этот субъект потенциально подходит как club-partner контакт - используй ТОЛЬКО явно подтверждённые публичные признаки: собственная туристическая аудитория/сообщество; гид/экскурсовод/организатор путешествий/автор туров; travel-блог или сообщество; работа непосредственно с путешественниками. Если из evidence не следует ни один такой признак (это просто обычная туристическая компания/сайт без признака личной аудитории или сообщества) - прямо скажи это нейтрально (например: "Обычный туристический бизнес без явного признака личной аудитории или сообщества"), не выдумывай признак, которого нет.
+
+СТРОГО ЗАПРЕЩЕНО: утверждать или намекать, что субъект уже заинтересован в партнёрстве; утверждать, что он ищет дополнительный доход; утверждать, что ему нужен Travel Advantage; упоминать любые другие неподтверждённые мотивы; обещать какой-либо результат/выгоду/доход; включать телефоны, email, пункты меню, cookie/согласие, формы заявок, цены/рассрочки или любой служебный текст сайта.{ta_affiliated_clause}
 
 Верни СТРОГО валидный JSON-массив из ровно {count} объектов, в ТОМ ЖЕ порядке, что и во входном списке, без markdown-разметки, без пояснений до или после JSON. Формат каждого элемента: {{"display_name": "...", "reason": "..."}}"""
 
+# Only appended when the current workspace is BusinessProfile.ta_affiliated
+# (never by business_type/club_partner alone - see this module's own
+# docstring and app/handlers/menu.py's established business_type-vs-
+# ta_affiliated distinction). Still forbids inventing interest/need - it
+# only permits NAMING Travel Advantage as a possible tool, same fail-closed
+# posture as the rest of this prompt.
+_TA_AFFILIATED_ENRICHMENT_CLAUSE = (
+    " Эта рабочая область работает с Travel Advantage, поэтому в \"reason\" можно "
+    "упомянуть Travel Advantage как потенциальный дополнительный инструмент для "
+    "этого человека/его аудитории - но только как возможность, не как факт, что "
+    "он в ней заинтересован или нуждается."
+)
 
-def _build_enrichment_prompt(candidates: list[dict]) -> str:
+
+def _build_enrichment_prompt(candidates: list[dict], ta_affiliated: bool = False) -> str:
     items = []
     for i, candidate in enumerate(candidates, 1):
         items.append(
@@ -240,7 +298,10 @@ def _build_enrichment_prompt(candidates: list[dict]) -> str:
             f"   Источник evidence: {candidate['evidence_source']}\n"
             f"   EVIDENCE (public text): {candidate['evidence'][:600]}"
         )
-    header = _ENRICHMENT_INSTRUCTIONS.format(count=len(candidates))
+    header = _ENRICHMENT_INSTRUCTIONS.format(
+        count=len(candidates),
+        ta_affiliated_clause=_TA_AFFILIATED_ENRICHMENT_CLAUSE if ta_affiliated else "",
+    )
     return header + "\n\nКандидаты:\n\n" + "\n\n".join(items)
 
 
@@ -311,6 +372,7 @@ def _apply_fallback_enrichment(candidates: list[dict]) -> list[dict]:
 
 async def _enrich_candidates(
     candidates: list[dict], partner_enrichment_llm_provider: OpenAIChatProvider | None,
+    *, ta_affiliated: bool = False,
 ) -> list[dict]:
     """Exactly one LLM call for the whole batch (never per-candidate, never
     on "Следующий" - callers only invoke this right after a fresh search).
@@ -333,7 +395,7 @@ async def _enrich_candidates(
         return _apply_fallback_enrichment(candidates)
 
     log.info("partner_discovery: enrichment_call_started batch_size=%d", len(candidates))
-    prompt = _build_enrichment_prompt(candidates)
+    prompt = _build_enrichment_prompt(candidates, ta_affiliated)
     try:
         result = await asyncio.to_thread(
             partner_enrichment_llm_provider.generate, message=prompt,
@@ -361,6 +423,20 @@ async def _is_club_partner(
 ) -> bool:
     profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
     return profile is not None and profile.business_type == "club_partner"
+
+
+async def _is_ta_affiliated(
+    partner_repository: PartnerRepository, workspace_context: WorkspaceContext | None,
+) -> bool:
+    """Authoritative, fail-closed TA-specific gate for enrichment/outreach
+    wording - BusinessProfile.ta_affiliated ONLY, same established
+    business_type-vs-ta_affiliated separation as app/handlers/competitors.py
+    ::_refresh_competitor and this module's own docstring. Never True
+    without a resolvable workspace/profile."""
+    if workspace_context is None:
+        return False
+    profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
+    return bool(profile is not None and getattr(profile, "ta_affiliated", False))
 
 
 def _candidate_to_dict(candidate: ProspectCandidate) -> dict:
@@ -536,7 +612,11 @@ async def on_find_partners(
         await message.answer(_NO_RESULTS, reply_markup=partner_discovery_retry_keyboard())
         return
 
-    candidates = await _enrich_candidates(candidates, partner_enrichment_llm_provider)
+    ta_affiliated = await _is_ta_affiliated(partner_repository, workspace_context)
+    candidates = await _enrich_candidates(
+        candidates, partner_enrichment_llm_provider, ta_affiliated=ta_affiliated,
+    )
+    candidates = _rank_for_club_partner_fit(candidates)
     await state.update_data(**{_STATE_CANDIDATES: candidates, _STATE_INDEX: 0})
     text, has_more = _render_card(candidates, 0)
     await message.answer(
@@ -573,6 +653,8 @@ async def on_partner_discovery_more(
     state: FSMContext,
     web_search_service: WebSearchService | None = None,
     partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+    workspace_context: WorkspaceContext | None = None,
+    partner_repository: PartnerRepository | None = None,
 ) -> None:
     await callback.answer()
     candidates = await _run_discovery(web_search_service)
@@ -586,7 +668,14 @@ async def on_partner_discovery_more(
             await callback.message.answer(_NO_RESULTS, reply_markup=partner_discovery_retry_keyboard())
         return
 
-    candidates = await _enrich_candidates(candidates, partner_enrichment_llm_provider)
+    ta_affiliated = (
+        await _is_ta_affiliated(partner_repository, workspace_context)
+        if partner_repository is not None else False
+    )
+    candidates = await _enrich_candidates(
+        candidates, partner_enrichment_llm_provider, ta_affiliated=ta_affiliated,
+    )
+    candidates = _rank_for_club_partner_fit(candidates)
     await state.update_data(**{_STATE_CANDIDATES: candidates, _STATE_INDEX: 0})
     text, has_more = _render_card(candidates, 0)
     if callback.message is not None:
@@ -665,3 +754,202 @@ async def on_partner_contact_back(callback: CallbackQuery, state: FSMContext) ->
             text,
             reply_markup=partner_discovery_card_keyboard(candidates[index]["url"], has_more),
         )
+
+
+# ── Outreach draft v0 (2026-10-07): a human-approved DRAFT first-contact ────
+# message for the PERSON already found by Contact Discovery (_STATE_CONTACT
+# in FSM state). No existing outreach/draft mechanism in this codebase
+# operates on ContactCandidate/ProspectCandidate (the client-reply draft
+# pipeline in app/services/generation_request_builder.py and
+# app/services/draft_sanitizer.py is a separate, unrelated domain - customer
+# message replies, not partner outreach) - this is intentionally the first
+# and only one for this use case, not a second mechanism for something that
+# already existed.
+
+_DRAFT_UNAVAILABLE = (
+    "Нет найденного контакта для черновика. Сначала используйте "
+    "«👤 Найти человека для контакта»."
+)
+_DRAFT_HEADER = (
+    "✉️ Черновик первого сообщения - проверьте и отредактируйте перед отправкой:\n\n"
+)
+
+# Matches the task's own example phrasings ("Подготовь письмо Ярмоленко",
+# "Подготовь сообщение этому контакту", "Напиши первое сообщение", "Что ей
+# написать?", "Подготовь письмо к первому контакту Ярмоленко") without being
+# a broad catch-all - see _looks_like_draft_command, which ALSO requires a
+# PERSON contact already in FSM state before this ever fires, so an
+# unrelated message elsewhere in the bot is never swallowed by this pattern.
+_DRAFT_COMMAND_RE = re.compile(
+    r"(подготов\w*|напиш\w*)\s.*(письм\w*|сообщени\w*|обращени\w*)"
+    r"|что\s+(?:ей|ему|им)\s+написать",
+    re.IGNORECASE,
+)
+
+_OUTREACH_DRAFT_INSTRUCTIONS = """Ты помогаешь подготовить ЧЕРНОВИК первого персонального сообщения для знакомства с конкретным человеком, найденным через Partner Discovery / Contact Discovery. Это ЧЕРНОВИК для ручной проверки человеком перед отправкой - НЕ автоматическая рассылка, отвечай только текстом сообщения.
+
+Имя: {name}
+Роль (публично подтверждена): {role}
+Проект/сообщество: {project}
+Почему найден (public evidence): {evidence}
+
+Напиши короткое (3-5 предложений), вежливое, персонализированное первое сообщение на русском языке, которое открывает диалог. СТРОГО ЗАПРЕЩЕНО:
+- утверждать или подразумевать, что человек уже заинтересован в партнёрстве, ищет дополнительный доход или хочет что-либо конкретное;
+- обещать доход, результат, окупаемость или любые гарантии;
+- придумывать детали о человеке сверх предоставленных имени/роли/проекта/evidence;
+- писать развёрнутое коммерческое предложение - это только короткое знакомство, открывающее диалог.
+
+Используй имя, роль и проект для персонализации (например, упомяни именно ту работу/роль, которая подтверждена).{ta_instruction}
+
+Верни только текст сообщения на русском языке, без пояснений, без markdown, без кавычек вокруг всего текста."""
+
+# Only appended when BusinessProfile.ta_affiliated - see _is_ta_affiliated.
+# Still forbids inventing interest/need - only permits NAMING Travel
+# Advantage as a possible tool for an introduction, same fail-closed posture
+# as _TA_AFFILIATED_ENRICHMENT_CLAUSE above.
+_TA_AFFILIATED_DRAFT_INSTRUCTION = (
+    " Если уместно, можно кратко и фактически упомянуть Travel Advantage как "
+    "возможный дополнительный инструмент для этого человека и его аудитории - "
+    "только как повод для знакомства, не обещая конкретных результатов и не "
+    "утверждая, что человек в этом уже заинтересован."
+)
+
+
+def _build_outreach_draft_prompt(contact: dict, ta_affiliated: bool) -> str:
+    return _OUTREACH_DRAFT_INSTRUCTIONS.format(
+        name=_strip_private_contact_data(contact.get("display_name") or ""),
+        role=_strip_private_contact_data(contact.get("role") or "") or "не указана",
+        project=_strip_private_contact_data(contact.get("project_name") or ""),
+        evidence=_strip_private_contact_data(contact.get("evidence_text") or "")[:600] or "(нет)",
+        ta_instruction=_TA_AFFILIATED_DRAFT_INSTRUCTION if ta_affiliated else "",
+    )
+
+
+def _fallback_outreach_draft(contact: dict, ta_affiliated: bool) -> str:
+    """Deterministic, noise-free fallback - same safety posture as
+    _apply_fallback_enrichment: no LLM required, never invents motive."""
+    name = _strip_private_contact_data(contact.get("display_name") or "")
+    role = _strip_private_contact_data(contact.get("role") or "")
+    project = _strip_private_contact_data(contact.get("project_name") or "")
+    role_clause = f" ({role})" if role else ""
+    lines = [
+        f"Здравствуйте, {name}!",
+        "",
+        f"Увидел(а) вашу публичную страницу{role_clause} в связи с «{project}» и решил(а) написать напрямую.",
+    ]
+    if ta_affiliated:
+        lines.append(
+            "Я работаю с Travel Advantage и был(а) бы рад(а) коротко рассказать, чем "
+            "платформа может быть полезна вам и вашей аудитории, если это интересно."
+        )
+    lines.append("Было бы здорово познакомиться и обменяться парой слов.")
+    lines.append("")
+    lines.append("С уважением")
+    return "\n".join(lines)
+
+
+async def _generate_outreach_draft(
+    contact: dict, llm_provider: OpenAIChatProvider | None, *, ta_affiliated: bool,
+) -> str:
+    """Always returns a usable draft string - never None, never raises past
+    this function. Any failure (no provider, no credentials, transport
+    error, empty response) falls back to the deterministic template."""
+    if llm_provider is None or not llm_provider.config.api_key:
+        return _fallback_outreach_draft(contact, ta_affiliated)
+
+    prompt = _build_outreach_draft_prompt(contact, ta_affiliated)
+    try:
+        result = await asyncio.to_thread(llm_provider.generate, message=prompt)
+    except Exception:
+        log.warning("partner_discovery: outreach draft llm call failed", exc_info=True)
+        return _fallback_outreach_draft(contact, ta_affiliated)
+
+    draft = _sanitize_enrichment_field(result.text, 1000)
+    if not draft:
+        return _fallback_outreach_draft(contact, ta_affiliated)
+    return draft
+
+
+async def _draft_for_current_contact(
+    state: FSMContext,
+    partner_repository: PartnerRepository | None,
+    workspace_context: WorkspaceContext | None,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None,
+) -> str | None:
+    """Returns the generated draft, or None when there is no PERSON contact
+    currently in FSM state (caller decides how to respond to that case)."""
+    data = await state.get_data()
+    contact: dict | None = data.get(_STATE_CONTACT)
+    if not contact or contact.get("contact_type") != "person":
+        return None
+
+    ta_affiliated = (
+        await _is_ta_affiliated(partner_repository, workspace_context)
+        if partner_repository is not None else False
+    )
+    return await _generate_outreach_draft(
+        contact, partner_enrichment_llm_provider, ta_affiliated=ta_affiliated,
+    )
+
+
+@router.callback_query(F.data == PARTNER_CONTACT_DRAFT)
+async def on_partner_contact_draft(
+    callback: CallbackQuery,
+    state: FSMContext,
+    partner_repository: PartnerRepository | None = None,
+    workspace_context: WorkspaceContext | None = None,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+) -> None:
+    """"✉️ Подготовить первое сообщение" button on a PERSON contact card.
+    Draft only - never sent automatically, always requires the human to
+    review/edit/send it themselves."""
+    await callback.answer()
+    draft = await _draft_for_current_contact(
+        state, partner_repository, workspace_context, partner_enrichment_llm_provider,
+    )
+    if callback.message is None:
+        return
+    if draft is None:
+        await callback.message.answer(_DRAFT_UNAVAILABLE)
+        return
+    await callback.message.answer(_DRAFT_HEADER + draft)
+
+
+async def _looks_like_draft_command(message: Message, state: FSMContext) -> bool:
+    """Custom filter (not a handler): only matches when BOTH the message
+    text looks like one of the task's own example phrasings AND a PERSON
+    contact is already in FSM state - this is what lets natural free-text
+    commands continue the current Partner Discovery -> Contact Discovery
+    context instead of falling through to the generic task router (which
+    would otherwise answer "не удалось уверенно определить маршрут").
+    Returning False here lets aiogram try the next router in the chain
+    (eventually app.handlers.tasks's general router) completely unaffected -
+    this never swallows an unrelated message."""
+    text = message.text or ""
+    if not _DRAFT_COMMAND_RE.search(text):
+        return False
+    data = await state.get_data()
+    contact = data.get(_STATE_CONTACT)
+    return bool(contact and contact.get("contact_type") == "person")
+
+
+@router.message(_looks_like_draft_command)
+async def on_draft_command_text(
+    message: Message,
+    state: FSMContext,
+    partner_repository: PartnerRepository | None = None,
+    workspace_context: WorkspaceContext | None = None,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+) -> None:
+    """Natural-language equivalent of on_partner_contact_draft - only ever
+    invoked when _looks_like_draft_command already confirmed a PERSON
+    contact is active, so `draft` here is never None in practice (the
+    None-guard is defense in depth only, e.g. a race with on_partner_
+    contact_back clearing state between the filter check and this call)."""
+    draft = await _draft_for_current_contact(
+        state, partner_repository, workspace_context, partner_enrichment_llm_provider,
+    )
+    if draft is None:
+        await message.answer(_DRAFT_UNAVAILABLE)
+        return
+    await message.answer(_DRAFT_HEADER + draft)

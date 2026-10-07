@@ -21,7 +21,9 @@ from app.handlers.partner_discovery import (
     _clean_name,
     _enrich_candidates,
     _ENRICHMENT_INSTRUCTIONS,
+    _rank_for_club_partner_fit,
     _render_card,
+    _TA_AFFILIATED_ENRICHMENT_CLAUSE,
     on_find_partners,
     on_partner_discovery_more,
     on_partner_discovery_next,
@@ -673,3 +675,126 @@ def test_enrichment_falls_back_to_hostname_when_no_brand_in_title_or_evidence():
     enriched = run(_enrich_candidates(candidates, provider))
 
     assert enriched[0]["display_name"] == "example-travel.ru"
+
+
+# ── club_partner fit rationale + demotion (2026-10-07) ──────────────────────
+
+def test_personalized_type_fallback_explanation_states_potential_fit_signal():
+    """guide/travel_creator/travel_club get an explicit WHY-potentially-fit
+    rationale (own audience/community) - never a claim of existing interest."""
+    for prospect_type in ("guide", "travel_creator", "travel_club"):
+        explanation = _build_explanation(prospect_type, "")
+        lowered = explanation.lower()
+        assert "аудитор" in lowered or "сообщество" in lowered or "конкретных людей" in lowered
+
+
+def test_generic_business_type_fallback_explanation_unchanged():
+    """travel_agent/tour_organizer/other stay exactly as before - this task
+    ranks them below personalized candidates, it does not invent a false
+    personal-fit claim for them."""
+    assert _build_explanation("travel_agent", "") == "Работает как турагентство/туроператор."
+
+
+def test_fallback_explanations_still_never_claim_partnership_or_income_interest():
+    forbidden = ("партнёрств", "партнерств", "доход", "выгодн", "travel advantage", "заработ", "заинтересован")
+    for prospect_type in ("guide", "travel_creator", "travel_club", "travel_agent", "tour_organizer"):
+        lowered = _build_explanation(prospect_type, "").lower()
+        for word in forbidden:
+            assert word not in lowered
+
+
+def test_rank_for_club_partner_fit_demotes_generic_business_below_personalized():
+    candidates = [
+        {"prospect_type": "travel_agent", "name": "Quinta"},
+        {"prospect_type": "travel_club", "name": "Magput"},
+        {"prospect_type": "other_travel_project", "name": "SomeSite"},
+        {"prospect_type": "guide", "name": "SoloGuide"},
+    ]
+    ranked = _rank_for_club_partner_fit(candidates)
+    assert [c["name"] for c in ranked] == ["Magput", "SoloGuide", "Quinta", "SomeSite"]
+
+
+def test_rank_for_club_partner_fit_is_stable_within_each_tier():
+    candidates = [
+        {"prospect_type": "travel_agent", "name": "A"},
+        {"prospect_type": "guide", "name": "B"},
+        {"prospect_type": "travel_agent", "name": "C"},
+        {"prospect_type": "guide", "name": "D"},
+    ]
+    ranked = _rank_for_club_partner_fit(candidates)
+    assert [c["name"] for c in ranked] == ["B", "D", "A", "C"]
+
+
+def test_enrichment_prompt_includes_ta_clause_only_when_ta_affiliated():
+    """The base prompt already names "Travel Advantage" once, in its own
+    forbidden-claims list (-> utterать, что ему нужен Travel Advantage) -
+    that bare substring check isn't a valid signal. What must differ is the
+    dedicated TA-affiliated clause itself."""
+    candidates = [raw_candidate()]
+    prompt_with_ta = _build_enrichment_prompt(candidates, ta_affiliated=True)
+    prompt_without_ta = _build_enrichment_prompt(candidates, ta_affiliated=False)
+    assert _TA_AFFILIATED_ENRICHMENT_CLAUSE.strip() in prompt_with_ta
+    assert _TA_AFFILIATED_ENRICHMENT_CLAUSE.strip() not in prompt_without_ta
+
+
+def test_find_partners_passes_ta_affiliated_profile_into_enrichment_prompt():
+    """End-to-end: a club_partner workspace that is ALSO ta_affiliated gets
+    the TA-specific enrichment clause in the actual LLM prompt sent."""
+    message = Message()
+    state = State()
+    ws_context = context()
+    repo_profile = SimpleNamespace(business_type="club_partner", ta_affiliated=True)
+    repo = SimpleNamespace(get_business_profile=AsyncMock(return_value=repo_profile))
+
+    captured = {}
+
+    class CapturingProvider(FakeEnrichmentProvider):
+        def generate(self, *, message: str, **kwargs):
+            captured["prompt"] = message
+            return super().generate(message=message, **kwargs)
+
+    response = json.dumps([{"display_name": "Brand", "reason": "Работает с путешественниками."}])
+    provider = CapturingProvider(response_text=response)
+    service_candidates = [candidate()]
+
+    with patch(
+        "app.handlers.partner_discovery.PartnerDiscoveryService.find_candidates",
+        AsyncMock(return_value=service_candidates),
+    ):
+        run(on_find_partners(
+            message, state, ws_context, repo,
+            web_search_service(object()), provider,
+        ))
+
+    assert provider.calls == 1
+    assert _TA_AFFILIATED_ENRICHMENT_CLAUSE.strip() in captured["prompt"]
+
+
+def test_find_partners_without_ta_affiliation_omits_ta_clause():
+    message = Message()
+    state = State()
+    ws_context = context()
+    repo_profile = SimpleNamespace(business_type="club_partner", ta_affiliated=False)
+    repo = SimpleNamespace(get_business_profile=AsyncMock(return_value=repo_profile))
+
+    captured = {}
+
+    class CapturingProvider(FakeEnrichmentProvider):
+        def generate(self, *, message: str, **kwargs):
+            captured["prompt"] = message
+            return super().generate(message=message, **kwargs)
+
+    response = json.dumps([{"display_name": "Brand", "reason": "Работает с путешественниками."}])
+    provider = CapturingProvider(response_text=response)
+    service_candidates = [candidate()]
+
+    with patch(
+        "app.handlers.partner_discovery.PartnerDiscoveryService.find_candidates",
+        AsyncMock(return_value=service_candidates),
+    ):
+        run(on_find_partners(
+            message, state, ws_context, repo,
+            web_search_service(object()), provider,
+        ))
+
+    assert _TA_AFFILIATED_ENRICHMENT_CLAUSE.strip() not in captured["prompt"]

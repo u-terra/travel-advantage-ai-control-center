@@ -148,6 +148,10 @@ PARTNER_DISCOVERY_MORE = "partner_discovery:more"
 # new PartnerDiscoveryService.find_candidates() call.
 PARTNER_CONTACT_FIND = "partner_discovery:contact_find"
 PARTNER_CONTACT_BACK = "partner_discovery:contact_back"
+# Outreach draft v0 (2026-10-07): only ever shown on a PERSON contact card -
+# see app/handlers/partner_discovery.py's partner_contact_card_keyboard call
+# site and on_partner_contact_draft. Draft only, no auto-send.
+PARTNER_CONTACT_DRAFT = "partner_discovery:contact_draft"
 
 # Ресурсы Travel Advantage: показываются только workspace с явным признаком
 # BusinessProfile.ta_affiliated (не по business_type, названию или описанию —
@@ -285,15 +289,26 @@ def partner_discovery_retry_keyboard() -> InlineKeyboardMarkup:
 
 
 def partner_contact_card_keyboard(contact_type: str, url: str) -> InlineKeyboardMarkup:
-    """Contact Discovery v0 result card. "✍️ Подготовить обращение" and
-    "⏭ Другой контакт" are deliberately absent in v0 (see the task this
-    was built for). "↩️ Назад к проекту" is PARTNER_CONTACT_BACK, which
-    only re-renders the current prospect card - no new search."""
+    """Contact Discovery v0 result card. "⏭ Другой контакт" is deliberately
+    absent in v0 (see the task this was built for). "↩️ Назад к проекту" is
+    PARTNER_CONTACT_BACK, which only re-renders the current prospect card -
+    no new search.
+
+    "✉️ Подготовить первое сообщение" (2026-10-07) is shown ONLY for a
+    PERSON contact - there is nobody to write a personal first message to
+    on a PROJECT fallback card. See app/handlers/partner_discovery.py's
+    on_partner_contact_draft - draft only, human approval before any send,
+    never auto-sent."""
     open_label = "🌐 Открыть профиль/источник" if contact_type == "person" else "🌐 Открыть проект"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=open_label, url=url)],
-        [InlineKeyboardButton(text="↩️ Назад к проекту", callback_data=PARTNER_CONTACT_BACK)],
-    ])
+    rows = [[InlineKeyboardButton(text=open_label, url=url)]]
+    if contact_type == "person":
+        rows.append([
+            InlineKeyboardButton(
+                text="✉️ Подготовить первое сообщение", callback_data=PARTNER_CONTACT_DRAFT,
+            ),
+        ])
+    rows.append([InlineKeyboardButton(text="↩️ Назад к проекту", callback_data=PARTNER_CONTACT_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def browse_sections_keyboard() -> InlineKeyboardMarkup:

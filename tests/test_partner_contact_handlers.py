@@ -10,11 +10,21 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.domain.contacts import ContactCandidate, ContactConfidence, ContactType
+from app.domain.partners import WorkspaceContext
 from app.handlers.partner_discovery import (
+    _looks_like_draft_command,
+    on_draft_command_text,
     on_partner_contact_back,
+    on_partner_contact_draft,
     on_partner_contact_find,
 )
-from app.keyboards import PARTNER_CONTACT_BACK, PARTNER_CONTACT_FIND, partner_discovery_card_keyboard
+from app.keyboards import (
+    PARTNER_CONTACT_BACK,
+    PARTNER_CONTACT_DRAFT,
+    PARTNER_CONTACT_FIND,
+    partner_contact_card_keyboard,
+    partner_discovery_card_keyboard,
+)
 
 
 def run(coro):
@@ -334,3 +344,178 @@ def test_no_candidates_in_state_is_a_safe_noop():
     run(on_partner_contact_find(callback, state))
 
     assert callback.message.answers == []
+
+
+# ── 11. Outreach draft v0 ────────────────────────────────────────────────────
+
+def _workspace(workspace_id: int = 1) -> WorkspaceContext:
+    return WorkspaceContext(100, workspace_id, "owner", "active")
+
+
+def _partner_repository(ta_affiliated: bool = False):
+    profile = SimpleNamespace(business_type="club_partner", ta_affiliated=ta_affiliated)
+    return SimpleNamespace(get_business_profile=AsyncMock(return_value=profile))
+
+
+def _person_contact_dict() -> dict:
+    return {
+        "contact_type": "person",
+        "display_name": "Ярмоленко Людмила Борисовна",
+        "role": "экскурсовод",
+        "project_name": "Магазин Путешествий",
+        "public_url": "https://magput.ru/tours/gildiya-gidov-magput",
+        "evidence_text": "Ярмоленко Людмила Борисовна - экскурсовод Гильдии гидов Magput.",
+        "evidence_url": "https://magput.ru/?viewprog=63718",
+        "confidence": "MEDIUM",
+        "provenance": "professional_search",
+    }
+
+
+def test_draft_button_present_only_on_person_card():
+    person_markup = partner_contact_card_keyboard("person", "https://a.ru/")
+    project_markup = partner_contact_card_keyboard("project", "https://a.ru/")
+    person_callbacks = {
+        btn.callback_data for row in person_markup.inline_keyboard for btn in row if btn.callback_data
+    }
+    project_callbacks = {
+        btn.callback_data for row in project_markup.inline_keyboard for btn in row if btn.callback_data
+    }
+    assert PARTNER_CONTACT_DRAFT in person_callbacks
+    assert PARTNER_CONTACT_DRAFT not in project_callbacks
+
+
+def test_draft_button_callback_produces_fallback_draft_without_llm_provider():
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+
+    run(on_partner_contact_draft(
+        callback, state, partner_repository=_partner_repository(), workspace_context=_workspace(),
+    ))
+
+    text, _ = callback.message.answers[0]
+    assert "Ярмоленко Людмила Борисовна" in text
+    assert "экскурсовод" in text
+    assert "Магазин Путешествий" in text
+    assert "проверьте" in text.lower()  # draft header, review-before-send framing
+
+
+def test_draft_unavailable_without_a_contact_in_state():
+    state = State({})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+
+    run(on_partner_contact_draft(
+        callback, state, partner_repository=_partner_repository(), workspace_context=_workspace(),
+    ))
+
+    text, _ = callback.message.answers[0]
+    assert "Нет найденного контакта" in text
+
+
+def test_draft_unavailable_for_project_fallback_contact():
+    project_dict = {
+        "contact_type": "project", "display_name": "Example Club", "project_name": "Example Club",
+        "public_url": "https://example-club.ru/", "evidence_text": "", "evidence_url": "https://example-club.ru/",
+        "confidence": None, "provenance": "person_not_found",
+    }
+    state = State({"partner_discovery_contact": project_dict})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+
+    run(on_partner_contact_draft(
+        callback, state, partner_repository=_partner_repository(), workspace_context=_workspace(),
+    ))
+
+    text, _ = callback.message.answers[0]
+    assert "Нет найденного контакта" in text
+
+
+def test_draft_mentions_travel_advantage_only_when_ta_affiliated():
+    state_ta = State({"partner_discovery_contact": _person_contact_dict()})
+    ta_callback = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        ta_callback, state_ta,
+        partner_repository=_partner_repository(ta_affiliated=True), workspace_context=_workspace(),
+    ))
+    ta_text, _ = ta_callback.message.answers[0]
+
+    state_no_ta = State({"partner_discovery_contact": _person_contact_dict()})
+    no_ta_callback = Callback(PARTNER_CONTACT_DRAFT)
+    run(on_partner_contact_draft(
+        no_ta_callback, state_no_ta,
+        partner_repository=_partner_repository(ta_affiliated=False), workspace_context=_workspace(),
+    ))
+    no_ta_text, _ = no_ta_callback.message.answers[0]
+
+    assert "Travel Advantage" in ta_text
+    assert "Travel Advantage" not in no_ta_text
+
+
+def test_draft_never_promises_income_or_results():
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+    callback = Callback(PARTNER_CONTACT_DRAFT)
+
+    run(on_partner_contact_draft(
+        callback, state, partner_repository=_partner_repository(ta_affiliated=True), workspace_context=_workspace(),
+    ))
+
+    text, _ = callback.message.answers[0]
+    lowered = text.lower()
+    for forbidden in ("доход", "гаранти", "окупаем", "заработ", "вы заинтересован", "ей нужен travel advantage"):
+        assert forbidden not in lowered
+
+
+# ── 12. Free-text draft commands continue the same contact context ─────────
+
+def test_draft_command_filter_requires_person_contact_in_state():
+    message = SimpleNamespace(text="Подготовь письмо Ярмоленко")
+    state_with_person = State({"partner_discovery_contact": _person_contact_dict()})
+    state_empty = State({})
+
+    assert run(_looks_like_draft_command(message, state_with_person)) is True
+    assert run(_looks_like_draft_command(message, state_empty)) is False
+
+
+def test_draft_command_filter_rejects_unrelated_text():
+    message = SimpleNamespace(text="Привет, как дела?")
+    state_with_person = State({"partner_discovery_contact": _person_contact_dict()})
+
+    assert run(_looks_like_draft_command(message, state_with_person)) is False
+
+
+def test_draft_command_filter_rejects_project_fallback_contact():
+    project_dict = {
+        "contact_type": "project", "display_name": "Example Club", "project_name": "Example Club",
+        "public_url": "https://example-club.ru/", "evidence_text": "", "evidence_url": "https://example-club.ru/",
+        "confidence": None, "provenance": "person_not_found",
+    }
+    message = SimpleNamespace(text="Что ей написать?")
+    state = State({"partner_discovery_contact": project_dict})
+
+    assert run(_looks_like_draft_command(message, state)) is False
+
+
+def test_on_draft_command_text_produces_the_same_draft_as_the_button():
+    class TextMessage:
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.answers = []
+
+        async def answer(self, text, **kwargs):
+            self.answers.append((text, kwargs))
+
+    message = TextMessage("Подготовь письмо к первому контакту Ярмоленко")
+    state = State({"partner_discovery_contact": _person_contact_dict()})
+
+    run(on_draft_command_text(
+        message, state, partner_repository=_partner_repository(), workspace_context=_workspace(),
+    ))
+
+    text, _ = message.answers[0]
+    assert "Ярмоленко Людмила Борисовна" in text
+
+
+# ── 13. Ordinary discovery flow still unaffected by the new draft button ───
+
+def test_prospect_card_keyboard_unaffected_by_draft_feature():
+    markup = partner_discovery_card_keyboard("https://a.ru/", has_more_in_batch=True)
+    callback_datas = {btn.callback_data for row in markup.inline_keyboard for btn in row if btn.callback_data}
+    assert PARTNER_CONTACT_DRAFT not in callback_datas
