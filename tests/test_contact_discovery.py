@@ -32,6 +32,19 @@ def _prospect(url="https://example-club.ru/", name="Example Club") -> ProspectCa
     )
 
 
+def _community_prospect(url="https://magput.ru/tours/gildiya-gidov-magput") -> ProspectCandidate:
+    return ProspectCandidate(
+        name="Гильдия гидов Magput",
+        url=url,
+        prospect_type=ProspectType.TRAVEL_CLUB,
+        query="пример запроса",
+        evidence="более 1000 экскурсоводов объединены в гильдию",
+        evidence_source=EvidenceSource.PAGE,
+        fit=ProspectFit.STRONG,
+        rank_score=10,
+    )
+
+
 def _page(text: str, final_url: str | None = None) -> FetchedPublicSource:
     return FetchedPublicSource(
         url="https://example-club.ru/",
@@ -268,6 +281,231 @@ def test_ambiguous_conflicting_people_are_rejected(monkeypatch):
     ))
 
     assert contact.contact_type == ContactType.PROJECT
+
+
+# ── E: professional-contact fallback for community/directory resources ──────
+
+def test_community_prospect_runs_professional_search_after_owner_failure(monkeypatch):
+    """Magput-like case: owner-contact flow (A-D) finds nobody, prospect
+    self-describes as a guild ("Гильдия гидов Magput") - a second,
+    separate search pass must run with professional (not owner) role
+    words."""
+    prospect = _community_prospect()
+    page = _page("Общая информация о гильдии без упоминания конкретных людей.")
+    _patch_fetch(monkeypatch, page)
+    llm = _FakeLLM([
+        json.dumps({"found": False}),  # step B
+        json.dumps({"found": False}),  # step D (owner search)
+        json.dumps({"found": False}),  # step E (professional search)
+    ])
+    search_provider = _FakeSearchProvider({})
+
+    run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    # Match on the trailing role word, not substring - the project's own
+    # name ("Гильдия гидов Magput") happens to contain "гид" too.
+    professional_queries = [
+        q for q in search_provider.queries
+        if q.endswith(" гид") or q.endswith(" экскурсовод") or q.endswith(" автор тура")
+    ]
+    assert len(professional_queries) == 3
+    assert all(prospect.name in q for q in professional_queries)
+    # Owner queries (step C) still ran first, unchanged.
+    assert any(q.endswith(" основатель") for q in search_provider.queries)
+
+
+def test_ordinary_business_does_not_run_professional_search(monkeypatch):
+    """Quinta-like case: an ordinary single-owner business (no community/
+    directory marker in name/evidence/url) must NOT trigger step E, even
+    after owner-contact flow fails."""
+    prospect = _prospect(name="Quinta", url="https://www.quinta.ru/")
+    page = _page("Общая информация о туроператоре без упоминания людей.")
+    _patch_fetch(monkeypatch, page)
+    llm = _FakeLLM([
+        json.dumps({"found": False}),  # step B
+        json.dumps({"found": False}),  # step D (owner search)
+    ])
+    search_provider = _FakeSearchProvider({})
+
+    contact = run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    assert contact.contact_type == ContactType.PROJECT
+    # Exactly the 3 owner queries - no professional-role queries at all.
+    assert len(search_provider.queries) == 3
+    assert not any("гид" in q or "экскурсовод" in q for q in search_provider.queries)
+
+
+def test_guide_with_name_role_and_project_relation_in_one_result_is_accepted(monkeypatch):
+    prospect = _community_prospect()
+    _patch_fetch(monkeypatch, None, raises=True)
+    hit = _result(
+        "Профиль гида",
+        "https://magput.ru/?viewprog=63638",
+        "Фильченков Александр Михайлович - гид Гильдии гидов Magput. Путешествие, как искусство.",
+    )
+    llm = _FakeLLM([
+        json.dumps({"found": False}),  # step D (owner search, no results configured)
+        json.dumps({
+            "found": True,
+            "display_name": "Фильченков Александр Михайлович",
+            "role": "гид",
+            "evidence_text": "Фильченков Александр Михайлович - гид Гильдии гидов Magput.",
+            "evidence_url": "https://magput.ru/?viewprog=63638",
+        }),
+    ])
+    search_provider = _FakeSearchProvider({"гид": [hit]})
+
+    contact = run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    assert contact.contact_type == ContactType.PERSON
+    assert contact.display_name == "Фильченков Александр Михайлович"
+    assert contact.role == "гид"
+    assert contact.confidence == ContactConfidence.MEDIUM
+    assert contact.evidence_url == "https://magput.ru/?viewprog=63638"
+
+
+def test_professional_person_without_role_is_rejected(monkeypatch):
+    prospect = _community_prospect()
+    _patch_fetch(monkeypatch, None, raises=True)
+    hit = _result(
+        "Упоминание", "https://news.example/a", "Иван Иванов много путешествовал с гильдией.",
+    )
+    llm = _FakeLLM([
+        json.dumps({"found": False}),
+        json.dumps({"found": False}),
+    ])
+    search_provider = _FakeSearchProvider({"гид": [hit]})
+
+    contact = run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    assert contact.contact_type == ContactType.PROJECT
+
+
+def test_professional_role_without_name_is_rejected(monkeypatch):
+    prospect = _community_prospect()
+    _patch_fetch(monkeypatch, None, raises=True)
+    hit = _result(
+        "Упоминание", "https://news.example/a", "У гильдии много опытных гидов.",
+    )
+    llm = _FakeLLM([
+        json.dumps({"found": False}),
+        json.dumps({"found": False}),
+    ])
+    search_provider = _FakeSearchProvider({"гид": [hit]})
+
+    contact = run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    assert contact.contact_type == ContactType.PROJECT
+
+
+def test_professional_person_from_unrelated_project_is_rejected(monkeypatch):
+    """Even with a plausible name+role pair, no stated connection to THIS
+    resource must still be rejected - the LLM is instructed accordingly,
+    and this pins the fail-closed outcome."""
+    prospect = _community_prospect()
+    _patch_fetch(monkeypatch, None, raises=True)
+    hit = _result(
+        "Другой проект", "https://news.example/other",
+        "Иван Иванов - гид совершенно другого туристического клуба.",
+    )
+    llm = _FakeLLM([
+        json.dumps({"found": False}),
+        json.dumps({"found": False}),  # LLM itself judges no relation to Magput
+    ])
+    search_provider = _FakeSearchProvider({"гид": [hit]})
+
+    contact = run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    assert contact.contact_type == ContactType.PROJECT
+
+
+def test_professional_search_never_exceeds_three_queries(monkeypatch):
+    prospect = _community_prospect()
+    page = _page("Общая информация о гильдии без упоминания конкретных людей.")
+    _patch_fetch(monkeypatch, page)
+    llm = _FakeLLM([
+        json.dumps({"found": False}),
+        json.dumps({"found": False}),
+        json.dumps({"found": False}),
+    ])
+    search_provider = _FakeSearchProvider({})
+
+    run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    professional_queries = [
+        q for q in search_provider.queries
+        if q.endswith(" гид") or q.endswith(" экскурсовод") or q.endswith(" автор тура")
+    ]
+    assert len(professional_queries) <= 3
+
+
+def test_professional_contact_card_has_no_phone_or_email(monkeypatch):
+    """Same privacy guard as the owner flow - exercised end-to-end for a
+    professional-contact result, not just the dataclass shape."""
+    prospect = _community_prospect()
+    _patch_fetch(monkeypatch, None, raises=True)
+    hit = _result(
+        "Профиль гида",
+        "https://magput.ru/?viewprog=63638",
+        "Фильченков Александр Михайлович - гид Гильдии гидов Magput.",
+    )
+    llm = _FakeLLM([
+        json.dumps({"found": False}),
+        json.dumps({
+            "found": True,
+            "display_name": "Фильченков Александр Михайлович",
+            "role": "гид",
+            "evidence_text": "Фильченков Александр Михайлович - гид Гильдии гидов Magput.",
+            "evidence_url": "https://magput.ru/?viewprog=63638",
+        }),
+    ])
+    search_provider = _FakeSearchProvider({"гид": [hit]})
+
+    contact = run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    for field_value in (contact.display_name, contact.role, contact.evidence_text, contact.evidence_url):
+        assert "@" not in (field_value or "")
+        assert "+7" not in (field_value or "")
+
+
+def test_existing_owner_flow_unaffected_by_professional_fallback(monkeypatch):
+    """A community-looking prospect that DOES have a confident owner
+    contact on its own page must still return that HIGH-confidence PERSON
+    result, never reaching step E at all."""
+    prospect = _community_prospect()
+    page = _page("Иван Иванов - основатель Гильдии гидов Magput.")
+    _patch_fetch(monkeypatch, page)
+    llm = _FakeLLM([
+        json.dumps({
+            "found": True, "display_name": "Иван Иванов", "role": "основатель",
+            "evidence_text": "Иван Иванов - основатель Гильдии гидов Magput.",
+        }),
+    ])
+    search_provider = _FakeSearchProvider({})
+
+    contact = run(contact_discovery.find_contact(
+        prospect, llm_provider=llm, web_search_provider=search_provider,
+    ))
+
+    assert contact.contact_type == ContactType.PERSON
+    assert contact.confidence == ContactConfidence.HIGH
+    assert search_provider.queries == []
 
 
 # ── Safe fallback on failure ─────────────────────────────────────────────────

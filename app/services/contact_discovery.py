@@ -28,6 +28,24 @@ D. ONE LLM validation call over the combined search titles/snippets/URLs
    the evidence. Result here is capped at MEDIUM confidence - a person
    found this way is from an independent page the project does not
    control, never promoted to HIGH.
+E. Only if A-D found nobody AND the prospect itself looks like a
+   community/directory/network (a guild, association, club, catalog -
+   see _looks_like_community_directory) rather than a single-owner
+   business: run a SECOND, separate, up-to-3-query Yandex search pass
+   (project name + "гид"/"экскурсовод"/"автор тура" instead of
+   "основатель"/"руководитель"/"организатор") to find ONE concrete public
+   PROFESSIONAL inside that resource (a guide/excursion
+   leader/tour organizer/tour author) - never the resource's own
+   owner/leader, which steps A-D already tried and failed to find. Same
+   fail-closed validation shape as step D (one LLM call, MEDIUM
+   confidence, evidence_url must be one of the actually-returned search
+   URLs), and the SAME narrow "max 3 queries, no broad person search, no
+   member-list lookup" constraint as step C - this never scrapes a
+   directory's member list, it only ever searches the public web the
+   same way step C already does. An ordinary single-owner business (e.g.
+   a tour operator with its own "team" page) is deliberately NOT
+   classified as a directory just because it lists staff - see
+   _looks_like_community_directory's own docstring.
 
 Fail-closed by construction: both B and D return "person not found" (never
 a fabricated name/URL) whenever the LLM is unsure, whenever the LLM call
@@ -76,6 +94,39 @@ _MAX_TARGETED_QUERIES = 3
 _TARGETED_SEARCH_LIMIT = 3
 _ROLE_SUFFIXES = ("основатель", "руководитель", "организатор")
 
+# Step E (professional-contact fallback): a SEPARATE, narrow query set for
+# community/directory resources only - see _looks_like_community_directory.
+# Distinct wording from _ROLE_SUFFIXES on purpose: those three words mean
+# "the person who runs/owns this resource" (what steps C/D already looked
+# for and failed to find), these mean "a professional who operates inside
+# it" - the two must never be conflated into one search pass.
+_MAX_PROFESSIONAL_QUERIES = 3
+_PROFESSIONAL_SEARCH_LIMIT = 3
+_PROFESSIONAL_ROLE_SUFFIXES = ("гид", "экскурсовод", "автор тура")
+
+# Minimal, narrow lexical heuristic (no new architecture/enum per task) -
+# a resource is only ever treated as a community/directory/network if its
+# OWN name/evidence/URL (already produced by app.services.partner_discovery,
+# never re-fetched or re-scraped here) contains one of these markers.
+# Deliberately NOT based on page structure/content (e.g. "has a team page"),
+# so an ordinary single-owner tour operator that happens to list staff
+# (quinta.ru/team/) is not misclassified - only an explicit
+# guild/association/club/catalog/community self-description counts.
+_COMMUNITY_DIRECTORY_MARKERS = (
+    "гильдия", "сообщество", "ассоциация", "клуб", "каталог", "directory", "community",
+)
+
+
+def _looks_like_community_directory(prospect: ProspectCandidate) -> bool:
+    """True only when the prospect's own name/evidence/URL (not any fetched
+    page content) explicitly self-describes as a guild/association/club/
+    catalog/community - see _COMMUNITY_DIRECTORY_MARKERS. Never true for an
+    ordinary business just because it has staff/a team page."""
+    haystack = " ".join(
+        part for part in (prospect.name, prospect.evidence, prospect.url) if part
+    ).lower()
+    return any(marker in haystack for marker in _COMMUNITY_DIRECTORY_MARKERS)
+
 _PAGE_EXTRACTION_INSTRUCTIONS = """Ты обрабатываешь данные для внутреннего инструмента Partner Discovery. Это НЕ диалог с пользователем - разовая техническая задача. Отвечай только данными, без приветствий и комментариев.
 
 Тебе дан текст публичной страницы проекта "{project_name}" (URL: {url}). Твоя задача - только ИЗВЛЕЧЬ факт, если он явно присутствует в тексте. НИЧЕГО не домысливай и не выводи по смыслу.
@@ -113,6 +164,29 @@ _SEARCH_VALIDATION_INSTRUCTIONS = """Ты обрабатываешь данны�
 Правила:
 - Имя и роль должны быть буквально в предоставленном тексте, не выведены по смыслу.
 - Если несколько результатов называют РАЗНЫХ людей как относящихся к проекту - это конфликт, верни {{"found": false}}.
+- evidence_url нельзя придумывать - только скопировать из списка ниже.
+- При любом сомнении верни {{"found": false}}.
+
+РЕЗУЛЬТАТЫ ПОИСКА:
+{results_block}"""
+
+
+_PROFESSIONAL_SEARCH_VALIDATION_INSTRUCTIONS = """Ты обрабатываешь данные для внутреннего инструмента Partner Discovery. Это НЕ диалог с пользователем - разовая техническая задача. Отвечай только данными, без приветствий и комментариев.
+
+Проект "{project_name}" ({project_url}) - это сообщество/каталог/сеть (гильдия, ассоциация, клуб и т.п.), а не самостоятельный бизнес с одним владельцем. Тебе дан список результатов публичного веб-поиска по этому проекту. Найди СРЕДИ НИХ одного конкретного публично названного ПРОФЕССИОНАЛА (гид, экскурсовод, организатор тура, автор тура), связанного именно с этим проектом - НЕ руководителя/владельца самого проекта.
+
+Верни строго валидный JSON-объект одной из двух форм, без markdown, без пояснений:
+
+1) Если среди результатов есть ОДИН результат, где ОДНОВРЕМЕННО присутствуют: явно названное имя человека, явно указанная его профессиональная роль (гид/экскурсовод/организатор тура/автор тура), и явная связь именно с проектом "{project_name}":
+{{"found": true, "display_name": "...", "role": "...", "evidence_text": "...", "evidence_url": "..."}}
+"evidence_url" должен быть ОДНИМ из URL, перечисленных ниже, скопированным буквально.
+
+2) Если такого результата нет:
+{{"found": false}}
+
+Правила:
+- Все четыре признака (имя, роль, связь с проектом, URL) должны быть подтверждены В РАМКАХ ОДНОГО результата - нельзя брать имя из одного результата и роль или связь с проектом из другого.
+- Имя и роль должны быть буквально в предоставленном тексте, не выведены по смыслу.
 - evidence_url нельзя придумывать - только скопировать из списка ниже.
 - При любом сомнении верни {{"found": false}}.
 
@@ -287,6 +361,83 @@ async def _validate_search_results(
     )
 
 
+def _professional_queries(project_name: str) -> list[str]:
+    return [f'"{project_name}" {suffix}' for suffix in _PROFESSIONAL_ROLE_SUFFIXES][
+        :_MAX_PROFESSIONAL_QUERIES
+    ]
+
+
+def _run_professional_searches(
+    provider: WebSearchProvider, project_name: str,
+) -> list[SearchResult]:
+    """Step E's search pass - same shape/limits as step C's
+    _run_targeted_searches (up to _MAX_PROFESSIONAL_QUERIES queries, each
+    capped at _PROFESSIONAL_SEARCH_LIMIT results), just with
+    _PROFESSIONAL_ROLE_SUFFIXES instead of _ROLE_SUFFIXES. Scoped to the
+    resource by construction - every query already contains the project's
+    own (quoted) name, same as step C."""
+    results: list[SearchResult] = []
+    for query in _professional_queries(project_name):
+        try:
+            response = provider.search(query, limit=_PROFESSIONAL_SEARCH_LIMIT)
+        except Exception:
+            log.warning("contact_discovery: professional search failed", exc_info=True)
+            continue
+        if response is not None:
+            results.extend(response.results)
+    return results
+
+
+async def _validate_professional_search_results(
+    prospect: ProspectCandidate,
+    results: list[SearchResult],
+    llm_provider: OpenAIChatProvider,
+) -> ContactCandidate | None:
+    """Step E's validation call - same fail-closed shape as
+    _validate_search_results (step D), with the professional-vs-owner
+    prompt and role vocabulary. Returns a MEDIUM-confidence
+    ContactCandidate, or None. Reuses the existing ContactCandidate shape
+    unchanged (no new fields)."""
+    if not results:
+        return None
+
+    prompt = _PROFESSIONAL_SEARCH_VALIDATION_INSTRUCTIONS.format(
+        project_name=_project_name(prospect),
+        project_url=prospect.url,
+        results_block=_format_results_block(results),
+    )
+    raw_text = await _call_llm(llm_provider, prompt)
+    if raw_text is None:
+        return None
+
+    parsed = _parse_json_object(raw_text)
+    if parsed is None or parsed.get("found") is not True:
+        return None
+
+    display_name = _sanitize_text(parsed.get("display_name"), 120)
+    role = _sanitize_text(parsed.get("role"), 120)
+    evidence_text = _sanitize_text(parsed.get("evidence_text"), 300)
+    evidence_url = _sanitize_text(parsed.get("evidence_url"), 500)
+    if not display_name or not role or not evidence_text or not evidence_url:
+        return None
+    # evidence_url must be one of the URLs actually returned by search -
+    # same anti-hallucination guard as step D.
+    if evidence_url not in {result.url for result in results}:
+        return None
+
+    return ContactCandidate(
+        contact_type=ContactType.PERSON,
+        display_name=display_name,
+        role=role,
+        project_name=_project_name(prospect),
+        public_url=prospect.url,
+        evidence_text=evidence_text,
+        evidence_url=evidence_url,
+        confidence=ContactConfidence.MEDIUM,
+        provenance="professional_search",
+    )
+
+
 async def find_contact(
     prospect: ProspectCandidate,
     *,
@@ -317,5 +468,21 @@ async def find_contact(
     found = await _validate_search_results(prospect, results, llm_provider)
     if found is not None:
         return found
+
+    # Step E: owner-contact flow (A-D) found nobody. Only for a prospect
+    # that explicitly self-describes as a community/directory/network (see
+    # _looks_like_community_directory), try once more for a professional
+    # INSIDE it, not its owner - a separate, equally narrow (max 3 query)
+    # search pass. An ordinary single-owner business just falls through to
+    # the same PROJECT fallback as before this step existed.
+    if _looks_like_community_directory(prospect):
+        professional_results = _run_professional_searches(
+            web_search_provider, _project_name(prospect),
+        )
+        professional_found = await _validate_professional_search_results(
+            prospect, professional_results, llm_provider,
+        )
+        if professional_found is not None:
+            return professional_found
 
     return _project_fallback(prospect, provenance="person_not_found")
