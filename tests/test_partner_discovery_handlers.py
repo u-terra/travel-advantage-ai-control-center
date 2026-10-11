@@ -965,3 +965,72 @@ def test_lead_queue_button_shown_alongside_find_partners():
     texts = {btn.text for row in markup.keyboard for btn in row}
     assert BTN_PARTNER_LEADS in texts
     assert BTN_FIND_PARTNERS in texts
+
+
+def test_lead_queue_button_shown_in_v2_main_menu_too():
+    """v2_main_menu is the menu a v2_menu_enabled workspace actually sees
+    (see app/handlers/start.py) - the leads button must be reachable from
+    THAT real menu, not only the legacy main_menu()."""
+    from app.keyboards import BTN_PARTNER_LEADS, v2_main_menu
+
+    markup = v2_main_menu(show_partner_discovery=True)
+    texts = {btn.text for row in markup.keyboard for btn in row}
+    assert BTN_PARTNER_LEADS in texts
+    assert BTN_FIND_PARTNERS in texts
+
+
+def test_lead_queue_shows_saved_approved_lead(tmp_path):
+    from app.handlers.partner_discovery import on_partner_leads_queue
+    from app.domain.partner_leads import compute_lead_identity_key
+
+    repo = _lead_repo(tmp_path)
+    candidate_dict = {
+        "display_name": "Onvisor", "url": "https://onvisor.ru/", "total_score": 79,
+        "contact_type": "email", "contact_value": "go@trip.onvisor.ru",
+    }
+    lead = run(repo.upsert_from_candidate(
+        42, compute_lead_identity_key(candidate_dict["url"]), candidate_dict,
+    ))
+    run(repo.set_status(lead.lead_id, 42, PartnerLeadStatus.APPROVED))
+
+    message = Message(text="📋 Лиды партнёров")
+    run(on_partner_leads_queue(message, context(), repo))
+
+    assert len(message.answers) == 1
+    text, _ = message.answers[0]
+    assert "Onvisor" in text
+    assert "Одобрен" in text
+    assert "go@trip.onvisor.ru" in text
+
+
+def test_lead_queue_empty_state(tmp_path):
+    from app.handlers.partner_discovery import on_partner_leads_queue
+
+    repo = _lead_repo(tmp_path)
+    message = Message(text="📋 Лиды партнёров")
+
+    run(on_partner_leads_queue(message, context(), repo))
+
+    text, _ = message.answers[0]
+    assert "Сохранённых лидов пока нет" in text
+
+
+def test_russian_status_label_never_changes_stored_enum(tmp_path):
+    """Display-only translation (_LEAD_STATUS_LABELS) must never leak back
+    into the repository - the stored status stays the English enum value
+    regardless of what the Telegram card shows."""
+    from app.handlers.partner_discovery import _render_lead_queue
+    from app.domain.partner_leads import compute_lead_identity_key
+
+    repo = _lead_repo(tmp_path)
+    candidate_dict = {"display_name": "Onvisor", "url": "https://onvisor.ru/", "total_score": 79}
+    lead = run(repo.upsert_from_candidate(
+        42, compute_lead_identity_key(candidate_dict["url"]), candidate_dict,
+    ))
+    run(repo.set_status(lead.lead_id, 42, PartnerLeadStatus.APPROVED))
+
+    stored = run(repo.get(lead.lead_id, 42))
+    rendered = _render_lead_queue([stored])
+
+    assert stored.status.value == "approved"  # storage enum untouched
+    assert "Одобрен" in rendered  # display label is Russian
