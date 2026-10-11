@@ -86,6 +86,19 @@ _DISCOVERY_QUERY_VARIANTS: tuple[tuple[str, ...], ...] = (
 DISCOVERY_QUERIES: tuple[str, ...] = tuple(variants[0] for variants in _DISCOVERY_QUERY_VARIANTS)
 
 
+def _select_all_variant_queries(rotation_seed: int | None) -> tuple[str, ...]:
+    """Partner Discovery 2.0 (use_all_variants=True): every hand-picked
+    variant for every category, instead of exactly one per category - more
+    specialized queries feeding the same downstream dedupe/noise-filter/
+    rank/verify pipeline unchanged. Still bounded (3 variants x 5
+    categories = 15 queries max), never a growing/paginated crawl."""
+    del rotation_seed  # all variants are used regardless of rotation seed
+    queries: list[str] = []
+    for variants in _DISCOVERY_QUERY_VARIANTS:
+        queries.extend(variants)
+    return tuple(queries)
+
+
 def _select_discovery_queries(rotation_seed: int | None) -> tuple[str, ...]:
     """rotation_seed=None (no workspace context available) -> the original
     fixed DISCOVERY_QUERIES, byte-for-byte - existing callers/tests that
@@ -266,7 +279,7 @@ class PartnerDiscoveryService:
         self._provider = provider
 
     async def find_candidates(
-        self, *, rotation_seed: int | None = None,
+        self, *, rotation_seed: int | None = None, use_all_variants: bool = False,
     ) -> list[ProspectCandidate]:
         """Runs the fixed-size (always 5) query list, dedupes, filters
         noise, ranks, page-verifies the best survivors, and returns at most
@@ -279,8 +292,13 @@ class PartnerDiscoveryService:
         original fixed DISCOVERY_QUERIES exactly - this parameter changes
         NOTHING about scoring/dedupe/noise-filtering/ranking, only which
         search strings are sent."""
+        queries = (
+            _select_all_variant_queries(rotation_seed) if use_all_variants
+            else _select_discovery_queries(rotation_seed)
+        )
+        log.info("partner_discovery.search_started query_count=%d", len(queries))
         seen: dict[str, tuple[SearchResult, str]] = {}
-        for query in _select_discovery_queries(rotation_seed):
+        for query in queries:
             try:
                 response = await asyncio.to_thread(
                     self._provider.search, query, limit=_RESULTS_PER_QUERY,
@@ -299,6 +317,8 @@ class PartnerDiscoveryService:
                 if key in seen:
                     continue  # first query to find a subject keeps provenance
                 seen[key] = (result, query)
+
+        log.info("partner_discovery.results_received raw_count=%d", len(seen))
 
         ranked: list[tuple[SearchResult, str, ProspectType, int]] = []
         for result, query in seen.values():
@@ -322,6 +342,10 @@ class PartnerDiscoveryService:
         # rule needs each candidate's score AND its verification outcome.
         deduped = _dedupe_by_identity(verified)
         deduped.sort(key=lambda item: item[3], reverse=True)
+        log.info(
+            "partner_discovery.deduplicated verified_count=%d deduped_count=%d",
+            len(verified), len(deduped),
+        )
 
         candidates = [
             ProspectCandidate(

@@ -132,6 +132,15 @@ class Settings:
     yandex_search_folder_id: str
     yandex_search_timeout_seconds: float
     yandex_search_max_results: int
+    # Partner Discovery 2.0 (lead qualification) - OFF by default. False
+    # keeps app/services/partner_discovery.py + partner_outreach.py behaving
+    # exactly as before this feature existed (no score/confidence/why_fit on
+    # candidates, single query variant per category) - see
+    # app/services/lead_qualification.py.
+    partner_discovery_v2_enabled: bool
+    partner_min_score: int
+    partner_min_confidence: float
+    partner_max_results: int
 
 
 def _parse_bool(raw: str | None) -> bool:
@@ -332,6 +341,23 @@ def load_settings() -> Settings:
         yandex_search_max_results_raw, default=5,
     )
 
+    partner_discovery_v2_enabled = _parse_bool(os.environ.get("PARTNER_DISCOVERY_V2"))
+    partner_min_score = _parse_positive_int(
+        os.environ.get("PARTNER_MIN_SCORE", "").strip(), default=65,
+    )
+    partner_min_confidence_raw = os.environ.get("PARTNER_MIN_CONFIDENCE", "").strip()
+    try:
+        partner_min_confidence = (
+            float(partner_min_confidence_raw) if partner_min_confidence_raw else 0.60
+        )
+    except ValueError:
+        partner_min_confidence = 0.60
+    if not (0.0 <= partner_min_confidence <= 1.0):
+        partner_min_confidence = 0.60
+    partner_max_results = _parse_positive_int(
+        os.environ.get("PARTNER_MAX_RESULTS", "").strip(), default=7,
+    )
+
     return Settings(
         bot_token=token,
         admin_telegram_id=admin_id,
@@ -377,4 +403,8 @@ def load_settings() -> Settings:
         yandex_search_folder_id=yandex_search_folder_id,
         yandex_search_timeout_seconds=yandex_search_timeout,
         yandex_search_max_results=yandex_search_max_results,
+        partner_discovery_v2_enabled=partner_discovery_v2_enabled,
+        partner_min_score=partner_min_score,
+        partner_min_confidence=partner_min_confidence,
+        partner_max_results=partner_max_results,
     )

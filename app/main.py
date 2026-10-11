@@ -80,6 +80,10 @@ def _build_dispatcher(
     plan_quota_service: PlanQuotaService | None = None,
     partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
     contact_claim_repository: ContactClaimRepository | None = None,
+    partner_discovery_v2_enabled: bool = False,
+    partner_min_score: int = 65,
+    partner_min_confidence: float = 0.60,
+    partner_max_results: int = 7,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
@@ -172,6 +176,13 @@ def _build_dispatcher(
     # a new vendor/API. One batch call per discovered set of candidates, not
     # per card. Optional/default-None like every other dependency here.
     dp["partner_enrichment_llm_provider"] = partner_enrichment_llm_provider
+    # Partner Discovery 2.0 lead qualification - see
+    # app/services/lead_qualification.py. Off by default: partner_discovery
+    # /_run_discovery behaves exactly as v0 unless explicitly enabled.
+    dp["partner_discovery_v2_enabled"] = partner_discovery_v2_enabled
+    dp["partner_min_score"] = partner_min_score
+    dp["partner_min_confidence"] = partner_min_confidence
+    dp["partner_max_results"] = partner_max_results
     return dp
 
 
@@ -366,6 +377,10 @@ async def _async_main() -> None:
         plan_quota_service=plan_quota_service,
         partner_enrichment_llm_provider=partner_enrichment_llm_provider,
         contact_claim_repository=contact_claim_repository,
+        partner_discovery_v2_enabled=settings.partner_discovery_v2_enabled,
+        partner_min_score=settings.partner_min_score,
+        partner_min_confidence=settings.partner_min_confidence,
+        partner_max_results=settings.partner_max_results,
     )
 
     await dp.start_polling(bot)
