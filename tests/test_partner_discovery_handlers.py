@@ -186,7 +186,7 @@ def test_on_find_partners_passes_workspace_id_as_rotation_seed():
     ):
         run(on_find_partners(message, state, ws_context, repo, web_search_service(object())))
 
-    mock.assert_awaited_once_with(rotation_seed=777)
+    mock.assert_awaited_once_with(rotation_seed=777, use_all_variants=False)
 
 
 # ── "Следующий" walks the batch, never calls search again ─────────────────
@@ -349,6 +349,39 @@ def test_fit_strong_rendered_as_vysokoe_internal_enum_unchanged():
     assert "STRONG" not in text
     # The stored dict itself still carries the raw enum value, unchanged.
     assert candidates[0]["fit"] == "STRONG"
+
+
+def test_card_shows_no_public_contact_message_when_contact_is_missing():
+    """Partner Discovery 2.0: a strong candidate shown without a confirmed
+    contact must explicitly say so, never silently omit the "Связаться"
+    section - see app.handlers.partner_discovery._render_contact_line."""
+    candidates = [{
+        "name": "A", "url": "https://travel.yandex.ru/some-listing",
+        "prospect_type": "travel_agent", "query": "q", "evidence": "ev",
+        "evidence_source": "page", "fit": "STRONG",
+        "total_score": 80, "confidence": 0.8, "why_fit": ["Турагентство."],
+        "hook": "", "risk_flags": ["no_public_contact"], "evidence_claims": [],
+        "contact_type": None, "contact_value": None, "contact_url": None,
+        "contact_source_url": None, "contact_confidence": None,
+    }]
+    text, _ = _render_card(candidates, 0)
+    assert "Публичный контакт не найден" in text
+
+
+def test_card_shows_confirmed_telegram_contact():
+    candidates = [{
+        "name": "A", "url": "https://t.me/example_agent",
+        "prospect_type": "travel_agent", "query": "q", "evidence": "ev",
+        "evidence_source": "page", "fit": "STRONG",
+        "total_score": 90, "confidence": 0.9, "why_fit": ["Турагентство."],
+        "hook": "", "risk_flags": [], "evidence_claims": [],
+        "contact_type": "telegram", "contact_value": "@example_agent",
+        "contact_url": "https://t.me/example_agent",
+        "contact_source_url": "https://t.me/example_agent", "contact_confidence": "high",
+    }]
+    text, _ = _render_card(candidates, 0)
+    assert "Telegram: @example_agent" in text
+    assert "Публичный контакт не найден" not in text
 
 
 def test_fit_possible_rendered_as_vozmozhnoe():
@@ -816,3 +849,119 @@ def test_find_partners_without_ta_affiliation_omits_ta_clause():
         ))
 
     assert _TA_AFFILIATED_ENRICHMENT_CLAUSE.strip() not in captured["prompt"]
+
+
+# ── Partner Discovery 2.0 lead pipeline buttons (2026-10-11) ─────────────
+
+from app.handlers.partner_discovery import (  # noqa: E402
+    on_partner_lead_approve,
+    on_partner_lead_draft,
+    on_partner_lead_save,
+    on_partner_lead_skip,
+)
+from app.repositories.partner_lead_repository import PartnerLeadRepository  # noqa: E402
+from app.domain.partner_leads import PartnerLeadStatus  # noqa: E402
+
+
+def _lead_state(score: int = 80):
+    return State({
+        "partner_discovery_candidates": [{
+            "name": "Onvisor", "display_name": "Onvisor", "url": "https://onvisor.ru/",
+            "prospect_type": "tour_organizer", "query": "q", "evidence": "ev",
+            "evidence_source": "page", "fit": "STRONG",
+            "total_score": score, "confidence": 0.9, "why_fit": ["a"], "hook": "h",
+            "risk_flags": [], "evidence_claims": [],
+            "contact_type": "telegram", "contact_value": "@onvisor_travel",
+            "contact_url": "https://t.me/onvisor_travel",
+            "contact_source_url": "https://onvisor.ru/", "contact_confidence": "high",
+        }],
+        "partner_discovery_index": 0,
+    })
+
+
+def _lead_repo(tmp_path) -> PartnerLeadRepository:
+    repo = PartnerLeadRepository(tmp_path / "journal.sqlite3")
+    run(repo.init())
+    return repo
+
+
+def test_lead_approve_sets_status_approved(tmp_path):
+    repo = _lead_repo(tmp_path)
+    state = _lead_state()
+    callback = Callback(data="partner_discovery:lead_approve")
+
+    run(on_partner_lead_approve(callback, state, context(), repo))
+
+    leads = run(repo.list_for_workspace(42))
+    assert len(leads) == 1
+    assert leads[0].status == PartnerLeadStatus.APPROVED
+    assert "Одобрено" in (callback.message.answers[0][0] or "")
+
+
+def test_lead_skip_sets_status_declined(tmp_path):
+    repo = _lead_repo(tmp_path)
+    state = _lead_state()
+    callback = Callback(data="partner_discovery:lead_skip")
+
+    run(on_partner_lead_skip(callback, state, context(), repo))
+
+    leads = run(repo.list_for_workspace(42))
+    assert leads[0].status == PartnerLeadStatus.DECLINED
+
+
+def test_lead_save_does_not_change_status(tmp_path):
+    repo = _lead_repo(tmp_path)
+    state = _lead_state()
+    callback = Callback(data="partner_discovery:lead_save")
+
+    run(on_partner_lead_save(callback, state, context(), repo))
+
+    leads = run(repo.list_for_workspace(42))
+    assert leads[0].status == PartnerLeadStatus.NEW
+
+
+def test_lead_draft_never_sends_only_shows_text(tmp_path):
+    """📝 Черновик сообщения must never perform a send - it only ever
+    calls callback.message.answer() (the same fake Message.answer used
+    throughout this test file, which just records text, never contacts
+    anyone) or reports the draft unavailable, exactly like the existing
+    ✉️ Подготовить первое сообщение flow."""
+    from app.domain.contacts import ContactCandidate, ContactConfidence, ContactType
+
+    state = _lead_state()
+    callback = Callback(data="partner_discovery:lead_draft")
+
+    async def _fake_find_contact(*args, **kwargs):
+        return ContactCandidate(
+            contact_type=ContactType.PROJECT, display_name="Onvisor",
+            project_name="Onvisor", public_url="https://onvisor.ru/",
+            evidence_text="ev", evidence_url="https://onvisor.ru/", provenance="page",
+        )
+
+    with patch("app.handlers.partner_discovery.find_contact", _fake_find_contact):
+        run(on_partner_lead_draft(callback, state, web_search_service(object())))
+
+    # No PERSON found -> draft unavailable message, never a send action.
+    assert callback.message.answers
+    assert "черновика" in callback.message.answers[0][0] or "Нет найденного" in callback.message.answers[0][0]
+
+
+def test_lead_action_without_repository_is_feature_unavailable(tmp_path):
+    """Without a configured PartnerLeadRepository, lead actions fail soft
+    (no crash, no silent no-op pretending success)."""
+    state = _lead_state()
+    callback = Callback(data="partner_discovery:lead_approve")
+
+    run(on_partner_lead_approve(callback, state, context(), None))
+
+    assert callback.message.answers
+    assert "недоступна" in callback.message.answers[0][0]
+
+
+def test_lead_queue_button_shown_alongside_find_partners():
+    from app.keyboards import BTN_PARTNER_LEADS
+
+    markup = main_menu(show_partner_discovery=True)
+    texts = {btn.text for row in markup.keyboard for btn in row}
+    assert BTN_PARTNER_LEADS in texts
+    assert BTN_FIND_PARTNERS in texts

@@ -25,6 +25,10 @@ BTN_BACK = "◀️ Назад"
 # BusinessProfile.business_type == "club_partner"; ta_affiliated plays no
 # role in this button's visibility.
 BTN_FIND_PARTNERS = "🔎 Найти потенциальных партнёров"
+# Partner Discovery 2.0 lead pipeline review queue (same visibility gate
+# as BTN_FIND_PARTNERS - see main_menu/v2_main_menu below). Shown
+# alongside it, never alone.
+BTN_PARTNER_LEADS = "📋 Лиды партнёров"
 
 BTN_V2_DAILY_ACTIONS = "☀️ Что делать сегодня"
 BTN_V2_ANALYZE_LINK = "📝 Разобрать публикацию"
@@ -153,6 +157,17 @@ PARTNER_CONTACT_BACK = "partner_discovery:contact_back"
 # site and on_partner_contact_draft. Draft only, no auto-send.
 PARTNER_CONTACT_DRAFT = "partner_discovery:contact_draft"
 
+# Partner Discovery 2.0 lead pipeline actions (2026-10-11) - operate on
+# the SAME in-FSM prospect card already shown, persisting it into
+# partner_leads only once one of these is actually pressed (see
+# app/handlers/partner_discovery.py's module docstring on "minimal
+# mutation"). Shown only when the candidate carries V2 fields
+# (score/confidence) - absent for v0 cards, unchanged UX there.
+PARTNER_LEAD_SAVE = "partner_discovery:lead_save"
+PARTNER_LEAD_APPROVE = "partner_discovery:lead_approve"
+PARTNER_LEAD_SKIP = "partner_discovery:lead_skip"
+PARTNER_LEAD_DRAFT = "partner_discovery:lead_draft"
+
 # Ресурсы Travel Advantage: показываются только workspace с явным признаком
 # BusinessProfile.ta_affiliated (не по business_type, названию или описанию —
 # см. app/domain/business_profiles.py и app/handlers/menu.py:
@@ -191,6 +206,7 @@ def main_menu(show_partner_discovery: bool = False) -> ReplyKeyboardMarkup:
     ]
     if show_partner_discovery:
         keyboard.append([KeyboardButton(text=BTN_FIND_PARTNERS)])
+        keyboard.append([KeyboardButton(text=BTN_PARTNER_LEADS)])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
@@ -210,6 +226,7 @@ def v2_main_menu(show_partner_discovery: bool = False) -> ReplyKeyboardMarkup:
     ]
     if show_partner_discovery:
         keyboard.append([KeyboardButton(text=BTN_FIND_PARTNERS)])
+        keyboard.append([KeyboardButton(text=BTN_PARTNER_LEADS)])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
@@ -256,20 +273,36 @@ def lobby_expired_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def partner_discovery_card_keyboard(url: str, has_more_in_batch: bool) -> InlineKeyboardMarkup:
+def partner_discovery_card_keyboard(
+    url: str, has_more_in_batch: bool, *, show_lead_actions: bool = False,
+) -> InlineKeyboardMarkup:
     """One Partner Discovery v0 candidate card. "✍️ Подготовить обращение"
     is deliberately absent - a separate next step, not part of v0 (see
     app/handlers/partner_discovery.py's module docstring).
 
     "👤 Найти человека для контакта" triggers Contact Discovery v0 for
     THIS card's prospect (app.services.contact_discovery.find_contact) -
-    see app/handlers/partner_discovery.py's on_partner_contact_find."""
+    see app/handlers/partner_discovery.py's on_partner_contact_find.
+
+    show_lead_actions (Partner Discovery 2.0, 2026-10-11): adds the lead
+    pipeline row (Одобрить/Пропустить/Черновик/Сохранить) - only passed
+    True for a V2-qualified card, never for a v0 card, so v0 UX is
+    unchanged."""
     rows = [
         [InlineKeyboardButton(text="🌐 Открыть", url=url)],
         [InlineKeyboardButton(
             text="👤 Найти человека для контакта", callback_data=PARTNER_CONTACT_FIND,
         )],
     ]
+    if show_lead_actions:
+        rows.append([
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=PARTNER_LEAD_APPROVE),
+            InlineKeyboardButton(text="⏭ Пропустить", callback_data=PARTNER_LEAD_SKIP),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="📝 Черновик сообщения", callback_data=PARTNER_LEAD_DRAFT),
+            InlineKeyboardButton(text="📌 Сохранить", callback_data=PARTNER_LEAD_SAVE),
+        ])
     if has_more_in_batch:
         rows.append([
             InlineKeyboardButton(text="⏭ Следующий", callback_data=PARTNER_DISCOVERY_NEXT),

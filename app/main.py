@@ -22,6 +22,8 @@ from app.planner.openai_provider import PlannerOpenAIConfig
 from app.planner.provider import PlannerLLMProvider
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.contact_claim_repository import ContactClaimRepository
+from app.repositories.operational_event_repository import OperationalEventRepository
+from app.repositories.partner_lead_repository import PartnerLeadRepository
 from app.repositories.competitor_repository import CompetitorRepository
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
@@ -80,6 +82,8 @@ def _build_dispatcher(
     plan_quota_service: PlanQuotaService | None = None,
     partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
     contact_claim_repository: ContactClaimRepository | None = None,
+    partner_lead_repository: PartnerLeadRepository | None = None,
+    operational_event_repository: OperationalEventRepository | None = None,
     partner_discovery_v2_enabled: bool = False,
     partner_min_score: int = 65,
     partner_min_confidence: float = 0.60,
@@ -183,6 +187,8 @@ def _build_dispatcher(
     dp["partner_min_score"] = partner_min_score
     dp["partner_min_confidence"] = partner_min_confidence
     dp["partner_max_results"] = partner_max_results
+    dp["partner_lead_repository"] = partner_lead_repository
+    dp["operational_event_repository"] = operational_event_repository
     return dp
 
 
@@ -209,6 +215,19 @@ async def _async_main() -> None:
 
     contact_claim_repository = ContactClaimRepository(settings.journal_db_path)
     await contact_claim_repository.init()
+
+    # Partner Discovery 2.0 lead pipeline (2026-10-11) - see
+    # app/domain/partner_leads.py / app/repositories/partner_lead_repository.py.
+    # A lead row is only ever created once the user actually acts on a
+    # candidate card (save/approve/skip/draft), never on every search.
+    partner_lead_repository = PartnerLeadRepository(settings.journal_db_path)
+    await partner_lead_repository.init()
+
+    # Reuses the SAME generic audit mechanism app.web_api already uses
+    # (app.services.telemetry.record_event) for partner-lead status-change
+    # provenance - no new journal built for this.
+    operational_event_repository = OperationalEventRepository(settings.journal_db_path)
+    await operational_event_repository.init()
 
     source_analysis_repository = SourceAnalysisRepository(settings.journal_db_path)
     await source_analysis_repository.initialize()
@@ -381,6 +400,8 @@ async def _async_main() -> None:
         partner_min_score=settings.partner_min_score,
         partner_min_confidence=settings.partner_min_confidence,
         partner_max_results=settings.partner_max_results,
+        partner_lead_repository=partner_lead_repository,
+        operational_event_repository=operational_event_repository,
     )
 
     await dp.start_polling(bot)
