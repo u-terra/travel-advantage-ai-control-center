@@ -17,6 +17,7 @@ from app.services.lead_qualification import (
     _CONTACTABILITY_BY_CONFIDENCE,
     apply_fallback_qualification,
     qualify_candidates,
+    resolve_additional_contacts,
     resolve_contact_channel,
 )
 
@@ -500,3 +501,178 @@ def test_top_is_never_padded_with_hard_excluded_candidates() -> None:
 
     assert len(leads) == 1
     assert leads[0]["url"] == "https://t.me/strong_one"
+
+
+# ── ICP calibration (2026-10-11 live findings) ───────────────────────────
+
+def test_large_corporation_without_person_with_high_score_is_hard_excluded() -> None:
+    candidate = _candidate(url="https://quinta.ru/", name="quinta.ru")
+    item = _qualification_item(
+        candidate,
+        professional_relevance=25, activity=15, commercial_potential=20,
+        audience_quality=15, personal_hook_score=15,
+        risk_flags=["large_corporation_without_person"], confidence=0.9,
+    )
+    provider = _FakeProvider(json.dumps([item]))
+
+    leads = _run(qualify_candidates([candidate], provider, min_score=50, min_confidence=0.5))
+
+    assert leads == []
+
+
+def test_small_person_led_travel_project_is_allowed() -> None:
+    candidate = _candidate(
+        url="https://t.me/author_handle", name="Автор",
+        evidence="Автор авторских туров по Алтаю, веду канал, лично сопровождаю группы.",
+    )
+    item = _qualification_item(candidate, risk_flags=[])
+    provider = _FakeProvider(json.dumps([item]))
+
+    leads = _run(qualify_candidates([candidate], provider, min_score=50, min_confidence=0.5))
+
+    assert len(leads) == 1
+    assert leads[0]["risk_flags"] == []
+
+
+def test_community_without_leader_does_not_outrank_person_led_lead() -> None:
+    person_led = _candidate(url="https://t.me/person_lead", name="Person")
+    community = _candidate(url="https://guild-example.ru/", name="Гильдия гидов")
+
+    def person_item(c):
+        return _qualification_item(c, professional_relevance=25, personal_hook_score=15)
+
+    def community_item(c):
+        # Same evidence tier, but no named leader - calibrated lower per
+        # the ICP prompt guidance (community without an explicit leader
+        # scores more conservatively than a person-led project).
+        return _qualification_item(c, professional_relevance=18, personal_hook_score=10)
+
+    response = json.dumps([person_item(person_led), community_item(community)])
+    provider = _FakeProvider(response)
+
+    leads = _run(qualify_candidates(
+        [person_led, community], provider, min_score=0, min_confidence=0.0,
+    ))
+
+    by_url = {lead["url"]: lead for lead in leads}
+    assert by_url["https://t.me/person_lead"]["total_score"] > \
+        by_url["https://guild-example.ru/"]["total_score"]
+
+
+def test_top_not_padded_with_large_corporation() -> None:
+    strong = _candidate(url="https://t.me/strong_two", name="Strong two")
+    corp = _candidate(url="https://quinta.ru/", name="quinta.ru")
+
+    def corp_item(c):
+        return _qualification_item(
+            c, professional_relevance=25, activity=15, commercial_potential=20,
+            audience_quality=15, personal_hook_score=15,
+            risk_flags=["large_corporation_without_person"], confidence=0.9,
+        )
+
+    response = json.dumps([_qualification_item(strong), corp_item(corp)])
+    provider = _FakeProvider(response)
+
+    leads = _run(qualify_candidates(
+        [strong, corp], provider, min_score=50, min_confidence=0.5, max_results=7,
+    ))
+
+    assert len(leads) == 1
+    assert leads[0]["url"] == "https://t.me/strong_two"
+
+
+# ── Direct contact extraction/normalization (2026-10-11 live Onvisor bug:
+# evidence contained a Telegram mention/phone/email, but the candidate's
+# own url being a plain website used to win by being checked first) ──────
+
+def test_telegram_in_evidence_beats_website_url() -> None:
+    candidate = _candidate(
+        url="https://onvisor.ru/",
+        evidence="Анонсы экспедиций в нашем канале Telegram t.me/onvisor_travel +7 925 750-33-44 go@trip.onvisor.ru",
+    )
+    contact = resolve_contact_channel(candidate)
+    assert contact["contact_type"] == "telegram"
+    assert contact["contact_value"] == "@onvisor_travel"
+
+
+def test_email_in_evidence_ranks_above_website() -> None:
+    candidate = _candidate(
+        url="https://example-agency.ru/",
+        evidence="Авторские туры. Пишите: info@example-agency.ru",
+    )
+    contact = resolve_contact_channel(candidate)
+    assert contact["contact_type"] == "email"
+    assert contact["contact_value"] == "info@example-agency.ru"
+    assert _CONTACTABILITY_BY_CONFIDENCE[contact["contact_confidence"]] > \
+        _CONTACTABILITY_BY_CONFIDENCE["low"]
+
+
+def test_phone_in_evidence_beats_website() -> None:
+    candidate = _candidate(
+        url="https://example-agency.ru/",
+        evidence="Авторские туры. Звоните: +7 925 750-33-44",
+    )
+    contact = resolve_contact_channel(candidate)
+    assert contact["contact_type"] == "phone"
+    assert contact["contact_value"]
+    assert _CONTACTABILITY_BY_CONFIDENCE[contact["contact_confidence"]] > \
+        _CONTACTABILITY_BY_CONFIDENCE["low"]
+
+
+def test_no_direct_contact_falls_back_to_website() -> None:
+    candidate = _candidate(
+        url="https://example-agency.ru/",
+        evidence="Авторские туры по России, групповые поездки.",
+    )
+    contact = resolve_contact_channel(candidate)
+    assert contact["contact_type"] == "website"
+    assert contact["contact_confidence"] == "low"
+
+
+def test_multiple_contacts_are_deduped_and_capped() -> None:
+    candidate = _candidate(
+        url="https://onvisor.ru/",
+        evidence=(
+            "Канал Telegram t.me/onvisor_travel, пишите t.me/onvisor_travel "
+            "или на go@trip.onvisor.ru, звоните +7 925 750-33-44"
+        ),
+    )
+    primary = resolve_contact_channel(candidate)
+    additional = resolve_additional_contacts(candidate, primary)
+
+    assert primary["contact_type"] == "telegram"
+    values = [primary["contact_value"]] + [c["contact_value"] for c in additional]
+    assert len(values) == len(set(values))  # no duplicates
+    assert len(additional) <= 2
+    types = {c["contact_type"] for c in additional}
+    assert "telegram" not in types  # the duplicate t.me mention is deduped out
+
+
+def test_onvisor_like_fixture_is_not_website_only() -> None:
+    """Regression fixture modeled on the real live Onvisor case: evidence
+    names a Telegram channel, a phone, and an email, but the candidate's
+    own url is a plain website - the final candidate must surface a
+    direct channel, not just the generic website."""
+    candidate = _candidate(
+        url="https://www.onvisor.ru/", name="Onvisor",
+        evidence=(
+            "Авторские туры по России и миру | Onvisor Анонсы экспедиций: "
+            "Курилы, Камчатка, Чукотка, ЮАР — в нашем канале Telegram "
+            "t.me/onvisor_travel +7 925 750-33-44 go@trip.onvisor.ru"
+        ),
+    )
+    contact = resolve_contact_channel(candidate)
+    assert contact["contact_type"] != "website"
+
+
+def test_rendering_card_shows_direct_contact_not_website() -> None:
+    from app.handlers.partner_discovery import _render_card
+
+    candidate = _candidate(
+        url="https://www.onvisor.ru/", name="Onvisor",
+        evidence="В нашем канале Telegram t.me/onvisor_travel go@trip.onvisor.ru",
+    )
+    [lead] = _run(qualify_candidates([candidate], None, min_score=0, min_confidence=0.0))
+    text, _ = _render_card([lead], 0)
+    assert "Telegram: @onvisor_travel" in text
+    assert "Сайт: onvisor.ru" not in text.split("Telegram:")[0]

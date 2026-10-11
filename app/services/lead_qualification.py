@@ -88,55 +88,71 @@ _NON_CHANNEL_DOMAINS: frozenset[str] = frozenset({
 # is parsed directly out of the candidate's own already-verified url/
 # evidence text (the same two fields app.services.partner_discovery already
 # fetched/verified), so a contact can never be invented by the LLM step.
-# Priority: Telegram > VK > official website > public email > other. ──────
+#
+# Priority (2026-10-11 fix - a real live case lost a found email/phone
+# behind a generic website): Telegram > VK > public email > public phone
+# > generic website. A generic root-domain website is deliberately checked
+# LAST - it must never suppress a more specific direct channel that is
+# already sitting right there in the same evidence text. ─────────────────
 
 _TELEGRAM_URL_RE = re.compile(r"(?:https?://)?t\.me/([A-Za-z0-9_]{3,32})", re.IGNORECASE)
 _VK_URL_RE = re.compile(
     r"(?:https?://)?(?:www\.)?vk\.(?:com|ru)/([A-Za-z0-9_.]{2,64})", re.IGNORECASE,
 )
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
+# Same shape as app.services.partner_outreach._PHONE_RE (RU mobile/landline,
+# +7/8 prefix) - a phone explicitly published on the candidate's own public
+# page/snippet, not anything scraped from a private source.
+_PHONE_RE = re.compile(r"(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
 
 
 def _as_text_haystack(candidate: dict) -> str:
     return f"{candidate.get('url') or ''} {candidate.get('evidence') or ''}"
 
 
-def resolve_contact_channel(candidate: dict) -> dict | None:
-    """Returns {"contact_type", "contact_value", "contact_url",
-    "contact_source_url", "contact_confidence"} or None if no public
-    channel can be confirmed from the candidate's own url/evidence.
-
-    contact_source_url is always one of the candidate's own already-
-    verified fields (url, or the page/snippet evidence was extracted
-    from) - never invented, never fetched fresh. "high" confidence means
-    the candidate's OWN url is itself the channel; "medium" means the
-    channel was only mentioned inside the evidence text of a different
-    page; "low" covers the website/email fallback tiers."""
+def _candidate_channels(candidate: dict) -> list[dict]:
+    """Every distinct public contact channel findable in the candidate's
+    own already-verified url/evidence text, in priority order (best
+    first): Telegram > VK > email > phone > generic website. Each entry
+    has the same shape as resolve_contact_channel's return value. A
+    generic website is deliberately tried LAST so it never shadows a
+    more specific channel sitting in the same evidence - the exact live
+    bug this ordering fixes (Onvisor: evidence named a Telegram channel
+    and an email, candidate's own url was a plain website - the website
+    used to win purely by being checked first)."""
     url = candidate.get("url") or ""
     domain = canonical_domain(url) if url else ""
     evidence = candidate.get("evidence") or ""
+    channels: list[dict] = []
+    seen_values: set[str] = set()
+
+    def _add(entry: dict) -> None:
+        key = f"{entry['contact_type']}:{entry['contact_value']}"
+        if key not in seen_values:
+            seen_values.add(key)
+            channels.append(entry)
 
     # 1) Telegram - the candidate's own URL is a t.me page.
     direct_telegram = _TELEGRAM_URL_RE.search(url)
     if direct_telegram:
-        return {
+        _add({
             "contact_type": "telegram",
             "contact_value": f"@{direct_telegram.group(1)}",
             "contact_url": url,
             "contact_source_url": url,
             "contact_confidence": "high",
-        }
+        })
 
     # 2) VK - the candidate's own URL is a vk.com/vk.ru page.
     direct_vk = _VK_URL_RE.search(url)
     if direct_vk:
-        return {
+        _add({
             "contact_type": "vk",
             "contact_value": url,
             "contact_url": url,
             "contact_source_url": url,
             "contact_confidence": "high",
-        }
+        })
 
     # 3) Telegram/VK mentioned inside the page's own evidence text (the
     # candidate's main page links out to its Telegram/VK, e.g. a website
@@ -144,54 +160,86 @@ def resolve_contact_channel(candidate: dict) -> dict | None:
     # medium confidence since it is one step removed from the URL itself.
     evidence_telegram = _TELEGRAM_URL_RE.search(evidence)
     if evidence_telegram:
-        return {
+        _add({
             "contact_type": "telegram",
             "contact_value": f"@{evidence_telegram.group(1)}",
             "contact_url": f"https://t.me/{evidence_telegram.group(1)}",
             "contact_source_url": url or evidence_telegram.group(0),
             "contact_confidence": "medium",
-        }
+        })
     evidence_vk = _VK_URL_RE.search(evidence)
     if evidence_vk:
         matched = evidence_vk.group(0)
         contact_url = matched if matched.startswith("http") else f"https://{matched}"
-        return {
+        _add({
             "contact_type": "vk",
             "contact_value": contact_url,
             "contact_url": contact_url,
             "contact_source_url": url or contact_url,
             "contact_confidence": "medium",
-        }
+        })
 
-    # 4) Official website - the candidate's own URL, as long as it is not
+    # 4) Public email explicitly present in the page's own evidence text -
+    # checked BEFORE the generic website fallback (see function docstring).
+    email_match = _EMAIL_RE.search(evidence)
+    if email_match:
+        _add({
+            "contact_type": "email",
+            "contact_value": email_match.group(0),
+            "contact_url": "",
+            "contact_source_url": url or "",
+            "contact_confidence": "medium",
+        })
+
+    # 5) Public phone explicitly present in the page's own evidence text -
+    # same priority tier as email (both "a direct way to reach someone"),
+    # also checked before the generic website fallback.
+    phone_match = _PHONE_RE.search(evidence)
+    if phone_match:
+        _add({
+            "contact_type": "phone",
+            "contact_value": phone_match.group(0),
+            "contact_url": "",
+            "contact_source_url": url or "",
+            "contact_confidence": "medium",
+        })
+
+    # 6) Official website - the candidate's own URL, as long as it is not
     # a known aggregator/listing/multi-tenant domain (those are never a
-    # single candidate's own channel).
+    # single candidate's own channel). Last resort: a bare root domain is
+    # never treated as equivalent to an already-found direct channel.
     if url and domain and domain not in _NON_CHANNEL_DOMAINS and domain not in _KNOWN_CHANNEL_DOMAINS:
-        path = urlsplit(url).path
-        # A bare domain or a shallow "about/contacts"-style page reads as
-        # the project's own site; a long/unclear path still counts (it is
-        # still the same site), see the task's own "сайт и контактная
-        # страница" tier - no extra confidence given either way.
-        return {
+        _add({
             "contact_type": "website",
             "contact_value": domain,
             "contact_url": url,
             "contact_source_url": url,
             "contact_confidence": "low",
-        }
+        })
 
-    # 5) Public email explicitly present in the page's own evidence text.
-    email_match = _EMAIL_RE.search(evidence)
-    if email_match:
-        return {
-            "contact_type": "email",
-            "contact_value": email_match.group(0),
-            "contact_url": "",
-            "contact_source_url": url or "",
-            "contact_confidence": "low",
-        }
+    return channels
 
-    return None
+
+def resolve_contact_channel(candidate: dict) -> dict | None:
+    """Returns the single BEST channel (same shape as each entry in
+    _candidate_channels) or None if nothing could be confirmed. See
+    _candidate_channels for the full priority order and anti-shadowing
+    rationale. contact_source_url is always one of the candidate's own
+    already-verified fields - never invented, never fetched fresh."""
+    channels = _candidate_channels(candidate)
+    return channels[0] if channels else None
+
+
+def resolve_additional_contacts(candidate: dict, primary: dict | None) -> list[dict]:
+    """Up to 2 more distinct channels beyond the primary one (task: show
+    up to 2-3 total, e.g. Telegram + email + website, never duplicates) -
+    same strictly-deterministic source as resolve_contact_channel, never
+    LLM-sourced."""
+    channels = _candidate_channels(candidate)
+    if primary is not None:
+        channels = [c for c in channels if c["contact_type"] != primary.get("contact_type")
+                    or c["contact_value"] != primary.get("contact_value")]
+    return channels[:2]
 
 
 _CONTACTABILITY_BY_CONFIDENCE: dict[str, int] = {"high": 10, "medium": 7, "low": 4}
@@ -283,9 +331,19 @@ def apply_fallback_qualification(candidates: list[dict]) -> list[dict]:
 
 _QUALIFICATION_INSTRUCTIONS = """Ты оцениваешь кандидатов для Partner Discovery - внутреннего инструмента поиска потенциальных деловых контактов в travel-индустрии. Это разовая техническая задача, не диалог - ответь только данными.
 
+ЦЕЛЕВОЙ ПРОФИЛЬ (ICP) - читай перед оценкой каждого кандидата:
+Мы ищем НЕ просто "travel-бизнес", а в первую очередь: конкретного человека; автора путешествий; гида; travel-блогера; организатора экспедиций; владельца/основателя небольшой travel-команды; небольшое профессиональное сообщество с понятным публичным представителем; проект с собственной аудиторией/каналом и реальной возможностью личного контакта.
+НЕ приоритет (и часто повод для hard-exclusion risk_flags ниже): крупные туроператоры, агрегаторы/маркетплейсы, большие корпоративные travel-бренды, компании без конкретного публичного person-level контакта. Наличие travel-продукта САМО ПО СЕБЕ не означает partner fit - важно, есть ли доступный человек/владелец/автор.
+
+Калибровочные примеры (используй как образец строгости, не копируй дословно):
+- Маленький авторский туроператор с публичным именем владельца/автора, собственным каналом - ХОРОШИЙ кандидат, "aggregator"/"large_corporation_without_person" НЕ ставить только за то, что это "туроператор" - жёсткое правило "любой туроператор = плохо" запрещено.
+- Сайт/страница, где явно перечислены МНОГО разных независимых туроператоров/гидов как единый каталог/маркетплейс (например "выбрать из N туроператоров", агрегатор предложений) -> risk_flags: ["aggregator"], даже если score по остальным пунктам высокий.
+- Крупный корпоративный travel-бренд/сеть (большая агентская инфраструктура, сетевой туроператор, франшиза) БЕЗ упоминания конкретного человека/владельца/автора в evidence -> risk_flags: ["large_corporation_without_person"], даже при высоком score - высокий score НЕ оправдание не ставить этот флаг.
+- Профессиональное сообщество/гильдия (например гильдия гидов) с понятным публичным представителем - допустимый кандидат, но НЕ выше по professional_relevance/personal_hook_score, чем конкретный автор/организатор/владелец небольшой команды с тем же уровнем evidence - сообщество без явного лидера оценивай чуть консервативнее, чем person-led проект.
+
 Тебе дан список из {count} кандидатов. Для КАЖДОГО верни оценку по следующей модели (все числа - целые, в указанных границах):
 
-- "professional_relevance" (0-25): профессиональная связь с путешествиями. 25 - турагент/туроператор/туристический бизнес; 15-20 - активно работает рядом с travel; 5-10 - путешествия лишь часть контента; 0 - связь практически отсутствует.
+- "professional_relevance" (0-25): профессиональная связь с путешествиями И наличие конкретного person-level представителя. 25 - человек/автор/гид/владелец небольшой команды с явной профессиональной travel-деятельностью; 15-20 - активно работает рядом с travel, но менее персонализировано (например community без явного лидера); 5-10 - путешествия лишь часть контента; 0 - связь практически отсутствует.
 - "activity" (0-15): 15 - свежие регулярные публикации; 10 - периодически; 5 - низкая активность; 0 - профиль заброшен. Оценивай ТОЛЬКО по предоставленному EVIDENCE - если в evidence нет признаков даты/частоты публикаций, не выдумывай, ставь 5.
 - "commercial_potential" (0-20): 20 - уже продаёт/рекомендует услуги; 10-15 - заметна предпринимательская деятельность; 0-5 - обычный пользователь.
 - "audience_quality" (0-15): размер И качество аудитории, по тому, что явно видно в evidence.
@@ -293,7 +351,7 @@ _QUALIFICATION_INSTRUCTIONS = """Ты оцениваешь кандидатов 
 - "personal_hook_score" (0-15): 15 - в evidence есть конкретный свежий повод (публикация, тур, событие); 10 - есть тематическая зацепка; 5 - только общая релевантность; 0 - нет повода.
 - "why_fit": список из 2-4 коротких конкретных аргументов НА РУССКОМ, основанных ТОЛЬКО на предоставленном evidence.
 - "hook": ОДНО персонализированное предложение-зацепка для первого сообщения, основанное ТОЛЬКО на конкретном факте из evidence (например, на упомянутом туре/публикации/направлении). Если в evidence нет конкретного повода - верни пустую строку "", НЕ выдумывай повод.
-- "risk_flags": список коротких тегов из набора ["inactive", "insufficient_evidence", "mlm_focus", "competitor_club", "aggregator", "government", "news_portal", "large_corporation_without_person", "spam_profile"] - только те, что подтверждаются evidence; иначе пустой список. НЕ указывай контактность здесь - это определяется системой отдельно. Эти теги важны: "competitor_club"/"aggregator"/"government"/"news_portal"/"large_corporation_without_person"/"spam_profile" полностью исключают кандидата из финального списка независимо от остальных баллов - ставь их честно, если они подтверждаются evidence, не бойся "испортить" высокий score.
+- "risk_flags": список коротких тегов из набора ["inactive", "insufficient_evidence", "mlm_focus", "competitor_club", "aggregator", "government", "news_portal", "large_corporation_without_person", "spam_profile"] - только те, что подтверждаются evidence; иначе пустой список. НЕ указывай контактность здесь - это определяется системой отдельно. Эти теги важны: "competitor_club"/"aggregator"/"government"/"news_portal"/"large_corporation_without_person"/"spam_profile" полностью исключают кандидата из финального списка независимо от остальных баллов - ставь их честно, если они подтверждаются evidence, ВЫСОКИЙ SCORE НЕ ПРИЧИНА не ставить эти флаги - смотри калибровочные примеры выше.
 - "confidence" (0.0-1.0): насколько предоставленный evidence ДОСТАТОЧЕН для уверенности в этой оценке. Короткий/неясный evidence -> низкий confidence, даже если сам score высокий.
 - "evidence": список объектов {{"claim": "...", "source_url": "..."}} - каждое ключевое утверждение из why_fit/hook должно иметь соответствующий claim с ТЕМ ЖЕ source_url, что был дан во входных данных для этого кандидата. Никогда не добавляй claim без source_url.
 
@@ -476,6 +534,7 @@ async def qualify_candidates(
         if contact is not None:
             item.update(contact)
             item["contactability"] = _CONTACTABILITY_BY_CONFIDENCE[contact["contact_confidence"]]
+            item["additional_contacts"] = resolve_additional_contacts(candidate, contact)
         else:
             item["contact_type"] = None
             item["contact_value"] = None
@@ -483,6 +542,7 @@ async def qualify_candidates(
             item["contact_source_url"] = None
             item["contact_confidence"] = None
             item["contactability"] = 0
+            item["additional_contacts"] = []
             if "no_public_contact" not in item["risk_flags"]:
                 item["risk_flags"] = [*item["risk_flags"], "no_public_contact"]
 
