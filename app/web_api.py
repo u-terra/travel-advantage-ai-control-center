@@ -132,8 +132,9 @@ from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.contact_discovery import find_contact
-from app.services.lead_qualification import QualificationUnavailable, qualify_candidates
+from app.services.lead_qualification import QualificationUnavailable
 from app.services.partner_discovery import PartnerDiscoveryService
+from app.services.partner_pool import qualify_pool
 from app.services.partner_outreach import (
     candidate_to_dict,
     check_and_claim_contact,
@@ -2054,6 +2055,8 @@ _PARTNER_VERIFY_PHASE_END_S = 110.0  # after this, pages are no longer fetched
 _PARTNER_ENRICH_MAX_S = 40.0
 _PARTNER_QUALIFY_MIN_S = 20.0      # less than this left: don't start the LLM
 _PARTNER_QUALIFY_MARGIN_S = 3.0
+# Verified pool handed to qualification (display limit stays partner_max_results).
+_PARTNER_POOL_LIMIT = 10
 
 # The finished outcome (candidates, empty result or error status) of the
 # latest run per workspace is kept briefly, so a client that lost its
@@ -2163,6 +2166,7 @@ async def _run_partner_discovery(workspace_id: int) -> dict:
             use_all_variants=settings.partner_discovery_v2_enabled,
             search_deadline=started + _PARTNER_SEARCH_PHASE_S,
             verify_deadline=started + _PARTNER_VERIFY_PHASE_END_S,
+            **({"max_results": _PARTNER_POOL_LIMIT} if settings.partner_discovery_v2_enabled else {}),
         )
     except Exception:
         log.warning("web: partner discovery failed", exc_info=True)
@@ -2172,51 +2176,51 @@ async def _run_partner_discovery(workspace_id: int) -> dict:
         log.info("web: partner discovery finished found=0 elapsed=%.0fs", time.monotonic() - started)
         return {"candidates": []}
 
-    candidates = [candidate_to_dict(c) for c in found]
+    pool = [candidate_to_dict(c) for c in found]
     ta_affiliated = await _web_is_ta_affiliated(workspace_id)
-    enrich_timeout = max(1.0, min(
-        _PARTNER_ENRICH_MAX_S,
-        _PARTNER_RUN_BUDGET_S - (time.monotonic() - started) - _PARTNER_QUALIFY_MIN_S,
-    ))
+
+    async def _enrich(batch: list[dict]) -> list[dict]:
+        return await enrich_candidates(batch, chat_provider, ta_affiliated=ta_affiliated)
+
+    if not settings.partner_discovery_v2_enabled:
+        # Legacy (non-V2) path: first five only, enrichment + display ranking.
+        candidates = await _enrich(pool)
+        candidates = rank_for_club_partner_fit(candidates)
+        log.info("web: partner discovery finished found=%d returned=%d elapsed=%.0fs",
+                 len(found), len(candidates), time.monotonic() - started)
+        return {"candidates": candidates}
+
     try:
-        candidates = await asyncio.wait_for(
-            enrich_candidates(candidates, chat_provider, ta_affiliated=ta_affiliated),
-            timeout=enrich_timeout,
+        outcome = await qualify_pool(
+            pool, chat_provider,
+            enrich=_enrich, enrich_fallback=apply_fallback_enrichment,
+            rank=rank_for_club_partner_fit,
+            min_score=settings.partner_min_score,
+            min_confidence=settings.partner_min_confidence,
+            max_results=settings.partner_max_results,
+            deadline=started + _PARTNER_RUN_BUDGET_S,
+            enrich_max_seconds=_PARTNER_ENRICH_MAX_S,
+            qualify_min_seconds=_PARTNER_QUALIFY_MIN_S,
+            margin_seconds=_PARTNER_QUALIFY_MARGIN_S,
         )
-    except asyncio.TimeoutError:
-        # Same deterministic cleanup enrich_candidates itself uses on failure.
-        log.warning("web: partner enrichment timed out after %.0fs - using fallback", enrich_timeout)
-        candidates = apply_fallback_enrichment(candidates)
-    candidates = rank_for_club_partner_fit(candidates)
-    if settings.partner_discovery_v2_enabled:
-        remaining = _PARTNER_RUN_BUDGET_S - (time.monotonic() - started)
-        llm_timeout = remaining - _PARTNER_QUALIFY_MARGIN_S
-        if llm_timeout < _PARTNER_QUALIFY_MIN_S:
-            log.warning("web: partner qualification skipped - only %.0fs of budget left", remaining)
-            return _qualification_unavailable_payload()
-        try:
-            candidates = await qualify_candidates(
-                candidates, chat_provider,
-                min_score=settings.partner_min_score,
-                min_confidence=settings.partner_min_confidence,
-                max_results=settings.partner_max_results,
-                require_llm=True,
-                llm_timeout_seconds=llm_timeout,
-            )
-        except QualificationUnavailable as exc:
-            log.warning(
-                "web: partner qualification unavailable reason=%s elapsed=%.0fs",
-                exc.reason, time.monotonic() - started,
-            )
-            return _qualification_unavailable_payload()
-        except Exception:
-            log.warning("web: partner lead qualification failed", exc_info=True)
-            return _qualification_unavailable_payload()
+    except QualificationUnavailable as exc:
+        log.warning(
+            "web: partner qualification unavailable reason=%s elapsed=%.0fs",
+            exc.reason, time.monotonic() - started,
+        )
+        return _qualification_unavailable_payload()
+    except Exception:
+        log.warning("web: partner lead qualification failed", exc_info=True)
+        return _qualification_unavailable_payload()
     log.info(
-        "web: partner discovery finished found=%d returned=%d elapsed=%.0fs",
-        len(found), len(candidates), time.monotonic() - started,
+        "web: partner discovery finished found=%d checked=%d returned=%d incomplete=%s elapsed=%.0fs",
+        len(found), outcome.checked, len(outcome.candidates), outcome.incomplete_reason,
+        time.monotonic() - started,
     )
-    return {"candidates": candidates}
+    payload: dict = {"candidates": outcome.candidates}
+    if outcome.incomplete:
+        payload.update(incomplete=True, checked=outcome.checked, total=outcome.total)
+    return payload
 
 
 class PartnerContactRequest(BaseModel):

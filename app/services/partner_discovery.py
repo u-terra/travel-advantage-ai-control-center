@@ -286,6 +286,7 @@ class PartnerDiscoveryService:
     async def find_candidates(
         self, *, rotation_seed: int | None = None, use_all_variants: bool = False,
         search_deadline: float | None = None, verify_deadline: float | None = None,
+        max_results: int = _MAX_RESULTS,
     ) -> list[ProspectCandidate]:
         """Runs the fixed-size (always 5) query list, dedupes, filters
         noise, ranks, page-verifies the best survivors, and returns at most
@@ -303,7 +304,11 @@ class PartnerDiscoveryService:
         values, default None = unlimited, i.e. Telegram's behaviour) bound
         the query phase and the page-verification phase: past the deadline
         no new query is started / pages are no longer fetched and the
-        search snippet is used as evidence (tagged SNIPPET as always)."""
+        search snippet is used as evidence (tagged SNIPPET as always).
+
+        ``max_results`` caps the returned list (default ``_MAX_RESULTS``).
+        The order is unchanged, so a larger value only appends the rest of
+        the already-verified pool behind the usual first five."""
         queries = (
             _select_all_variant_queries(rotation_seed) if use_all_variants
             else _select_discovery_queries(rotation_seed)
@@ -420,11 +425,11 @@ class PartnerDiscoveryService:
 
         log.info(
             "partner_discovery.final_selection max=%d selected=%s dropped_by_cap=%s",
-            _MAX_RESULTS,
-            [(c.url, c.rank_score) for c in candidates[:_MAX_RESULTS]],
-            [(c.url, c.rank_score) for c in candidates[_MAX_RESULTS:]],
+            max_results,
+            [(c.url, c.rank_score) for c in candidates[:max_results]],
+            [(c.url, c.rank_score) for c in candidates[max_results:]],
         )
-        return candidates[:_MAX_RESULTS]
+        return candidates[:max_results]
 
     async def _verify(self, result: SearchResult) -> tuple[str, EvidenceSource]:
         """Best-effort page read. A fetch failure (bot/login wall, oversized

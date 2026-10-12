@@ -380,7 +380,7 @@ def test_frontend_zero_results_do_not_reset_to_idle_screen() -> None:
     js = _discover_partners_js(_chat_html())
 
     assert "renderPartnersEmpty" not in js
-    assert "renderPartnersNoResults()" in js
+    assert "renderPartnersNoResults(note)" in js
 
 
 def test_frontend_blocks_duplicate_clicks_and_has_client_timeout() -> None:

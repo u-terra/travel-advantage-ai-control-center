@@ -3595,12 +3595,29 @@ function renderPartnersError(message) {
 
     card.appendChild(title);
     card.appendChild(text);
+    if (note) {
+        const noteEl = document.createElement("p");
+        noteEl.textContent = note;
+        card.appendChild(noteEl);
+    }
     card.appendChild(retry);
     partnersState.appendChild(card);
 }
 
-function renderPartnersList(candidates) {
+function partnersIncompleteNote(data) {
+    if (!data || !data.incomplete) return null;
+    return "Проверка неполная: оценено " + data.checked + " из " + data.total +
+        " найденных кандидатов, остальные не успели проверить. Можно запустить поиск ещё раз.";
+}
+
+function renderPartnersList(candidates, note) {
     partnersState.innerHTML = "";
+    if (note) {
+        const noteEl = document.createElement("p");
+        noteEl.className = "info-card-text";
+        noteEl.textContent = note;
+        partnersState.appendChild(noteEl);
+    }
 
     const grid = document.createElement("div");
     grid.className = "report-sections";
@@ -3680,7 +3697,7 @@ function renderPartnerCard(candidate) {
     return section;
 }
 
-function renderPartnersNoResults() {
+function renderPartnersNoResults(note) {
     partnersState.innerHTML = "";
 
     const card = document.createElement("div");
@@ -3724,10 +3741,11 @@ function showPartnersResult(data) {
         return;
     }
     const items = Array.isArray(data.candidates) ? data.candidates : [];
+    const note = partnersIncompleteNote(data);
     if (items.length === 0) {
-        renderPartnersNoResults();
+        renderPartnersNoResults(note);
     } else {
-        renderPartnersList(items);
+        renderPartnersList(items, note);
     }
 }
 

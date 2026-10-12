@@ -450,3 +450,139 @@ def test_yandex_provider_marks_only_network_errors_transient(monkeypatch) -> Non
     monkeypatch.setattr(yp, "_open", http_error_open)
     assert provider.search("q") is None
     assert provider.last_failure_transient is False
+
+
+# ── pool qualification: candidates beyond the first five are still judged ─
+
+from app.services import partner_pool  # noqa: E402
+
+
+def _pool(n):
+    return [_cand(f"https://site{i}.ru/") for i in range(n)]
+
+
+def _fake_qualify(good_urls, calls, *, fail_on_call=None):
+    async def fake(batch, llm, *, min_score, min_confidence, max_results, require_llm,
+                   llm_timeout_seconds=None):
+        calls.append([c["url"] for c in batch])
+        if fail_on_call is not None and len(calls) == fail_on_call:
+            raise QualificationUnavailable("exception")
+        return [{**c, "total_score": 80, "confidence": 0.9} for c in batch if c["url"] in good_urls]
+    return fake
+
+
+async def _same(batch):
+    return batch
+
+
+def _qp(pool, calls, good, **kw):
+    with patch.object(partner_pool, "qualify_candidates", _fake_qualify(good, calls,
+                      fail_on_call=kw.pop("fail_on_call", None))):
+        return _run(partner_pool.qualify_pool(
+            pool, object(), enrich=_same, enrich_fallback=lambda b: b, rank=lambda b: b,
+            min_score=65, min_confidence=0.6, max_results=5, **kw))
+
+
+def test_candidate_beyond_first_five_is_qualified_when_first_five_fail() -> None:
+    calls = []
+    outcome = _qp(_pool(7), calls, {"https://site6.ru/"})
+    assert [c["url"] for c in outcome.candidates] == ["https://site6.ru/"]
+    assert len(calls) == 2 and outcome.checked == 7 and not outcome.incomplete
+
+
+def test_second_batch_not_checked_once_five_are_qualified() -> None:
+    calls = []
+    outcome = _qp(_pool(9), calls, {f"https://site{i}.ru/" for i in range(5)})
+    assert len(calls) == 1 and len(outcome.candidates) == 5
+
+
+def test_first_batch_failure_is_a_failure_not_empty() -> None:
+    with pytest.raises(QualificationUnavailable):
+        _qp(_pool(7), [], set(), fail_on_call=1)
+
+
+def test_later_batch_failure_returns_partial_and_says_so() -> None:
+    outcome = _qp(_pool(7), [], {"https://site0.ru/"}, fail_on_call=2)
+    assert [c["url"] for c in outcome.candidates] == ["https://site0.ru/"]
+    assert outcome.incomplete and outcome.checked == 5 and outcome.total == 7
+
+
+def test_budget_exhausted_before_second_batch_is_reported_incomplete() -> None:
+    calls = []
+    outcome = _qp(_pool(7), calls, set(), deadline=time.monotonic() + 30)
+    assert len(calls) == 1 and outcome.incomplete_reason == "budget"
+    assert outcome.checked == 5 and outcome.candidates == []
+
+
+def test_find_candidates_max_results_extends_pool_without_reordering() -> None:
+    results = [_res(f"https://agency{i}.ru/") for i in range(8)]
+
+    class _P:
+        def search(self, query, **_kw):
+            return SearchResponse(query=query, results=results, provider="yandex")
+
+    default = _run(_service(_P()).find_candidates())
+    pool = _run(_service(_P()).find_candidates(max_results=10))
+    assert len(default) == 5 and len(pool) == 8
+    assert [c.url for c in pool[:5]] == [c.url for c in default]
+
+
+def test_web_scenario_first_five_rejected_good_one_found_further(web_api) -> None:
+    prospects = [
+        ProspectCandidate(
+            name=f"P{i}", url=f"https://site{i}.ru/", prospect_type=ProspectType.TRAVEL_AGENT,
+            query="q", evidence="e", evidence_source=EvidenceSource.PAGE,
+            fit=ProspectFit.STRONG, rank_score=5,
+        ) for i in range(7)
+    ]
+    seen = {}
+
+    async def find(self, **kw):
+        seen.update(kw)
+        return prospects
+
+    calls = []
+
+    async def scenario():
+        with _web_patches(web_api, find, _LLM()), \
+                patch.object(web_api, "enrich_candidates", AsyncMock(side_effect=lambda b, *a, **k: b)), \
+                patch.object(partner_pool, "qualify_candidates",
+                             _fake_qualify({"https://site6.ru/"}, calls)):
+            return await web_api.discover_partners(_principal(1))
+
+    body = _run(scenario())
+    assert seen["max_results"] == 10
+    assert [c["url"] for c in body["candidates"]] == ["https://site6.ru/"]
+    assert "incomplete" not in body
+
+
+def test_web_partial_check_is_reported(web_api) -> None:
+    prospects = [
+        ProspectCandidate(
+            name=f"P{i}", url=f"https://site{i}.ru/", prospect_type=ProspectType.TRAVEL_AGENT,
+            query="q", evidence="e", evidence_source=EvidenceSource.PAGE,
+            fit=ProspectFit.STRONG, rank_score=5,
+        ) for i in range(7)
+    ]
+
+    async def find(self, **kw):
+        return prospects
+
+    async def scenario():
+        with _web_patches(web_api, find, _LLM()), \
+                patch.object(web_api, "enrich_candidates", AsyncMock(side_effect=lambda b, *a, **k: b)), \
+                patch.object(partner_pool, "qualify_candidates",
+                             _fake_qualify(set(), [], fail_on_call=2)):
+            return await web_api.discover_partners(_principal(1))
+
+    body = _run(scenario())
+    assert body["candidates"] == [] and body["incomplete"] is True
+    assert (body["checked"], body["total"]) == (5, 7)
+    assert "error" not in body
+
+
+def test_frontend_shows_incomplete_check_note() -> None:
+    from pathlib import Path
+    html = (Path(__file__).resolve().parents[1] / "app" / "templates" / "chat.html").read_text(
+        encoding="utf-8")
+    assert "partnersIncompleteNote(data)" in html and "Проверка неполная" in html
