@@ -3595,11 +3595,6 @@ function renderPartnersError(message) {
 
     card.appendChild(title);
     card.appendChild(text);
-    if (note) {
-        const noteEl = document.createElement("p");
-        noteEl.textContent = note;
-        card.appendChild(noteEl);
-    }
     card.appendChild(retry);
     partnersState.appendChild(card);
 }
@@ -3719,6 +3714,11 @@ function renderPartnersNoResults(note) {
 
     card.appendChild(title);
     card.appendChild(text);
+    if (note) {
+        const noteEl = document.createElement("p");
+        noteEl.textContent = note;
+        card.appendChild(noteEl);
+    }
     card.appendChild(retry);
     partnersState.appendChild(card);
 }

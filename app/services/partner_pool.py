@@ -18,7 +18,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.chat_provider import OpenAIChatProvider
-from app.services.lead_qualification import QualificationUnavailable, qualify_candidates
+from app.services.lead_qualification import (
+    QUALIFICATION_ATTEMPT_TIMEOUT_S,
+    QUALIFICATION_MAX_ATTEMPTS,
+    QualificationUnavailable,
+    qualify_candidates,
+)
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +113,9 @@ async def qualify_pool(
                 batch, llm_provider,
                 min_score=min_score, min_confidence=min_confidence,
                 max_results=max_results, require_llm=True,
-                llm_timeout_seconds=llm_timeout,
+                attempt_timeout_seconds=QUALIFICATION_ATTEMPT_TIMEOUT_S,
+                max_attempts=QUALIFICATION_MAX_ATTEMPTS,
+                deadline=None if deadline is None else deadline - margin_seconds,
             )
         except QualificationUnavailable as exc:
             if first:

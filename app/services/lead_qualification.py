@@ -26,9 +26,13 @@ see the task's own "2 леда found -> show 2" requirement.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import re
+import socket
+import time
+import urllib.error
 from urllib.parse import urlsplit
 
 from app.chat_provider import OpenAIChatProvider
@@ -481,6 +485,81 @@ def _parse_qualification_response(
     return result, None
 
 
+# Qualification LLM call: bounded attempts. The provider (app.chat_provider)
+# uses plain urllib - no SDK, so there are NO built-in retries underneath; the
+# only retry is the one below. A urllib timeout is a socket-idle timeout, and
+# the non-streaming Responses call sends nothing until the answer is ready, so
+# setting it per attempt really bounds the attempt (no background thread is
+# left running past it, unlike an asyncio.wait_for around a thread).
+QUALIFICATION_ATTEMPT_TIMEOUT_S = 60.0
+QUALIFICATION_MAX_ATTEMPTS = 2
+_MIN_ATTEMPT_SECONDS = 20.0
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    """Timeout / connection-level failure only. HTTP status errors, empty or
+    unparseable output are NOT retried."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    return isinstance(exc, (TimeoutError, socket.timeout, urllib.error.URLError, ConnectionError, OSError))
+
+
+def _provider_with_timeout(llm_provider, seconds: float):
+    config = getattr(llm_provider, "config", None)
+    if isinstance(llm_provider, OpenAIChatProvider) and dataclasses.is_dataclass(config):
+        return type(llm_provider)(dataclasses.replace(config, timeout_seconds=seconds))
+    return llm_provider
+
+
+async def _generate_with_retry(
+    llm_provider, prompt: str, *,
+    attempt_timeout_seconds: float | None, max_attempts: int, deadline: float | None,
+):
+    """Returns the provider result or raises the last error. ``deadline`` is a
+    time.monotonic() value for the whole step; an attempt (or a retry) is only
+    started with at least _MIN_ATTEMPT_SECONDS left, and never runs past it."""
+    model = getattr(getattr(llm_provider, "config", None), "model", "-")
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        timeout = attempt_timeout_seconds
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if attempt > 1 and remaining < _MIN_ATTEMPT_SECONDS:
+                log.warning("partner_qualification.retry_skipped reason=budget remaining_s=%.0f", remaining)
+                break
+            timeout = remaining if timeout is None else min(timeout, remaining)
+        started = time.monotonic()
+        provider = _provider_with_timeout(llm_provider, timeout) if timeout else llm_provider
+        try:
+            call = asyncio.to_thread(provider.generate, message=prompt)
+            # Backstop only; the provider's own HTTP timeout is the real bound.
+            result = await (asyncio.wait_for(call, timeout=timeout + 5) if timeout else call)
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "partner_qualification.attempt model=%s input_chars=%d attempt=%d/%d "
+                "timeout_s=%s elapsed_ms=%d outcome=error exc_type=%s",
+                model, len(prompt), attempt, max_attempts,
+                "-" if not timeout else f"{timeout:.0f}",
+                int((time.monotonic() - started) * 1000), type(exc).__name__,
+            )
+            if not _is_transient_llm_error(exc):
+                break
+            continue
+        usage = getattr(result, "usage", None)
+        log.info(
+            "partner_qualification.attempt model=%s input_chars=%d attempt=%d/%d "
+            "timeout_s=%s elapsed_ms=%d outcome=ok output_chars=%d input_tokens=%s output_tokens=%s",
+            model, len(prompt), attempt, max_attempts,
+            "-" if not timeout else f"{timeout:.0f}",
+            int((time.monotonic() - started) * 1000), len(result.text or ""),
+            getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None),
+        )
+        return result
+    assert last_exc is not None
+    raise last_exc
+
+
 class QualificationUnavailable(RuntimeError):
     """The LLM qualification step did not complete (no provider, timeout,
     transport error or unparseable answer). Raised only when the caller asked
@@ -501,6 +580,9 @@ async def qualify_candidates(
     max_results: int = 7,
     require_llm: bool = False,
     llm_timeout_seconds: float | None = None,
+    attempt_timeout_seconds: float | None = None,
+    max_attempts: int = 1,
+    deadline: float | None = None,
 ) -> list[dict]:
     """Returns at most ``max_results`` qualified candidate dicts, each
     merged with score/confidence/why_fit/hook/risk_flags/evidence fields,
@@ -509,8 +591,10 @@ async def qualify_candidates(
 
     ``require_llm=True`` raises QualificationUnavailable instead of silently
     switching to the deterministic fallback when the LLM step fails.
-    ``llm_timeout_seconds`` bounds the wait for the LLM answer (the worker
-    thread itself is bounded by the provider's own HTTP timeout).
+    ``llm_timeout_seconds`` bounds a single wait for the LLM answer;
+    ``attempt_timeout_seconds`` / ``max_attempts`` / ``deadline`` (monotonic)
+    instead run up to ``max_attempts`` bounded attempts - a retry happens only
+    after a transient timeout/network error and only inside ``deadline``.
     """
     if not candidates:
         log.info("partner_discovery.qualified count=0")
@@ -527,11 +611,17 @@ async def qualify_candidates(
     else:
         prompt = _build_qualification_prompt(candidates)
         try:
-            call = asyncio.to_thread(llm_provider.generate, message=prompt)
-            if llm_timeout_seconds is not None:
-                result = await asyncio.wait_for(call, timeout=llm_timeout_seconds)
+            if attempt_timeout_seconds is not None or max_attempts > 1:
+                result = await _generate_with_retry(
+                    llm_provider, prompt, attempt_timeout_seconds=attempt_timeout_seconds,
+                    max_attempts=max_attempts, deadline=deadline,
+                )
             else:
-                result = await call
+                call = asyncio.to_thread(llm_provider.generate, message=prompt)
+                if llm_timeout_seconds is not None:
+                    result = await asyncio.wait_for(call, timeout=llm_timeout_seconds)
+                else:
+                    result = await call
         except Exception as exc:
             log.warning(
                 "partner_discovery: qualification fallback_reason=exception exc_type=%s",

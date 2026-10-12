@@ -462,8 +462,7 @@ def _pool(n):
 
 
 def _fake_qualify(good_urls, calls, *, fail_on_call=None):
-    async def fake(batch, llm, *, min_score, min_confidence, max_results, require_llm,
-                   llm_timeout_seconds=None):
+    async def fake(batch, llm, *, min_score, min_confidence, max_results, require_llm, **_kw):
         calls.append([c["url"] for c in batch])
         if fail_on_call is not None and len(calls) == fail_on_call:
             raise QualificationUnavailable("exception")
@@ -586,3 +585,178 @@ def test_frontend_shows_incomplete_check_note() -> None:
     html = (Path(__file__).resolve().parents[1] / "app" / "templates" / "chat.html").read_text(
         encoding="utf-8")
     assert "partnersIncompleteNote(data)" in html and "Проверка неполная" in html
+
+
+# ── Real UI behaviour: execute the page's partner-search JS under node ───
+
+import re  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+_NODE = shutil.which("node")
+
+_JS_HARNESS = r"""
+class El {
+  constructor(tag) { this.tag = tag; this.children = []; this.textContent = ""; this.className = "";
+    this.href = ""; this.disabled = false; this._html = ""; }
+  set innerHTML(v) { this._html = v; if (v === "") this.children = []; }
+  get innerHTML() { return this._html; }
+  appendChild(c) { this.children.push(c); return c; }
+  addEventListener() {}
+}
+const document = { createElement: (t) => new El(t),
+  createTextNode: (t) => { const e = new El("#text"); e.textContent = t; return e; } };
+const partnersState = new El("div");
+const partnersDiscoverBtn = new El("button");
+function textOf(n) { return [n.textContent, n._html, ...n.children.map(textOf)].join(" | "); }
+class AbortController { constructor() { this.signal = {}; } abort() {} }
+@@SOURCE@@
+(async () => {
+  const scenario = @@SCENARIO@@;
+  let getCalls = 0, postCalls = 0;
+  globalThis.fetch = async (url, opts) => {
+    if (opts && opts.method === "POST") {
+      postCalls++;
+      if (scenario.post === "drop") throw new TypeError("network down");
+      return { ok: true, json: async () => scenario.post };
+    }
+    const answer = scenario.get[Math.min(getCalls++, scenario.get.length - 1)];
+    return { ok: true, json: async () => answer };
+  };
+  await discoverPartners();
+  console.log(JSON.stringify({ screen: textOf(partnersState), postCalls, getCalls,
+                               btnDisabled: partnersDiscoverBtn.disabled }));
+})();
+"""
+
+
+def _run_ui(scenario: dict) -> dict:
+    html = (Path(__file__).resolve().parents[1] / "app" / "templates" / "chat.html").read_text(
+        encoding="utf-8")
+    source = html[html.index("const PARTNER_FIT_LABELS"):html.index("async function findPartnerContact")]
+    source = re.sub(r"const PARTNERS_RECOVER_POLL_MS = \d+;", "const PARTNERS_RECOVER_POLL_MS = 1;", source)
+    script = _JS_HARNESS.replace("@@SOURCE@@", source).replace("@@SCENARIO@@", json.dumps(scenario))
+    done = subprocess.run([_NODE, "-e", script], capture_output=True, text=True, timeout=30, encoding="utf-8")
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+_NO_RESULTS_TEXT = "Подходящих кандидатов не найдено"
+_ERROR_PAYLOAD = {
+    "error": "Не удалось завершить проверку кандидатов: сервис оценки не ответил вовремя.",
+    "error_code": "qualification_unavailable", "candidates": [],
+}
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_ui_qualification_failure_shows_error_not_no_candidates() -> None:
+    out = _run_ui({"post": _ERROR_PAYLOAD, "get": [{"status": "none"}]})
+    assert "Не удалось выполнить поиск" in out["screen"]
+    assert "сервис оценки не ответил" in out["screen"]
+    assert _NO_RESULTS_TEXT not in out["screen"]
+    assert out["btnDisabled"] is False  # the button is usable again
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_ui_dropped_connection_then_stored_error_is_shown_as_error() -> None:
+    out = _run_ui({"post": "drop", "get": [{"status": "running"}, {**_ERROR_PAYLOAD, "status": "done"}]})
+    assert "сервис оценки не ответил" in out["screen"]
+    assert _NO_RESULTS_TEXT not in out["screen"]
+    assert out["postCalls"] == 1 and out["getCalls"] == 2  # polled, never re-submitted
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_ui_dropped_connection_then_stored_genuine_empty_says_no_candidates() -> None:
+    out = _run_ui({"post": "drop", "get": [{"status": "done", "candidates": []}]})
+    assert _NO_RESULTS_TEXT in out["screen"]
+    assert "Не удалось выполнить поиск" not in out["screen"]
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_ui_dropped_connection_then_stored_candidates_are_rendered() -> None:
+    cand = {"url": "https://x.ru/", "display_name": "Эксперт Иван", "reason": "Автор.",
+            "evidence_source": "page", "prospect_type": "guide", "name": "x"}
+    out = _run_ui({"post": "drop", "get": [{"status": "done", "candidates": [cand]}]})
+    assert "Эксперт Иван" in out["screen"]
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_ui_empty_with_incomplete_check_says_so() -> None:
+    out = _run_ui({"post": {"candidates": [], "incomplete": True, "checked": 5, "total": 8}, "get": []})
+    assert _NO_RESULTS_TEXT in out["screen"]
+    assert "оценено 5 из 8" in out["screen"]
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_ui_nothing_stored_after_drop_shows_error_not_no_candidates() -> None:
+    out = _run_ui({"post": "drop", "get": [{"status": "none"}]})
+    assert "Не удалось" in out["screen"]
+    assert _NO_RESULTS_TEXT not in out["screen"]
+
+
+# ── qualification attempts: 60 s bound, one retry, nothing nested ────────
+
+def _patch_provider(outcomes, timeouts):
+    from app.chat_provider import ChatConfig, OpenAIChatProvider
+
+    class _Fake(OpenAIChatProvider):
+        def generate(self, *, message, **_kw):
+            timeouts.append(self.config.timeout_seconds)
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return _Result(outcome)
+
+    return _Fake(ChatConfig(api_key="test-key", timeout_seconds=180.0))
+
+
+def _attempts(outcomes, *, remaining=150.0):
+    timeouts: list[float] = []
+    llm = _patch_provider(list(outcomes), timeouts)
+    candidate = _cand()
+    try:
+        result = _run(qualify_candidates(
+            [candidate], llm, require_llm=True, attempt_timeout_seconds=60.0,
+            max_attempts=2, deadline=time.monotonic() + remaining))
+    except QualificationUnavailable:
+        result = "unavailable"
+    return result, timeouts
+
+
+def test_transient_timeout_is_retried_once_with_60s_attempts(caplog) -> None:
+    import logging
+    with caplog.at_level(logging.INFO, logger="app.services.lead_qualification"):
+        result, timeouts = _attempts([TimeoutError("read timed out"), _low_score_answer(_cand())])
+    assert result == [] and timeouts == [60.0, 60.0]  # provider's own 180 s is NOT used
+    assert "attempt=1/2" in caplog.text and "exc_type=TimeoutError" in caplog.text
+    assert "attempt=2/2" in caplog.text and "outcome=ok" in caplog.text
+    assert "model=gpt-5.6-terra" in caplog.text and "input_chars=" in caplog.text
+    attempt_lines = [r.getMessage() for r in caplog.records if "partner_qualification.attempt" in r.getMessage()]
+    assert attempt_lines and all(
+        "test-key" not in line and "example-agency" not in line for line in attempt_lines)
+
+
+def test_two_timeouts_end_in_unavailable_with_exactly_two_calls() -> None:
+    result, timeouts = _attempts([TimeoutError("a"), TimeoutError("b"), "unused"])
+    assert result == "unavailable" and len(timeouts) == 2
+
+
+def test_non_transient_error_is_not_retried() -> None:
+    result, timeouts = _attempts([RuntimeError("OpenAI returned no output text"), "unused"])
+    assert result == "unavailable" and len(timeouts) == 1
+
+
+def test_http_error_is_not_retried() -> None:
+    result, timeouts = _attempts([urllib.error.HTTPError("u", 429, "rate", {}, None), "unused"])
+    assert result == "unavailable" and len(timeouts) == 1
+
+
+def test_no_retry_when_remaining_budget_is_too_small() -> None:
+    result, timeouts = _attempts([TimeoutError("a"), "unused"], remaining=10)
+    assert result == "unavailable" and len(timeouts) == 1 and timeouts[0] <= 10
+
+
+def test_attempt_never_outlives_remaining_budget() -> None:
+    _, timeouts = _attempts([_low_score_answer(_cand())], remaining=35)
+    assert timeouts[0] <= 35
