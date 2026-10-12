@@ -1319,15 +1319,14 @@ async def on_partner_lead_open(
 def _contact_dict_from_lead(lead) -> dict:
     """Stored lead -> the contact dict shape the shared outreach-draft
     generator expects. Only stored fields are used."""
-    evidence = "; ".join(item for item in lead.why_fit if item)
-    if lead.hook:
-        evidence = f"{evidence}; {lead.hook}" if evidence else lead.hook
     return {
         "contact_type": "person",
+        "addressee_confirmed": False,  # shared mailbox / company page, no named person
         "display_name": lead.name,
         "role": "",
         "project_name": lead.name,
-        "evidence_text": evidence,
+        "hook": lead.hook or "",
+        "evidence_text": "; ".join(item for item in lead.why_fit if item),
         "evidence_url": lead.source_url,
         "public_url": lead.source_url,
     }

@@ -376,12 +376,13 @@ _OUTREACH_DRAFT_INSTRUCTIONS = """Ты помогаешь подготовить
 Роль (публично подтверждена): {role}
 Проект/сообщество: {project}
 Почему найден (public evidence): {evidence}
+{hook_line}{addressee_rules}
 
 Напиши короткое (4-6 предложений), вежливое, персонализированное первое сообщение на русском языке, которое ПОНЯТНО объясняет, зачем мы пишем - пустое "давайте познакомимся" без причины не годится. Структура:
 1) Обращение по имени (если из "Имя" можно уверенно выделить имя/имя-отчество - например из формата "Фамилия Имя Отчество" - используй именно имя/имя-отчество, а не полностью ФИО; если формат неясен - используй то, что есть).
 2) Фраза вида "Обращаюсь к вам как к {{роль}}" (адресуя роль ПОЛУЧАТЕЛЮ) + при наличии проекта/сообщества упомяни его. НИКОГДА не формулируй как "Пишу вам как {{роль}}" - это звучит, будто роль принадлежит отправителю, а не адресату.
 3) Объясни причину обращения.{ta_instruction}
-4) Заверши простым низкопороговым вопросом/предложением - например, можно ли коротко рассказать или прислать информацию, без развёрнутой презентации.
+4) Заверши ОДНИМ коротким вопросом о готовности узнать подробнее - например, "Было бы вам интересно коротко узнать подробнее?" - без развёрнутой презентации.
 
 СТРОГО ЗАПРЕЩЕНО:
 - начинать с "Увидел(а) вашу страницу" или любой похожей шаблонной фразы;
@@ -389,7 +390,10 @@ _OUTREACH_DRAFT_INSTRUCTIONS = """Ты помогаешь подготовить
 - называть Travel Advantage каким-либо собственным/внутренним названием отправителя (например, упоминать проект/бренд/организацию отправителя рядом с Travel Advantage) - Travel Advantage называется только как "международный туристический клуб и платформа для путешествий", без смешивания с чем-либо ещё;
 - утверждать или подразумевать, что человек уже заинтересован, нуждается в Travel Advantage или ищет что-либо конкретное;
 - упоминать доход, заработок, окупаемость или любой гарантированный результат;
-- придумывать детали о человеке сверх предоставленных полей.
+- придумывать детали о человеке сверх предоставленных полей, в том числе использовать пустые фразы вроде "обращаюсь в связи с {{название}}" без конкретики;
+- утверждать личное знакомство, что вы изучили, видели, читали или смотрели материалы адресата;
+- обещать выгоду, условия, скидки, преимущества или результат.
+Если есть поле "Зацепка" или факты в "Почему найден" - опирайся ТОЛЬКО на них, один конкретный факт, без добавлений.
 
 ГРАММАТИЧЕСКИ ОБЯЗАТЕЛЬНО - сообщение пишется от лица отправителя, чей пол НЕИЗВЕСТЕН и не должен угадываться: используй ТОЛЬКО глагольные формы, не зависящие от рода (настоящее время/инфинитив/безличные конструкции): "обращаюсь", "пишу", "хочу познакомить", "думаю", "могу коротко рассказать" и подобные. СТРОГО ЗАПРЕЩЕНЫ любые родовые формы прошедшего времени или конструкции с "(а)": "нашёл/нашла", "увидел/увидела", "хотел/хотела", "решил/решила", "был/была", "рад/рада" и любые их варианты с "(а)".
 
@@ -414,10 +418,48 @@ def greeting_name(display_name: str) -> str:
     return display_name or ""
 
 
+# A contact built from a SAVED lead (shared mailbox / company page) carries
+# addressee_confirmed=False: nobody was identified as the recipient, so the
+# draft must greet the team, not invent a person or role. Contacts coming from
+# Contact Discovery never set the key and keep the personal-address behaviour.
+_TEAM_ADDRESSEE_RULES = (
+    "\nАДРЕСАТ НЕ ПОДТВЕРЖДЁН: контакт общий, конкретный человек неизвестен. "
+    "Начни ровно со строки \"Здравствуйте, команда {team}!\". Не используй "
+    "\"Обращаюсь к вам как к {{роль}}\", не называй должности и не обращайся по имени."
+)
+_UNSAFE_DRAFT_RE = re.compile(
+    r"\bизучил\w*|\bвидел\w*|\bчитал\w*|\bсмотрел\w*|\bзнаком\w*\s+с\s+ваш\w*|"
+    r"выгод\w*|скидк\w*|заработ\w*|доход\w*|гарантир\w*|\(а\)",
+    re.IGNORECASE,
+)
+
+
+def _is_team_addressee(contact: dict) -> bool:
+    return contact.get("addressee_confirmed") is False
+
+
+def _team_greeting(contact: dict) -> str:
+    team = strip_private_contact_data(
+        contact.get("project_name") or contact.get("display_name") or "",
+    )
+    return f"Здравствуйте, команда {team}!" if team else "Здравствуйте!"
+
+
+def _fact_sentences(contact: dict) -> list[str]:
+    raw = strip_private_contact_data(contact.get("evidence_text") or "")
+    return [p.strip(" .") for p in re.split(r"[;\n]", raw) if p.strip(" .")][:2]
+
+
 def build_outreach_draft_prompt(
     contact: dict, ta_affiliated: bool, sender_business_name: str | None,
 ) -> str:
+    hook = strip_private_contact_data(contact.get("hook") or "")
     return _OUTREACH_DRAFT_INSTRUCTIONS.format(
+        hook_line=f"Зацепка (из сохранённых данных): {hook}\n" if hook else "",
+        addressee_rules=(
+            _TEAM_ADDRESSEE_RULES.format(team=_team_greeting(contact)[len("Здравствуйте, команда "):-1])
+            if _is_team_addressee(contact) else ""
+        ),
         name=strip_private_contact_data(contact.get("display_name") or ""),
         role=strip_private_contact_data(contact.get("role") or "") or "не указана",
         project=strip_private_contact_data(contact.get("project_name") or ""),
@@ -437,18 +479,37 @@ def fallback_outreach_draft(
     name = strip_private_contact_data(contact.get("display_name") or "")
     role = strip_private_contact_data(contact.get("role") or "")
     project = strip_private_contact_data(contact.get("project_name") or "")
-    greeting = greeting_name(name)
+    hook = strip_private_contact_data(contact.get("hook") or "").strip(" .")
+    facts = _fact_sentences(contact)
+    team = _is_team_addressee(contact)
 
-    if role and project:
-        intro = f"Обращаюсь к вам как к {role} в «{project}»."
-    elif role:
-        intro = f"Обращаюсь к вам как к {role}."
-    elif project:
-        intro = f"Обращаюсь к вам в связи с «{project}»."
+    # Only stored, confirmed facts - no acquaintance, no viewed-materials
+    # claims, no promised benefit.
+    fact_lines: list[str] = []
+    if facts:
+        fact_lines.append("Из открытых источников: " + "; ".join(facts) + ".")
+    if hook:
+        fact_lines.append(f"Также упоминается: {hook}.")
+
+    if team:
+        greeting_line = _team_greeting(contact)
+        intro = ""
     else:
-        intro = "Обращаюсь к вам, чтобы коротко познакомиться."
+        greeting_line = f"Здравствуйте, {greeting_name(name)}!"
+        if role and project:
+            intro = f"Обращаюсь к вам как к {role} в «{project}»."
+        elif role:
+            intro = f"Обращаюсь к вам как к {role}."
+        else:
+            intro = ""  # a bare "в связи с «проект»" says nothing - facts follow instead
 
-    lines = [f"Здравствуйте, {greeting}!", "", intro, ""]
+    lines = [greeting_line, ""]
+    if intro:
+        lines += [intro, ""]
+    if fact_lines:
+        lines += [" ".join(fact_lines), ""]
+    elif not intro:
+        lines += ["Обращаюсь, чтобы коротко познакомиться.", ""]
     if ta_affiliated:
         lines.append(
             "Хочу познакомить вас с Travel Advantage - международным "
@@ -459,15 +520,10 @@ def fallback_outreach_draft(
             "Думаю, этот формат может быть интересен проектам, которые напрямую "
             "работают с путешественниками и туристической аудиторией."
         )
-        lines.append("")
-        lines.append(
-            "Если не возражаете, могу коротко рассказать, как это работает - без "
-            "длинной презентации."
-        )
     else:
         lines.append("Пишу, чтобы коротко познакомиться.")
-        lines.append("")
-        lines.append("Если не возражаете, могу написать чуть подробнее.")
+    lines.append("")
+    lines.append("Было бы вам интересно коротко узнать подробнее?")
     return "\n".join(lines)
 
 
@@ -494,6 +550,14 @@ async def generate_outreach_draft(
     draft = sanitize_enrichment_field(result.text, 1000)
     if not draft:
         return fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
+    if _UNSAFE_DRAFT_RE.search(draft):
+        log.warning("partner_discovery: outreach draft rejected (unsafe claim) - using fallback")
+        return fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
+    if _is_team_addressee(contact):
+        expected = _team_greeting(contact)
+        if not draft.startswith(expected):
+            log.warning("partner_discovery: outreach draft has wrong team greeting - using fallback")
+            return fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
     return draft
 
 
