@@ -66,7 +66,10 @@ from app.services.generation_request_builder import (
 from app.services.lead_radar import LeadRadarConfig
 from app.services.knowledge_service import KnowledgeBundle
 from app.services.llm.base import LLMProvider
-from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.material_orchestration import (
+    MaterialOrchestrationService,
+    _TA_CLUB_EXPLAINER_FORMAT_CONSTRAINTS,
+)
 from app.services.plan_limits import is_quota_counted_material
 from app.services.plan_quota_service import PlanQuotaService
 from app.services.reference_resolver import ReferenceResolver, ResolvedActionContext
@@ -1399,6 +1402,7 @@ async def _send_text_check(
 
 
 _CLIENT_REPLY_HEADING = "💬 Черновик ответа клиенту — для ручной проверки"
+_PERSONAL_REPLY_HEADING = "💬 Черновик ответа — для ручной проверки"
 
 # Live prod bug: any plain-typed TRAVEL_ASSISTANT question - including a
 # bare factual/current travel question like "Какие сейчас изменения правил
@@ -1434,7 +1438,93 @@ _INFORMATIONAL_HEADING = "🧭 Ответ — сверьте актуально�
 
 def _is_explicit_client_reply_intent(task_text: str) -> bool:
     lowered = task_text.lower()
-    return any(keyword in lowered for keyword in ASSISTANT_INTENT_KEYWORDS)
+    return (
+        any(keyword in lowered for keyword in ASSISTANT_INTENT_KEYWORDS)
+        or _is_personal_reply_request(task_text)
+    )
+
+
+# "Знакомый говорит: <возражение>. Подготовь короткий ответ от моего лица" is a
+# request for a READY first-person reply to a specific person, not a reference
+# question about Travel Advantage - even though the brand name is in the text
+# (which the router reads as a topic keyword and sends to the informational
+# persona, producing a reference article instead of a reply). Both parts are
+# required: an ask to prepare/write a reply AND a marker that it is spoken by
+# the user to someone ("от моего лица" or a quoted speaker). "Что такое Travel
+# Advantage?" has neither and stays informational.
+_PERSONAL_REPLY_ASK_RE = re.compile(
+    r"(?:подготов|напиш|составь|сформулир|придума|сделай|дай)\w*\s+(?:[\w-]+\s+){0,4}?"
+    r"(?:ответ|реплик|сообщени)\w*"
+    r"|что\s+(?:мне\s+)?ответить",
+    re.IGNORECASE,
+)
+_PERSONAL_VOICE_RE = re.compile(
+    r"от\s+(?:моего|своего)\s+лица|от\s+меня"
+    r"|(?:знаком\w+|друг|подруг\w*|коллег\w*|родственник\w*|человек|партн[её]р\w*)"
+    r"\s+(?:говорит|пишет|сказал\w*|ответил\w*|написал\w*)",
+    re.IGNORECASE,
+)
+
+_PERSONAL_REPLY_CONSTRAINT = (
+    "Пользователь просит готовую реплику от своего первого лица в ответ на слова "
+    "конкретного человека. Выдай ОДИН короткий текст реплики, который можно "
+    "отправить как есть, строго соблюдая заданные пользователем лицо, длину и тон. "
+    "Не объясняй реакцию собеседника, не пересказывай справку о Travel Advantage, "
+    "не добавляй сведений о бронированиях, тарифах и условиях клуба, не придумывай "
+    "условия и не отрицай существование партнёрской модели. Не спорь, не дави, не "
+    "обещай доход, не пытайся переубедить. Служебные напоминания не включай в "
+    "текст реплики: их добавит система отдельно."
+)
+
+
+def _is_personal_reply_request(task_text: str) -> bool:
+    return bool(_PERSONAL_REPLY_ASK_RE.search(task_text) and _PERSONAL_VOICE_RE.search(task_text))
+
+
+# Telegram UX fix (2026-10-08): "Что такое Travel Advantage и как рассказать
+# об этом клиенту?", "Как объяснить клиенту Travel Advantage?", "В чём смысл
+# membership?", "Что сказать клиенту про Travel Advantage?" already resolve
+# to the correct club/membership facts (see knowledge_service.py's retrieval
+# policy and knowledge_generation_context.py's _CLUB_MEMBERSHIP_CONSTRAINT -
+# neither touched here), but a live Telegram dialogue showed the FORMAT
+# staying too terse and ending with an offer to shorten it further ("могу
+# помочь сформулировать ещё короче?") instead of giving one usable answer.
+# Scoped to its own topic+intent stems (not a single hardcoded phrasing):
+# fires only when the question is about what Travel Advantage/membership
+# fundamentally IS/means (not an unrelated client-reply draft that happens
+# to mention the brand name) AND asks to explain/articulate that to someone
+# - see _TA_CLUB_EXPLAINER_FORMAT_CONSTRAINTS in app.services.material_
+# orchestration for what changes (format/structure only, no new facts).
+_TA_CLUB_EXPLAINER_TOPIC_STEMS = ("travel advantage", "membership", "членств")
+# Deliberately NOT a bare "объясни"/"расскажи" stem: a personal benefit
+# question from an existing member ("Объясни простыми словами, зачем мне
+# сохранять членство и что конкретно я от него получаю?" - see
+# tests/test_knowledge_generation_context_membership_value.py) also says
+# "объясни" but is asking for themselves, not for how to explain the
+# product to a client - the two need different answer shapes and the
+# member-benefit one already has its own tight, separately-tuned fact
+# budget this must not reopen. Only fires on an explicit "клиент" mention
+# or a fundamental "what is this / what does it mean" framing - exactly
+# what the four phrasings this fixes have in common.
+_TA_CLUB_EXPLAINER_CLIENT_STEM = "клиент"
+# NOT "что такое" alone - the bare, no-client-mention "Что такое Travel
+# Advantage?" is covered by its own dedicated grounding-structure test
+# (tests/test_grounded_knowledge_generation.py test_A_*) and must keep its
+# tight client-reply packer budget free for the structured facts those
+# tests check; "в чём смысл"/"в чем смысл" has no such competing test and
+# is the one definition-style phrasing from this fix's own example list
+# (item 3, "В чём смысл membership?") that never mentions "клиент".
+_TA_CLUB_EXPLAINER_DEFINITION_STEMS = ("в чём смысл", "в чем смысл")
+
+
+def _is_travel_advantage_client_explainer_intent(task_text: str) -> bool:
+    lowered = task_text.lower()
+    has_topic = any(stem in lowered for stem in _TA_CLUB_EXPLAINER_TOPIC_STEMS)
+    has_explain_signal = (
+        _TA_CLUB_EXPLAINER_CLIENT_STEM in lowered
+        or any(stem in lowered for stem in _TA_CLUB_EXPLAINER_DEFINITION_STEMS)
+    )
+    return has_topic and has_explain_signal
 
 
 _FREE_TEXT_ARTIFACT_TITLE_MAX_LEN = 80
@@ -1623,6 +1713,21 @@ async def _maybe_send_draft(
             knowledge_bundle=knowledge_bundle,
         )
         heading = _CLIENT_REPLY_HEADING
+
+    # Telegram-only format fix (see _is_travel_advantage_client_explainer_
+    # intent above) - applies on top of whichever persona (informational or
+    # client-reply) was already chosen above; never touches is_regular_post
+    # (Content Factory), and never runs for Web (app.handlers.tasks is the
+    # Telegram handler module - app.web_api's /api/chat and /api/client-
+    # reply build their own GenerationSpec directly and never call this
+    # function), so Web's answers are unaffected.
+    if not is_regular_post and _is_personal_reply_request(decision.task_text):
+        spec = replace(spec, constraints=(*spec.constraints, _PERSONAL_REPLY_CONSTRAINT))
+        heading = _PERSONAL_REPLY_HEADING
+    elif not is_regular_post and _is_travel_advantage_client_explainer_intent(decision.task_text):
+        spec = replace(
+            spec, constraints=(*spec.constraints, *_TA_CLUB_EXPLAINER_FORMAT_CONSTRAINTS),
+        )
 
     # Same format_search_context() text the Web path injects into
     # knowledge_context, folded into source_facts here the same way
