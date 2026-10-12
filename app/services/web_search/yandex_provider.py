@@ -128,9 +128,12 @@ class _YandexSearchCallError(RuntimeError):
     (which could embed request internals) escape this module. Carries a
     short FIXED reason string, never request/response content."""
 
-    def __init__(self, safe_reason: str) -> None:
+    def __init__(self, safe_reason: str, exc_type: str = "") -> None:
         super().__init__(safe_reason)
         self.safe_reason = safe_reason
+        # Class NAME of the underlying exception only (e.g. "TimeoutError",
+        # "URLError") - never its message, which could embed request internals.
+        self.exc_type = exc_type
 
 
 class _SmartSnippetShapeError(ValueError):
@@ -199,7 +202,11 @@ class YandexSearchProvider(WebSearchProvider):
             decoded_text = self._call(payload)
         except _YandexSearchCallError as exc:
             # Fixed, secret-free reason only - see _YandexSearchCallError.
-            log.warning("web_search: yandex request failed (%s)", exc.safe_reason)
+            log.warning(
+                "web_search: yandex request failed (%s) exc_type=%s elapsed_ms=%d timeout_s=%s",
+                exc.safe_reason, exc.exc_type or "-",
+                int((monotonic() - started) * 1000), self.config.timeout_seconds,
+            )
             return None
         elapsed_ms = int((monotonic() - started) * 1000)
 
@@ -242,8 +249,8 @@ class YandexSearchProvider(WebSearchProvider):
             # carries the Authorization header. 401/403 (bad key), 429 (rate
             # limit) and any 5xx all land here as a plain "http_<code>".
             raise _YandexSearchCallError(f"http_{exc.code}") from None
-        except (urllib.error.URLError, TimeoutError, OSError):
-            raise _YandexSearchCallError("network_error") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise _YandexSearchCallError("network_error", type(exc).__name__) from None
         except (ValueError, UnicodeDecodeError):
             # json.JSONDecodeError is a ValueError subclass.
             raise _YandexSearchCallError("malformed_response") from None

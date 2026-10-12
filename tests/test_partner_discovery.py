@@ -400,3 +400,34 @@ def test_query_variant_pool_has_exactly_one_variant_per_original_category():
     assert len(DISCOVERY_QUERIES) == 5
     for variants in _DISCOVERY_QUERY_VARIANTS:
         assert len(variants) >= 1
+
+
+class _FailingFirstProvider(_FakeProvider):
+    def search(self, query, **kwargs):
+        if query == "турагент авторские туры":
+            self.calls.append(query)
+            return None
+        return super().search(query, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_logs_failed_query_and_pipeline_stages(caplog):
+    import logging
+
+    provider = _FailingFirstProvider({"гид экскурсии путешествия": [STRONG_MAGPUT_2]})
+    service = PartnerDiscoveryService(provider)
+
+    async def _fail_verify(self, result):
+        return (result.snippet or "")[:400], EvidenceSource.SNIPPET
+    service._verify = _fail_verify.__get__(service, PartnerDiscoveryService)
+
+    with caplog.at_level(logging.INFO, logger="app.services.partner_discovery"):
+        candidates = await service.find_candidates()
+
+    assert len(candidates) == 1  # behavior unchanged by diagnostics
+    text = caplog.text
+    assert "query_failed index=1/5 query='турагент авторские туры'" in text
+    assert "partner_discovery.ranked" in text
+    assert "partner_discovery.verified" in text
+    assert "partner_discovery.final_selection max=5" in text
+    assert STRONG_MAGPUT_2.url in text

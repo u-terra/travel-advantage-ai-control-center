@@ -32,6 +32,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import time
 from urllib.parse import urlsplit
 
 from app.domain.competitor_discovery import canonical_domain
@@ -298,7 +299,8 @@ class PartnerDiscoveryService:
         )
         log.info("partner_discovery.search_started query_count=%d", len(queries))
         seen: dict[str, tuple[SearchResult, str]] = {}
-        for query in queries:
+        for query_index, query in enumerate(queries, start=1):
+            query_started = time.monotonic()
             try:
                 response = await asyncio.to_thread(
                     self._provider.search, query, limit=_RESULTS_PER_QUERY,
@@ -309,6 +311,13 @@ class PartnerDiscoveryService:
                 )
                 continue
             if response is None:
+                # Diagnostics only: the provider logs the failure reason on the
+                # line right before this one (queries run sequentially).
+                log.warning(
+                    "partner_discovery.query_failed index=%d/%d query=%r elapsed_ms=%d",
+                    query_index, len(queries), query,
+                    int((time.monotonic() - query_started) * 1000),
+                )
                 continue
             for result in response.results:
                 if not result.url:
@@ -331,10 +340,19 @@ class PartnerDiscoveryService:
         # tie-breaker (earlier tuples were inserted in query/rank order).
         ranked.sort(key=lambda item: item[3], reverse=True)
 
+        log.info(
+            "partner_discovery.ranked raw=%d after_noise_filter=%d top=%s",
+            len(seen), len(ranked),
+            [(r.url, sc) for r, _q, _t, sc in ranked[:_MAX_PAGE_VERIFY_CANDIDATES]],
+        )
         verified: list[tuple[SearchResult, str, ProspectType, int, str, EvidenceSource]] = []
         for result, query, prospect_type, score in ranked[:_MAX_PAGE_VERIFY_CANDIDATES]:
             evidence, evidence_source = await self._verify(result)
             verified.append((result, query, prospect_type, score, evidence, evidence_source))
+        log.info(
+            "partner_discovery.verified %s",
+            [(r.url, sc, src.value) for r, _q, _t, sc, _e, src in verified],
+        )
 
         # One-prospect-per-business: collapse pages that belong to the same
         # business (see _identity_key) down to their single best candidate
@@ -361,6 +379,12 @@ class PartnerDiscoveryService:
             for result, query, prospect_type, score, evidence, evidence_source in deduped
         ]
 
+        log.info(
+            "partner_discovery.final_selection max=%d selected=%s dropped_by_cap=%s",
+            _MAX_RESULTS,
+            [(c.url, c.rank_score) for c in candidates[:_MAX_RESULTS]],
+            [(c.url, c.rank_score) for c in candidates[_MAX_RESULTS:]],
+        )
         return candidates[:_MAX_RESULTS]
 
     async def _verify(self, result: SearchResult) -> tuple[str, EvidenceSource]:

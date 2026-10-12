@@ -610,3 +610,20 @@ def test_empty_query_returns_none_without_any_network_call(monkeypatch):
     monkeypatch.setattr(yp, "_open", fake_open)
     assert YandexSearchProvider(_config()).search("   ") is None
 
+
+
+def test_network_error_log_has_exc_type_and_elapsed_but_no_secrets(monkeypatch, caplog):
+    import logging
+
+    def fake_open(request: urllib.request.Request, *, timeout: float):
+        raise TimeoutError("secret-host.internal timed out")
+
+    monkeypatch.setattr(yp, "_open", fake_open)
+    with caplog.at_level(logging.WARNING, logger=yp.__name__):
+        assert YandexSearchProvider(_config()).search("query") is None
+
+    assert "network_error" in caplog.text
+    assert "exc_type=TimeoutError" in caplog.text
+    assert "elapsed_ms=" in caplog.text and "timeout_s=" in caplog.text
+    assert "secret-host" not in caplog.text  # exception message never logged
+    assert "Api-Key" not in caplog.text
