@@ -26,6 +26,7 @@ from app.domain.business_profiles import (
 from app.domain.competitor_discovery import canonical_domain
 from app.domain.competitor_intelligence import DATA_ORIGIN_RADAR_SIGNAL
 from app.domain.feedback import FEEDBACK_REASON_CODES, FeedbackRating, FeedbackStatus
+from app.domain.partners import WorkspaceContext
 from app.domain.telemetry import EventSeverity
 from app.domain.usage import UsageStatus
 from app.domain.web_attachment import WebAttachment
@@ -41,6 +42,7 @@ from app.repositories.competitor_repository import (
 )
 from app.repositories.feedback_repository import FeedbackRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
+from app.repositories.contact_claim_repository import ContactClaimRepository
 from app.repositories.operational_event_repository import OperationalEventRepository
 from app.repositories.partner_repository import (
     PartnerProvisioningConflictError,
@@ -108,6 +110,7 @@ from app.services.generation_request_builder import (
     safe_material_title,
     source_content_is_sufficient,
 )
+from app.services.knowledge_generation_context import advisory_judgment_constraints
 from app.services.knowledge_service import KnowledgeBundle, KnowledgeService
 from app.services.web_search.base import WebSearchProvider
 from app.services.web_search.service import (
@@ -128,6 +131,18 @@ from app.services.lead_radar import (
 from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.services.contact_discovery import find_contact
+from app.services.lead_qualification import qualify_candidates
+from app.services.partner_discovery import PartnerDiscoveryService
+from app.services.partner_outreach import (
+    candidate_to_dict,
+    check_and_claim_contact,
+    contact_to_dict,
+    dict_to_prospect,
+    enrich_candidates,
+    generate_outreach_draft,
+    rank_for_club_partner_fit,
+)
 from app.services.plan_limits import get_plan_limits, is_quota_counted_material, plan_display_name
 from app.services.plan_quota_service import PlanQuotaService
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
@@ -153,6 +168,17 @@ from app.services.web_auth_passwords import (
 from app.services.web_auth_tokens import generate_token, hash_token, tokens_match
 
 log = logging.getLogger(__name__)
+
+# uvicorn only configures its own loggers, so app.* INFO records (the
+# partner_discovery.* pipeline trail Telegram already shows in its journal)
+# were silently dropped in this service. Scoped to the "app" logger so
+# third-party INFO noise (httpx/openai) stays off.
+_app_logger = logging.getLogger("app")
+if not _app_logger.handlers:
+    _app_handler = logging.StreamHandler()
+    _app_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    _app_logger.addHandler(_app_handler)
+    _app_logger.setLevel(logging.INFO)
 
 
 app = FastAPI(title="Travel AI Orchestrator Web API")
@@ -193,6 +219,7 @@ knowledge_repository = KnowledgeRepository()
 usage_ledger_repository = UsageLedgerRepository(settings.journal_db_path)
 competitor_repository = CompetitorRepository(settings.journal_db_path)
 partner_repository = PartnerRepository(settings.journal_db_path)
+contact_claim_repository = ContactClaimRepository(settings.journal_db_path)
 workspace_memory_repository = WorkspaceMemoryRepository(settings.journal_db_path)
 artifact_repository = ArtifactRepository(settings.journal_db_path)
 web_conversation_repository = WebConversationRepository(settings.journal_db_path)
@@ -1188,6 +1215,7 @@ async def startup() -> None:
     await plan_usage_repository.init()
     await competitor_repository.init()
     await partner_repository.init()
+    await contact_claim_repository.init()
     await workspace_memory_repository.init()
     await artifact_repository.init()
     await web_conversation_repository.init()
@@ -1325,6 +1353,24 @@ def _knowledge_context(bundle: KnowledgeBundle) -> str:
                 f"- [{fact.stable_key}] {_fact_value(fact)} "
                 f"(источник: {fact.source_ref})"
             )
+
+    # Reuses the SAME advisory constraints Telegram's generation-spec path
+    # already gets (club/membership framing, compensation-plan phrasing) via
+    # app.services.knowledge_generation_context.advisory_judgment_constraints
+    # - single source of truth for this judgment logic, not a second copy of
+    # it here. Checked against this function's OWN full item/fact lists
+    # (not the smaller budget-capped subset that build_knowledge_generation_
+    # context uses internally for Telegram), since those are what this
+    # function actually renders above. Only the instructional constraints
+    # are pulled in - the official-compliance-fact constraints are already
+    # rendered above from bundle.compliance_facts, in this function's own
+    # wording; pulling those in a second time here would just duplicate them.
+    extra_constraints = advisory_judgment_constraints(bundle.primary_items, bundle.facts)
+    if extra_constraints:
+        lines.append("\nДополнительные правила подачи ответа:")
+
+        for constraint in extra_constraints:
+            lines.append(f"- {constraint}")
 
     if bundle.examples:
         lines.append("\nПроверенные примеры:")
@@ -1966,6 +2012,186 @@ async def create_material_from_competitor_opportunity(
             },
         )
         return {"error": "Не удалось подготовить материал.", "material": None}
+
+
+# ── Partner Discovery (2026-10-08): Web parity for the Telegram "🔎 Найти
+# потенциальных партнёров" flow - reuses PartnerDiscoveryService,
+# contact_discovery.find_contact, and the shared enrichment/outreach-draft
+# logic in app.services.partner_outreach verbatim. No second search
+# provider, no second LLM prompt, no new persistence - candidates/contacts
+# are stateless here too, round-tripped through the request body exactly
+# like Telegram round-trips them through FSM state. Gated to
+# BusinessProfile.business_type == "club_partner", same as Telegram. ──────
+
+async def _web_is_club_partner(workspace_id: int) -> bool:
+    profile = await partner_repository.get_business_profile(workspace_id)
+    return profile is not None and profile.business_type == "club_partner"
+
+
+async def _web_is_ta_affiliated(workspace_id: int) -> bool:
+    profile = await partner_repository.get_business_profile(workspace_id)
+    return bool(profile is not None and getattr(profile, "ta_affiliated", False))
+
+
+# One in-flight discovery per workspace. A full run takes ~1-2 minutes
+# (search + page verification + two LLM calls) and Starlette does NOT cancel
+# the handler when the browser drops the request, so without this a re-click
+# (or a retry after a dropped connection) would start a second full,
+# LLM-billed pipeline while the first is still running. Later requests
+# simply await the run that is already going and get its result.
+_partner_discovery_inflight: dict[int, asyncio.Task] = {}
+
+
+@app.post("/api/partners/discover")
+async def discover_partners(principal: WebPrincipal = Depends(require_csrf_and_subscription)):
+    """Runs the same PartnerDiscoveryService.find_candidates() pipeline
+    Telegram's "🔎 Найти потенциальных партнёров" uses (fixed/rotated query
+    set - this endpoint intentionally takes no free-text query, since the
+    underlying service has none to offer either), then the same one-call
+    LLM enrichment and club_partner-fit display ranking."""
+    if not await _web_is_club_partner(principal.workspace_id):
+        return {"error": "Этот раздел доступен только для club_partner рабочих пространств.", "candidates": []}
+
+    if web_search_service.provider is None:
+        return {"error": "Поиск сейчас недоступен. Попробуйте немного позже.", "candidates": []}
+
+    workspace_id = principal.workspace_id
+    task = _partner_discovery_inflight.get(workspace_id)
+    if task is None or task.done():
+        task = asyncio.create_task(_run_partner_discovery(workspace_id))
+        _partner_discovery_inflight[workspace_id] = task
+        task.add_done_callback(
+            lambda t, ws=workspace_id: (
+                _partner_discovery_inflight.pop(ws, None)
+                if _partner_discovery_inflight.get(ws) is t else None
+            )
+        )
+    else:
+        log.info("web: partner discovery already running workspace_id=%s - joining it", workspace_id)
+    # shield: a dropped browser request cancels only this waiter, never the
+    # shared run (which other waiters / a retry may still be joining).
+    return await asyncio.shield(task)
+
+
+async def _run_partner_discovery(workspace_id: int) -> dict:
+    started = time.monotonic()
+    service = PartnerDiscoveryService(web_search_service.provider)
+    try:
+        found = await service.find_candidates(
+            rotation_seed=workspace_id,
+            use_all_variants=settings.partner_discovery_v2_enabled,
+        )
+    except Exception:
+        log.warning("web: partner discovery failed", exc_info=True)
+        return {"error": "Не удалось выполнить поиск сейчас. Попробуйте немного позже.", "candidates": []}
+
+    if not found:
+        log.info("web: partner discovery finished found=0 elapsed=%.0fs", time.monotonic() - started)
+        return {"candidates": []}
+
+    candidates = [candidate_to_dict(c) for c in found]
+    ta_affiliated = await _web_is_ta_affiliated(workspace_id)
+    candidates = await enrich_candidates(candidates, chat_provider, ta_affiliated=ta_affiliated)
+    candidates = rank_for_club_partner_fit(candidates)
+    if settings.partner_discovery_v2_enabled:
+        try:
+            candidates = await qualify_candidates(
+                candidates, chat_provider,
+                min_score=settings.partner_min_score,
+                min_confidence=settings.partner_min_confidence,
+                max_results=settings.partner_max_results,
+            )
+        except Exception:
+            log.warning("web: partner lead qualification failed", exc_info=True)
+            candidates = candidates[: settings.partner_max_results]
+    log.info(
+        "web: partner discovery finished found=%d returned=%d elapsed=%.0fs",
+        len(found), len(candidates), time.monotonic() - started,
+    )
+    return {"candidates": candidates}
+
+
+class PartnerContactRequest(BaseModel):
+    candidate: dict
+
+
+@app.post("/api/partners/contact")
+async def discover_partner_contact(
+    request: PartnerContactRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Contact Discovery v0 for a single already-discovered candidate (the
+    client sends back the exact candidate dict /api/partners/discover
+    returned - stateless, same as Telegram's FSM round-trip)."""
+    if not await _web_is_club_partner(principal.workspace_id):
+        return {"error": "Этот раздел доступен только для club_partner рабочих пространств.", "contact": None}
+
+    try:
+        prospect = dict_to_prospect(request.candidate)
+    except (KeyError, ValueError):
+        return {"error": "Некорректные данные кандидата.", "contact": None}
+
+    try:
+        contact = await find_contact(
+            prospect,
+            llm_provider=chat_provider,
+            web_search_provider=web_search_service.provider,
+        )
+    except Exception:
+        log.warning("web: partner contact discovery failed", exc_info=True)
+        return {"error": "Не удалось проверить публичные контакты сейчас. Попробуйте немного позже.", "contact": None}
+
+    return {"contact": contact_to_dict(contact)}
+
+
+class PartnerOutreachRequest(BaseModel):
+    contact: dict
+
+
+@app.post("/api/partners/outreach")
+async def draft_partner_outreach(
+    request: PartnerOutreachRequest,
+    principal: WebPrincipal = Depends(require_csrf_and_subscription),
+):
+    """Generates the same human-approved DRAFT first-contact message
+    Telegram's "✉️ Подготовить первое сообщение" produces, via the shared
+    app.services.partner_outreach.generate_outreach_draft - never sent
+    automatically, always requires manual review/edit/send. Claims the
+    contact for this workspace via the same ContactClaimRepository
+    cross-tenant cooldown Telegram uses, so starting outreach from Web
+    and from Telegram can never race for the same person."""
+    if not await _web_is_club_partner(principal.workspace_id):
+        return {"error": "Этот раздел доступен только для club_partner рабочих пространств.", "draft": None}
+
+    contact = request.contact
+    if contact.get("contact_type") != "person":
+        return {
+            "error": "Для этого проекта не найден конкретный публичный контакт - черновик недоступен.",
+            "draft": None,
+        }
+
+    workspace_context = WorkspaceContext(
+        telegram_user_id=principal.telegram_user_id or 0,
+        workspace_id=principal.workspace_id,
+        role="owner",
+        workspace_status="active",
+    )
+    allowed = await check_and_claim_contact(contact, workspace_context, contact_claim_repository)
+    if not allowed:
+        return {
+            "error": "Этот контакт сейчас уже находится в работе другим пользователем.",
+            "draft": None,
+        }
+
+    profile = await partner_repository.get_business_profile(principal.workspace_id)
+    ta_affiliated = bool(profile is not None and getattr(profile, "ta_affiliated", False))
+    sender_business_name = getattr(profile, "business_name", None) if profile is not None else None
+
+    draft = await generate_outreach_draft(
+        contact, chat_provider,
+        ta_affiliated=ta_affiliated, sender_business_name=sender_business_name,
+    )
+    return {"draft": draft}
 
 
 @app.get("/api/signals")

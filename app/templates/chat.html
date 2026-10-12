@@ -1803,6 +1803,17 @@ textarea {
                 </button>
             </li>
             <li>
+                <button class="nav-item" data-view="partners" id="navPartners"
+                        data-title="Найти партнёров" data-subtitle="Поиск потенциальных партнёров и подготовка первого обращения">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="7"/>
+                        <path d="M21 21l-4.3-4.3"/>
+                    </svg>
+                    Найти партнёров
+                </button>
+            </li>
+            <li>
                 <button class="nav-item" data-view="signals"
                         data-title="Сигналы и идеи" data-subtitle="Радар рыночных сигналов и контент-идей">
                     <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
@@ -1953,6 +1964,19 @@ textarea {
                                     <span class="quick-card-desc">Пост, письмо или текст в вашем стиле</span>
                                 </button>
 
+                                <button type="button" class="quick-card" id="qaPartners"
+                                        data-view="partners">
+                                    <span class="quick-card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"
+                                             stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="11" cy="11" r="7"/>
+                                            <path d="M21 21l-4.3-4.3"/>
+                                        </svg>
+                                    </span>
+                                    <span class="quick-card-title">Найти потенциальных партнёров</span>
+                                    <span class="quick-card-desc">Оркестратор найдёт подходящие контакты и подготовит персональное обращение</span>
+                                </button>
+
                                 <button type="button" class="quick-card" id="qaKnowledge"
                                         data-prompt="Помоги разобраться с вопросом: ">
                                     <span class="quick-card-icon">
@@ -2030,6 +2054,19 @@ textarea {
                         <button type="button" class="new-chat" id="addCompetitorBtn">Добавить конкурента</button>
                     </div>
                     <div id="competitorsState"></div>
+                </div>
+            </section>
+
+            <section class="view" id="view-partners">
+                <div class="competitors-view">
+                    <div class="competitors-head">
+                        <div class="competitors-head-text">
+                            <h2>Найти партнёров</h2>
+                            <p>Поиск потенциальных партнёров в travel-индустрии и подготовка персонального обращения.</p>
+                        </div>
+                        <button type="button" class="new-chat" id="partnersDiscoverBtn">Найти кандидатов</button>
+                    </div>
+                    <div id="partnersState"></div>
                 </div>
             </section>
 
@@ -3486,6 +3523,368 @@ async function openCompetitorReport(item) {
 
     } catch (_) {
         renderReportError(item);
+    }
+}
+
+/* ---------- partner discovery ---------- */
+
+const partnersState = document.getElementById("partnersState");
+const partnersDiscoverBtn = document.getElementById("partnersDiscoverBtn");
+
+const PARTNER_FIT_LABELS = { STRONG: "высокое", POSSIBLE: "возможное" };
+const PARTNER_EVIDENCE_LABELS = { page: "страница сайта", snippet: "поисковая выдача" };
+
+function renderPartnersEmpty() {
+    partnersState.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Поиск потенциальных партнёров";
+
+    const text = document.createElement("p");
+    text.textContent =
+        "Оркестратор найдёт публичные travel-проекты, гидов, авторов и клубы по " +
+        "туризму, которые потенциально подходят как партнёры, и подготовит " +
+        "персональное обращение для выбранного контакта.";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "new-chat";
+    btn.textContent = "Найти кандидатов";
+    btn.addEventListener("click", () => discoverPartners());
+
+    card.appendChild(title);
+    card.appendChild(text);
+    card.appendChild(btn);
+    partnersState.appendChild(card);
+}
+
+function renderPartnersLoading() {
+    partnersState.innerHTML = "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "competitors-loading";
+
+    const spinner = document.createElement("div");
+    spinner.className = "competitors-spinner";
+
+    wrap.appendChild(spinner);
+    wrap.appendChild(document.createTextNode("Ищем потенциальных партнёров…"));
+    partnersState.appendChild(wrap);
+}
+
+function renderPartnersError(message) {
+    partnersState.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Не удалось выполнить поиск";
+
+    const text = document.createElement("p");
+    text.textContent = message || "Попробуйте немного позже.";
+
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "new-chat";
+    retry.textContent = "Повторить";
+    retry.addEventListener("click", () => discoverPartners());
+
+    card.appendChild(title);
+    card.appendChild(text);
+    card.appendChild(retry);
+    partnersState.appendChild(card);
+}
+
+function renderPartnersList(candidates) {
+    partnersState.innerHTML = "";
+
+    const grid = document.createElement("div");
+    grid.className = "report-sections";
+
+    candidates.forEach(candidate => {
+        grid.appendChild(renderPartnerCard(candidate));
+    });
+
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "new-chat";
+    moreBtn.textContent = "Найти ещё";
+    moreBtn.addEventListener("click", () => discoverPartners());
+
+    partnersState.appendChild(grid);
+    partnersState.appendChild(moreBtn);
+}
+
+function renderPartnerCard(candidate) {
+    const section = document.createElement("div");
+    section.className = "report-section partner-card";
+
+    const heading = document.createElement("h3");
+    heading.textContent = candidate.display_name || candidate.name || candidate.url;
+    section.appendChild(heading);
+
+    const fit = document.createElement("p");
+    fit.className = "info-card-text";
+    fit.textContent = "Соответствие: " + (PARTNER_FIT_LABELS[candidate.fit] || candidate.fit || "—");
+    section.appendChild(fit);
+
+    const whyTitle = document.createElement("p");
+    whyTitle.className = "info-card-text";
+    whyTitle.innerHTML = "<strong>Почему интересен:</strong>";
+    section.appendChild(whyTitle);
+
+    const why = document.createElement("p");
+    why.className = "info-card-text";
+    why.textContent = candidate.reason || "Описание недоступно.";
+    section.appendChild(why);
+
+    const sourceTitle = document.createElement("p");
+    sourceTitle.className = "info-card-text";
+    sourceTitle.innerHTML = "<strong>Источник (публичный, можно проверить):</strong>";
+    section.appendChild(sourceTitle);
+
+    const sourceLink = document.createElement("a");
+    sourceLink.href = candidate.url;
+    sourceLink.target = "_blank";
+    sourceLink.rel = "noopener noreferrer";
+    sourceLink.textContent = candidate.url;
+    sourceLink.className = "info-card-text";
+    section.appendChild(sourceLink);
+
+    const confirmed = document.createElement("p");
+    confirmed.className = "info-card-text";
+    confirmed.textContent =
+        "Подтверждено: " + (PARTNER_EVIDENCE_LABELS[candidate.evidence_source] || candidate.evidence_source || "—");
+    section.appendChild(confirmed);
+
+    const actions = document.createElement("div");
+    actions.className = "material-edit-actions";
+
+    const findContactBtn = document.createElement("button");
+    findContactBtn.type = "button";
+    findContactBtn.className = "info-action-btn";
+    findContactBtn.textContent = "Найти человека для контакта";
+    findContactBtn.addEventListener("click", () => findPartnerContact(candidate, section));
+    actions.appendChild(findContactBtn);
+
+    section.appendChild(actions);
+
+    const resultWrap = document.createElement("div");
+    resultWrap.className = "partner-contact-result";
+    section.appendChild(resultWrap);
+
+    return section;
+}
+
+function renderPartnersNoResults() {
+    partnersState.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = "state-card";
+
+    const title = document.createElement("h3");
+    title.textContent = "Подходящих кандидатов не найдено";
+
+    const text = document.createElement("p");
+    text.textContent =
+        "Поиск завершён, но в этот раз никто не прошёл проверку на соответствие. " +
+        "Результаты поиска меняются от запуска к запуску — попробуйте ещё раз.";
+
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "new-chat";
+    retry.textContent = "Искать ещё раз";
+    retry.addEventListener("click", () => discoverPartners());
+
+    card.appendChild(title);
+    card.appendChild(text);
+    card.appendChild(retry);
+    partnersState.appendChild(card);
+}
+
+// A full search takes 1-2 minutes. While one is running, extra clicks are
+// ignored (the server also joins a repeated request to the run in progress,
+// so a retry after a dropped connection never starts a second pipeline).
+let partnersSearchRunning = false;
+const PARTNERS_CLIENT_TIMEOUT_MS = 200000;
+
+async function discoverPartners() {
+    if (partnersSearchRunning) return;
+    partnersSearchRunning = true;
+    partnersDiscoverBtn.disabled = true;
+    renderPartnersLoading();
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PARTNERS_CLIENT_TIMEOUT_MS);
+
+    try {
+        const response = await fetch("/api/partners/discover", {
+            method: "POST",
+            signal: controller.signal,
+        });
+
+        let data = null;
+        try {
+            data = await response.json();
+        } catch (_) {
+            data = null;
+        }
+
+        if (!response.ok || !data || data.error) {
+            renderPartnersError(
+                (data && data.error) ||
+                "Сервер не ответил вовремя. Поиск мог ещё идти — нажмите «Повторить», " +
+                "он подключится к текущему поиску."
+            );
+            return;
+        }
+
+        const items = Array.isArray(data.candidates) ? data.candidates : [];
+        if (items.length === 0) {
+            renderPartnersNoResults();
+        } else {
+            renderPartnersList(items);
+        }
+
+    } catch (err) {
+        renderPartnersError(
+            err && err.name === "AbortError"
+                ? "Поиск идёт дольше обычного. Нажмите «Повторить» — он подключится к текущему поиску."
+                : "Не удалось получить ответ. Проверьте соединение и нажмите «Повторить»."
+        );
+    } finally {
+        clearTimeout(timer);
+        partnersSearchRunning = false;
+        partnersDiscoverBtn.disabled = false;
+    }
+}
+
+async function findPartnerContact(candidate, resultWrap) {
+    resultWrap.innerHTML = "";
+    resultWrap.textContent = "Ищем публичный контакт…";
+
+    try {
+        const response = await fetch("/api/partners/contact", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ candidate }),
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            resultWrap.textContent = data.error || "Не удалось проверить публичные контакты сейчас.";
+            return;
+        }
+
+        renderPartnerContact(data.contact, resultWrap);
+
+    } catch (_) {
+        resultWrap.textContent = "Не удалось проверить публичные контакты. Проверьте соединение.";
+    }
+}
+
+function renderPartnerContact(contact, resultWrap) {
+    resultWrap.innerHTML = "";
+
+    if (!contact || contact.contact_type !== "person") {
+        const p = document.createElement("p");
+        p.className = "info-card-text";
+        p.textContent =
+            "Конкретный публичный представитель не найден. Можно обратиться через " +
+            "официальный канал проекта: " + (contact && contact.public_url ? contact.public_url : "");
+        resultWrap.appendChild(p);
+        return;
+    }
+
+    const name = document.createElement("p");
+    name.className = "info-card-text";
+    const nameStrong = document.createElement("strong");
+    nameStrong.textContent = contact.display_name || "";
+    name.appendChild(nameStrong);
+    resultWrap.appendChild(name);
+
+    if (contact.role) {
+        const role = document.createElement("p");
+        role.className = "info-card-text";
+        role.textContent = "Роль: " + contact.role;
+        resultWrap.appendChild(role);
+    }
+
+    const evidence = document.createElement("p");
+    evidence.className = "info-card-text";
+    evidence.textContent = "Почему выбран: " + (contact.evidence_text || "—");
+    resultWrap.appendChild(evidence);
+
+    if (contact.evidence_url) {
+        const link = document.createElement("a");
+        link.href = contact.evidence_url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = contact.evidence_url;
+        link.className = "info-card-text";
+        resultWrap.appendChild(link);
+    }
+
+    const draftBtn = document.createElement("button");
+    draftBtn.type = "button";
+    draftBtn.className = "info-action-btn";
+    draftBtn.textContent = "Подготовить первое сообщение";
+
+    const draftWrap = document.createElement("div");
+
+    draftBtn.addEventListener("click", () => draftPartnerOutreach(contact, draftWrap, draftBtn));
+
+    resultWrap.appendChild(draftBtn);
+    resultWrap.appendChild(draftWrap);
+}
+
+async function draftPartnerOutreach(contact, draftWrap, draftBtn) {
+    draftBtn.disabled = true;
+    draftWrap.innerHTML = "";
+    draftWrap.textContent = "Готовим черновик…";
+
+    try {
+        const response = await fetch("/api/partners/outreach", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ contact }),
+        });
+        const data = await response.json();
+
+        draftWrap.innerHTML = "";
+
+        if (!response.ok || data.error) {
+            draftWrap.textContent = data.error || "Не удалось подготовить черновик сейчас.";
+            return;
+        }
+
+        const label = document.createElement("p");
+        label.className = "info-card-text";
+        label.innerHTML = "<strong>Черновик — проверьте и отредактируйте перед отправкой:</strong>";
+        draftWrap.appendChild(label);
+
+        const draftText = document.createElement("p");
+        draftText.className = "info-card-text partner-draft-text";
+        draftText.textContent = data.draft || "";
+        draftWrap.appendChild(draftText);
+
+    } catch (_) {
+        draftWrap.innerHTML = "";
+        draftWrap.textContent = "Не удалось подготовить черновик. Проверьте соединение.";
+    } finally {
+        draftBtn.disabled = false;
+    }
+}
+
+partnersDiscoverBtn.addEventListener("click", () => discoverPartners());
+
+function loadPartners() {
+    if (partnersState.children.length === 0) {
+        renderPartnersEmpty();
     }
 }
 
@@ -5172,6 +5571,10 @@ async function loadProfile() {
 
 document.querySelectorAll(".quick-card").forEach(card => {
     card.addEventListener("click", () => {
+        if (card.dataset.view) {
+            activateView(card.dataset.view);
+            return;
+        }
         const prompt = card.dataset.prompt || "";
         message.value = prompt;
         message.dispatchEvent(new Event("input"));
@@ -5593,6 +5996,8 @@ function activateView(key) {
         clientReplyMessageInput.focus();
     } else if (key === "competitors") {
         loadCompetitors();
+    } else if (key === "partners") {
+        loadPartners();
     } else if (key === "signals") {
         loadSignals();
     } else if (key === "knowledge") {
