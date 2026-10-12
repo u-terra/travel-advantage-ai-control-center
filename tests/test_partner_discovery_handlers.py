@@ -1124,7 +1124,7 @@ def test_draft_from_saved_lead_uses_stored_contact_and_runs_no_search(tmp_path):
     generate.assert_awaited_once()
     contact_arg = generate.await_args.args[0]
     assert contact_arg["display_name"] == "Onvisor" and contact_arg["evidence_url"] == "https://onvisor.ru/"
-    text = callback.message.answers[0][0]
+    text = callback.message.answers[-1][0]
     assert "Здравствуйте, Onvisor!" in text
     assert "email: go@trip.onvisor.ru" in text
     assert "только вручную" in text
@@ -1151,5 +1151,65 @@ def test_draft_without_llm_uses_deterministic_fallback_draft(tmp_path):
 
     run(on_partner_lead_queue_draft(callback, None, partner_repository(), context(), repo))
 
-    text = callback.message.answers[0][0]
+    text = callback.message.answers[-1][0]
     assert "Здравствуйте" in text and "go@trip.onvisor.ru" in text
+
+
+# ── draft callback acknowledgement order ────────────────────────────────────
+
+class _OrderedCallback(Callback):
+    def __init__(self, data, events, *, answer_error=None):
+        super().__init__(data)
+        self.events = events
+        self.answer_calls = 0
+        self._answer_error = answer_error
+        original = self.message.answer
+
+        async def message_answer(text, **kwargs):
+            events.append(f"message:{text[:12]}")
+            return await original(text, **kwargs)
+
+        self.message.answer = message_answer
+
+    async def answer(self, text=None, **kwargs):
+        self.answer_calls += 1
+        self.events.append("callback.answer")
+        if self._answer_error:
+            raise self._answer_error
+
+
+def _draft_with_events(tmp_path, *, answer_error=None):
+    repo = _lead_repo(tmp_path)
+    lead = _saved_onvisor(repo)
+    events: list[str] = []
+    callback = _OrderedCallback(f"partner_lead:draft:{lead.lead_id}", events, answer_error=answer_error)
+
+    async def slow_generate(*_a, **_kw):
+        events.append("llm")
+        return "Здравствуйте, команда Onvisor!"
+
+    with patch("app.handlers.partner_discovery._generate_outreach_draft", slow_generate):
+        run(on_partner_lead_queue_draft(callback, None, partner_repository(), context(), repo))
+    return callback, events
+
+
+def test_draft_callback_is_acknowledged_once_before_llm_then_progress_then_result(tmp_path):
+    callback, events = _draft_with_events(tmp_path)
+
+    assert events[0] == "callback.answer"
+    assert events.index("callback.answer") < events.index("llm")
+    assert events.index("message:Готовлю черн") < events.index("llm")
+    assert events[-1].startswith("message:") and "Готовлю" not in events[-1]
+    assert callback.answer_calls == 1  # never answered again after the wait
+
+
+def test_expired_callback_does_not_abort_the_draft(tmp_path):
+    from aiogram.exceptions import TelegramBadRequest
+
+    error = TelegramBadRequest(method=None, message="query is too old and response timeout expired")
+    callback, events = _draft_with_events(tmp_path, answer_error=error)
+
+    assert callback.answer_calls == 1
+    texts = [t for t, _ in callback.message.answers]
+    assert texts[0] == "Готовлю черновик…"
+    assert "команда Onvisor" in texts[-1]

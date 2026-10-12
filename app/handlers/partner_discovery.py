@@ -59,6 +59,7 @@ import logging
 import re
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -1343,8 +1344,18 @@ async def on_partner_lead_queue_draft(
 ) -> None:
     """Подготовить черновик on a saved lead card. Draft only - shown next to
     the stored contact for the human to send manually; nothing is sent and
-    no search / contact discovery is run."""
-    await callback.answer()
+    no search / contact discovery is run.
+
+    The callback is acknowledged exactly once, FIRST - before any DB or LLM
+    work - because Telegram expires a callback query after a short time; the
+    result is then delivered as a normal message, never via a second answer()
+    on the same callback."""
+    try:
+        await callback.answer()
+    except TelegramBadRequest:
+        # Update delivered late (e.g. after a polling reconnect): the query is
+        # already expired, but the draft can still be sent as a message.
+        log.info("partner_discovery: lead draft callback already expired")
     if callback.message is None:
         return
     lead = await _owned_lead(
@@ -1358,6 +1369,7 @@ async def on_partner_lead_queue_draft(
     if not await _check_and_claim_contact(contact, workspace_context, contact_claim_repository):
         await callback.message.answer(_CONTACT_CLAIMED_BY_OTHER)
         return
+    await callback.message.answer("Готовлю черновик…")
 
     ta_affiliated = False
     sender_business_name: str | None = None
