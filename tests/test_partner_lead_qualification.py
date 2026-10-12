@@ -676,3 +676,22 @@ def test_rendering_card_shows_direct_contact_not_website() -> None:
     text, _ = _render_card([lead], 0)
     assert "Telegram: @onvisor_travel" in text
     assert "Сайт: onvisor.ru" not in text.split("Telegram:")[0]
+
+
+# Diagnostics: rejection/acceptance logs must name the candidate, its score
+# and the thresholds actually in force (2026-10-12: web returned 0 and the
+# journal could not say which candidate failed why).
+def test_decision_logs_name_candidate_score_and_thresholds(caplog) -> None:
+    import logging
+
+    candidate = _candidate(url="https://rejected.example/")
+    item = _qualification_item(candidate, professional_relevance=5, commercial_potential=2)
+    provider = _FakeProvider(json.dumps([item]))
+
+    with caplog.at_level(logging.INFO, logger="app.services.lead_qualification"):
+        leads = _run(qualify_candidates([candidate], provider, min_score=65, min_confidence=0.0))
+
+    assert leads == []
+    text = caplog.text
+    assert "thresholds min_score=65 min_confidence=0.00" in text
+    assert "reason=low_score" in text and "url=https://rejected.example/" in text

@@ -556,26 +556,35 @@ async def qualify_candidates(
             + item["personal_hook_score"]
         )
 
+    log.info(
+        "partner_discovery.thresholds min_score=%d min_confidence=%.2f max_results=%d",
+        min_score, min_confidence, max_results,
+    )
     qualified: list[dict] = []
     for item in scored:
         hard_excluded = _HARD_EXCLUSION_RISK_FLAGS.intersection(item.get("risk_flags") or [])
         if hard_excluded:
             log.info(
-                "partner_discovery.rejected reason=hard_exclusion flags=%s",
-                ",".join(sorted(hard_excluded)),
+                "partner_discovery.rejected reason=hard_exclusion flags=%s score=%d url=%s",
+                ",".join(sorted(hard_excluded)), item["total_score"], item.get("url"),
             )
             continue
         if item["total_score"] < min_score:
             log.info(
-                "partner_discovery.rejected reason=low_score score=%d", item["total_score"],
+                "partner_discovery.rejected reason=low_score score=%d url=%s",
+                item["total_score"], item.get("url"),
             )
             continue
         if item["confidence"] < min_confidence:
             log.info(
-                "partner_discovery.rejected reason=low_confidence confidence=%.2f",
-                item["confidence"],
+                "partner_discovery.rejected reason=low_confidence confidence=%.2f score=%d url=%s",
+                item["confidence"], item["total_score"], item.get("url"),
             )
             continue
+        log.info(
+            "partner_discovery.accepted score=%d confidence=%.2f url=%s",
+            item["total_score"], item["confidence"], item.get("url"),
+        )
         qualified.append(item)
 
     qualified.sort(key=lambda c: c["total_score"], reverse=True)
