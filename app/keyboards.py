@@ -167,6 +167,11 @@ PARTNER_LEAD_SAVE = "partner_discovery:lead_save"
 PARTNER_LEAD_APPROVE = "partner_discovery:lead_approve"
 PARTNER_LEAD_SKIP = "partner_discovery:lead_skip"
 PARTNER_LEAD_DRAFT = "partner_discovery:lead_draft"
+# Saved-lead queue (📋 Лиды партнёров): open one stored lead / draft from it.
+# The lead id rides in the callback data; ownership is always re-checked
+# against the caller workspace server-side.
+PARTNER_LEAD_OPEN_PREFIX = "partner_lead:open:"
+PARTNER_LEAD_QUEUE_DRAFT_PREFIX = "partner_lead:draft:"
 
 # Ресурсы Travel Advantage: показываются только workspace с явным признаком
 # BusinessProfile.ta_affiliated (не по business_type, названию или описанию —
@@ -271,6 +276,26 @@ def lobby_expired_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+def partner_lead_queue_keyboard(leads) -> InlineKeyboardMarkup:
+    """One "open" button per queued lead (lead.lead_id / lead.name)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"📂 {lead.name}"[:60], callback_data=f"{PARTNER_LEAD_OPEN_PREFIX}{lead.lead_id}",
+        )]
+        for lead in leads
+    ])
+
+
+def partner_lead_card_keyboard(lead_id: int, source_url: str | None = None) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(
+        text="✉️ Подготовить черновик",
+        callback_data=f"{PARTNER_LEAD_QUEUE_DRAFT_PREFIX}{lead_id}",
+    )]]
+    if source_url and source_url.startswith(("http://", "https://")):
+        rows.append([InlineKeyboardButton(text="🔗 Источник", url=source_url)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def partner_discovery_card_keyboard(

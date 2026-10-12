@@ -55,8 +55,6 @@ discovered candidates/drafts themselves (only the claim fact is persisted).
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
 import re
 
@@ -65,26 +63,59 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.chat_provider import OpenAIChatProvider
-from app.domain.competitor_discovery import canonical_domain
-from app.domain.contacts import ContactCandidate
+from app.domain.partner_leads import PartnerLeadStatus, compute_lead_identity_key
 from app.domain.partners import WorkspaceContext
-from app.domain.prospects import EvidenceSource, ProspectCandidate, ProspectFit, ProspectType
 from app.keyboards import (
     BTN_FIND_PARTNERS,
+    BTN_PARTNER_LEADS,
     PARTNER_CONTACT_BACK,
     PARTNER_CONTACT_DRAFT,
     PARTNER_CONTACT_FIND,
     PARTNER_DISCOVERY_MORE,
     PARTNER_DISCOVERY_NEXT,
+    PARTNER_LEAD_APPROVE,
+    PARTNER_LEAD_OPEN_PREFIX,
+    PARTNER_LEAD_QUEUE_DRAFT_PREFIX,
+    PARTNER_LEAD_DRAFT,
+    PARTNER_LEAD_SAVE,
+    PARTNER_LEAD_SKIP,
     active_main_menu,
     partner_contact_card_keyboard,
     partner_discovery_card_keyboard,
     partner_discovery_retry_keyboard,
+    partner_lead_card_keyboard,
+    partner_lead_queue_keyboard,
 )
 from app.repositories.contact_claim_repository import ContactClaimRepository
+from app.repositories.operational_event_repository import OperationalEventRepository
+from app.repositories.partner_lead_repository import PartnerLeadRepository
 from app.repositories.partner_repository import PartnerRepository
 from app.services.contact_discovery import find_contact
+from app.services.lead_qualification import QualificationUnavailable
+from app.services.partner_pool import qualify_pool
+from app.services.lead_qualification import qualify_candidates as _qualify_candidates
 from app.services.partner_discovery import PartnerDiscoveryService
+from app.services.telemetry import record_event
+from app.services.partner_outreach import (
+    build_explanation as _build_explanation,
+    build_outreach_draft_prompt as _build_outreach_draft_prompt,
+    candidate_to_dict as _candidate_to_dict,
+    check_and_claim_contact as _check_and_claim_contact,
+    clean_name as _clean_name,
+    contact_identity_key as _contact_identity_key,
+    contact_to_dict as _contact_to_dict,
+    dict_to_prospect as _dict_to_prospect,
+    apply_fallback_enrichment as _apply_fallback_enrichment,
+    enrich_candidates as _enrich_candidates,
+    fallback_outreach_draft as _fallback_outreach_draft,
+    generate_outreach_draft as _generate_outreach_draft,
+    greeting_name as _greeting_name,
+    rank_for_club_partner_fit as _rank_for_club_partner_fit,
+    sanitize_enrichment_field as _sanitize_enrichment_field,
+    strip_private_contact_data as _strip_private_contact_data,
+)
+from app.services.partner_outreach import _ENRICHMENT_INSTRUCTIONS, _TA_AFFILIATED_ENRICHMENT_CLAUSE
+from app.services.partner_outreach import _build_enrichment_prompt
 from app.services.web_search.service import WebSearchService
 
 router = Router(name="partner_discovery")
@@ -96,6 +127,10 @@ _STATE_CONTACT = "partner_discovery_contact"
 
 _WORKSPACE_UNAVAILABLE = "Рабочее пространство недоступно."
 _SEARCH_FAILED = "Не удалось выполнить поиск сейчас. Попробуйте немного позже."
+_QUALIFICATION_FAILED = (
+    "Не удалось завершить проверку кандидатов: сервис оценки не ответил. "
+    "Это сбой, а не отсутствие подходящих партнёров — попробуйте запустить поиск ещё раз."
+)
 _NO_RESULTS = (
     "По текущим запросам не нашлось новых потенциальных партнёров.\n\n"
     "Можно попробовать ещё раз немного позже."
@@ -109,6 +144,26 @@ _CONTACT_CHECK_FAILED = (
 _CONTACT_CLAIMED_BY_OTHER = (
     "Этот контакт сейчас уже находится в работе. Попробую подобрать другого человека."
 )
+
+# Partner Discovery 2.0 lead pipeline (2026-10-11) - see
+# app/domain/partner_leads.py / app/repositories/partner_lead_repository.py.
+_LEAD_FEATURE_UNAVAILABLE = "Эта функция сейчас недоступна. Попробуйте немного позже."
+_LEAD_SAVED = "📌 Сохранено в «Лиды партнёров»."
+_LEAD_APPROVED = "✅ Одобрено. Сообщение пока не отправлено - подготовьте черновик, когда будете готовы."
+_LEAD_SKIPPED = "⏭ Пропущено."
+_LEAD_TRANSITION_BLOCKED = "Это действие сейчас недоступно для этого лида."
+_NO_LEADS = (
+    "Сохранённых лидов пока нет. Найдите кандидата и нажмите "
+    "«✅ Одобрить» или «📌 Сохранить»."
+)
+# Russian display labels only - the stored status value (app.domain.
+# partner_leads.PartnerLeadStatus) is never translated/changed, see
+# PartnerLeadRepository's own enum-backed "status" column.
+_LEAD_STATUS_LABELS = {
+    "new": "Новый", "reviewed": "Просмотрен", "approved": "Одобрен",
+    "contacted": "Связались", "replied": "Ответил", "interested": "Заинтересован",
+    "declined": "Отклонён", "follow_up": "Повторный контакт",
+}
 
 _CONTACT_CONFIDENCE_LABELS = {"HIGH": "высокое", "MEDIUM": "среднее"}
 
@@ -154,284 +209,6 @@ _TYPE_SENTENCE = {
 # display order only, a stable sort over what
 # app.services.partner_discovery.PartnerDiscoveryService already returned.
 # Never touches that service's own query/scoring/dedupe/ranking.
-_PERSONALIZED_PROSPECT_TYPES = frozenset({"guide", "travel_creator", "travel_club"})
-
-
-def _rank_for_club_partner_fit(candidates: list[dict]) -> list[dict]:
-    return sorted(
-        candidates, key=lambda c: c["prospect_type"] not in _PERSONALIZED_PROSPECT_TYPES,
-    )
-
-# ── Presentation-only cleanup (card name & explanation) ─────────────────────
-# Everything below only reshapes what the service already returned for
-# display - it never changes what is found, scored, ranked, deduped, or
-# filtered (that stays entirely inside app/services/partner_discovery.py).
-
-_NAME_SPLIT_RE = re.compile(r"\s*(?:\||—|–|:)\s*|\s-\s|\.\s+")
-_PLATFORM_NAME_TOKENS = frozenset({
-    "вконтакте", "vk", "instagram", "инстаграм", "facebook", "телеграм",
-    "telegram", "одноклассники",
-})
-# Generic category words - strip them out when picking the one segment of a
-# noisy page/VK title that is the actual brand, not a descriptor of what
-# the brand does (see the live cases this was tuned against: "Гильдия
-# гидов - Магазин Путешествий" must keep "Магазин Путешествий", "Duh
-# Travel. Авторские путешествия | ..." must keep "Duh Travel").
-_GENERIC_NAME_DESCRIPTORS = (
-    "туроператор", "турагент", "турагентство", "авторские", "авторский",
-    "гид", "гиды", "гидов", "экскурси", "блог", "реестр",
-    "клуб путешественников", "сообщество путешественников",
-)
-
-
-def _clean_name(raw_name: str, url: str) -> str:
-    raw_name = (raw_name or "").strip()
-    if not raw_name or raw_name.startswith("http://") or raw_name.startswith("https://"):
-        return canonical_domain(url)
-
-    parts = [p.strip() for p in _NAME_SPLIT_RE.split(raw_name) if p.strip()]
-    parts = [
-        p for p in parts
-        if len(p) > 1 and not p.isdigit() and p.lower() not in _PLATFORM_NAME_TOKENS
-    ]
-    if not parts:
-        return raw_name[:60]
-
-    def noise_score(part: str) -> int:
-        lowered = part.lower()
-        return sum(1 for word in _GENERIC_NAME_DESCRIPTORS if word in lowered)
-
-    return min(parts, key=lambda p: (noise_score(p), parts.index(p)))
-
-
-_PHONE_RE = re.compile(r"(?:\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
-_URL_IN_TEXT_RE = re.compile(r"https?://\S+")
-
-# Menu/service/consent/form boilerplate that shows up in raw page extracts -
-# none of it says anything about what the subject publicly does, so none of
-# it belongs in a human-facing explanation.
-_NOISE_PHRASES = (
-    "вход в лк", "личный кабинет", "рассрочку", "рассрочка", "в рассрочку",
-    "гибкой оплаты", "кредит", "скидк", "бесплатно по россии", "звонить",
-    "писать", "контакты", "cookie", "куки", "согласие на обработку",
-    "политика конфиденциальности", "подарочный сертификат", "акции",
-    "отзывы", "вопросы", "календарь", "расписание", "раннее бронирование",
-    "оставить заявку", "записаться", "забронировать", "в корзину",
-    "каталог", "фильтр", "сортировка", "режим работы", "вход", "меню",
-)
-
-
-def _strip_noise(text: str) -> str:
-    text = _URL_IN_TEXT_RE.sub(" ", text)
-    text = _PHONE_RE.sub(" ", text)
-    text = _EMAIL_RE.sub(" ", text)
-    for phrase in _NOISE_PHRASES:
-        text = re.sub(re.escape(phrase), " ", text, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", text).strip(" .,;:-")
-
-
-def _first_clean_clause(cleaned: str, max_len: int = 160) -> str:
-    for sep in (". ", "! ", "? "):
-        idx = cleaned.find(sep)
-        if 15 <= idx <= max_len:
-            return cleaned[: idx + 1]
-    if not cleaned:
-        return ""
-    if len(cleaned) <= max_len:
-        return cleaned.rstrip(".") + "."
-    truncated = cleaned[:max_len].rsplit(" ", 1)[0]
-    return truncated.rstrip(",.;:") + "…"
-
-
-def _build_explanation(prospect_type_value: str, evidence: str) -> str:
-    """Max two sentences: a factual what-they-do statement derived from the
-    already-computed prospect type, plus (when available) one cleaned
-    detail clause from the public evidence itself. Never invents interest
-    in partnership/income/Travel Advantage - it only describes what the
-    public page/snippet already says."""
-    type_sentence = _TYPE_SENTENCE.get(
-        prospect_type_value, _TYPE_SENTENCE[ProspectType.OTHER.value],
-    )
-    clause = _first_clean_clause(_strip_noise(evidence))
-    if len(clause) < 10:
-        return type_sentence
-    return f"{type_sentence} {clause}"
-
-
-# ── LLM enrichment: ONE call for the whole batch ────────────────────────────
-
-_ENRICHMENT_MAX_RESPONSE_LEN = 600
-
-_ENRICHMENT_INSTRUCTIONS = """Ты обрабатываешь данные для карточек Partner Discovery - внутреннего инструмента поиска потенциальных деловых контактов в travel-индустрии. Это НЕ диалог с пользователем - это разовая техническая задача, ответь только данными, без приветствий и комментариев.
-
-Тебе дан список из {count} кандидатов, найденных поиском. Для КАЖДОГО верни ровно два поля:
-
-- "display_name": реальное публичное название проекта/бренда/автора. Коротко (1-4 слова). Никогда не URL и не hostname, если в TITLE или EVIDENCE есть узнаваемое название.
-  Порядок приоритета извлечения:
-  1) Сначала смотри TITLE. Если он состоит из названия и короткой приписки через тире/вертикальную черту/двоеточие ("Название - что делает", "Название | что делает"), бренд - это именно сегмент с названием, а не описательный сегмент (слова вроде "туроператор", "авторские туры", "гид", "блог" - это описание, не название).
-  2) Если в TITLE названия нет или оно неразличимо - ищи явно названное имя проекта/бренда/автора в EVIDENCE.
-  3) Используй читаемый hostname (без www, без схемы) ТОЛЬКО если ни TITLE, ни EVIDENCE не содержат узнаваемого названия - это крайний случай, а не вариант по умолчанию.
-  Ничего не придумывай: название должно быть напрямую взято из текста TITLE/EVIDENCE, а не додумано по смыслу URL или типа бизнеса.
-
-  Примеры:
-  TITLE "Авентурамания - туроператор" -> display_name "Авентурамания" (не "aventuramania.ru").
-  TITLE "In Russia Today - туры по России" -> display_name "In Russia Today" (не "inrussiatoday.ru").
-  TITLE "Гильдия гидов - Магазин Путешествий" -> display_name "Магазин Путешествий" (вторая часть - название, первая - описание).
-  TITLE пустой или нечитаемый, EVIDENCE не называет субъекта по имени -> допустим hostname.
-
-- "reason": 1-2 коротких предложения, только на основе предоставленного public evidence. Опиши:
-  (а) чем публично занимается субъект;
-  (б) ПОЧЕМУ именно этот субъект потенциально подходит как club-partner контакт - используй ТОЛЬКО явно подтверждённые публичные признаки: собственная туристическая аудитория/сообщество; гид/экскурсовод/организатор путешествий/автор туров; travel-блог или сообщество; работа непосредственно с путешественниками. Если из evidence не следует ни один такой признак (это просто обычная туристическая компания/сайт без признака личной аудитории или сообщества) - прямо скажи это нейтрально (например: "Обычный туристический бизнес без явного признака личной аудитории или сообщества"), не выдумывай признак, которого нет.
-
-СТРОГО ЗАПРЕЩЕНО: утверждать или намекать, что субъект уже заинтересован в партнёрстве; утверждать, что он ищет дополнительный доход; утверждать, что ему нужен Travel Advantage; упоминать любые другие неподтверждённые мотивы; обещать какой-либо результат/выгоду/доход; включать телефоны, email, пункты меню, cookie/согласие, формы заявок, цены/рассрочки или любой служебный текст сайта.{ta_affiliated_clause}
-
-Верни СТРОГО валидный JSON-массив из ровно {count} объектов, в ТОМ ЖЕ порядке, что и во входном списке, без markdown-разметки, без пояснений до или после JSON. Формат каждого элемента: {{"display_name": "...", "reason": "..."}}"""
-
-# Only appended when the current workspace is BusinessProfile.ta_affiliated
-# (never by business_type/club_partner alone - see this module's own
-# docstring and app/handlers/menu.py's established business_type-vs-
-# ta_affiliated distinction). Still forbids inventing interest/need - it
-# only permits NAMING Travel Advantage as a possible tool, same fail-closed
-# posture as the rest of this prompt.
-_TA_AFFILIATED_ENRICHMENT_CLAUSE = (
-    " Эта рабочая область работает с Travel Advantage, поэтому в \"reason\" можно "
-    "упомянуть Travel Advantage как потенциальный дополнительный инструмент для "
-    "этого человека/его аудитории - но только как возможность, не как факт, что "
-    "он в ней заинтересован или нуждается."
-)
-
-
-def _build_enrichment_prompt(candidates: list[dict], ta_affiliated: bool = False) -> str:
-    items = []
-    for i, candidate in enumerate(candidates, 1):
-        items.append(
-            f"{i}. URL: {candidate['url']}\n"
-            f"   TITLE (page/search result title): {candidate['name'] or '(нет)'}\n"
-            f"   Предполагаемый тип (подсказка, не факт): {candidate['prospect_type']}\n"
-            f"   Источник evidence: {candidate['evidence_source']}\n"
-            f"   EVIDENCE (public text): {candidate['evidence'][:600]}"
-        )
-    header = _ENRICHMENT_INSTRUCTIONS.format(
-        count=len(candidates),
-        ta_affiliated_clause=_TA_AFFILIATED_ENRICHMENT_CLAUSE if ta_affiliated else "",
-    )
-    return header + "\n\nКандидаты:\n\n" + "\n\n".join(items)
-
-
-def _sanitize_enrichment_field(value: object, max_len: int) -> str | None:
-    """Same noise-stripping as _strip_noise (defense in depth even on the
-    LLM's own output), but keeps a trailing sentence period intact - unlike
-    _strip_noise, this is final display text, not an intermediate clause
-    fed into _first_clean_clause."""
-    if not isinstance(value, str):
-        return None
-    cleaned = _URL_IN_TEXT_RE.sub(" ", value)
-    cleaned = _PHONE_RE.sub(" ", cleaned)
-    cleaned = _EMAIL_RE.sub(" ", cleaned)
-    for phrase in _NOISE_PHRASES:
-        cleaned = re.sub(re.escape(phrase), " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if not cleaned:
-        return None
-    if len(cleaned) > max_len:
-        cleaned = cleaned[:max_len].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
-    return cleaned
-
-
-def _parse_enrichment_response(
-    raw_text: str, expected_count: int,
-) -> tuple[list[dict] | None, str | None]:
-    """Returns (parsed, None) on success or (None, reason) on ANY shape/
-    content problem - the caller must then use the deterministic fallback
-    for the WHOLE batch, never a partial mix. ``reason`` is a short,
-    secret-free category for diagnostic logging only."""
-    text = raw_text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
-    try:
-        parsed = json.loads(text)
-    except (ValueError, TypeError):
-        return None, "invalid_json"
-    if not isinstance(parsed, list):
-        return None, "not_a_list"
-    if len(parsed) != expected_count:
-        return None, "count_mismatch"
-
-    result: list[dict] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            return None, "item_not_a_dict"
-        display_name = _sanitize_enrichment_field(item.get("display_name"), 60)
-        reason = _sanitize_enrichment_field(item.get("reason"), _ENRICHMENT_MAX_RESPONSE_LEN)
-        if not display_name or not reason:
-            return None, "item_missing_fields"
-        result.append({"display_name": display_name, "reason": reason})
-    return result, None
-
-
-def _apply_fallback_enrichment(candidates: list[dict]) -> list[dict]:
-    return [
-        {
-            **candidate,
-            "display_name": _clean_name(candidate["name"], candidate["url"]),
-            "reason": _build_explanation(candidate["prospect_type"], candidate["evidence"]),
-        }
-        for candidate in candidates
-    ]
-
-
-async def _enrich_candidates(
-    candidates: list[dict], partner_enrichment_llm_provider: OpenAIChatProvider | None,
-    *, ta_affiliated: bool = False,
-) -> list[dict]:
-    """Exactly one LLM call for the whole batch (never per-candidate, never
-    on "Следующий" - callers only invoke this right after a fresh search).
-    Any failure - no provider, no credentials, transport error, invalid/
-    malformed JSON, wrong item count - falls back to the deterministic,
-    already-noise-free cleanup for every candidate in the batch.
-
-    Diagnostic logging here is deliberately minimal and secret-free: a
-    provider_present flag, a call-started marker, and on failure a short
-    fallback_reason category (never the raw response body, never any
-    credential) - added after a production incident where this path was
-    silently always falling back with nothing in the logs to show why."""
-    if not candidates:
-        return candidates
-
-    provider_present = partner_enrichment_llm_provider is not None
-    log.info("partner_discovery: enrichment provider_present=%s", provider_present)
-    if not provider_present or not partner_enrichment_llm_provider.config.api_key:
-        log.info("partner_discovery: enrichment fallback_reason=no_provider")
-        return _apply_fallback_enrichment(candidates)
-
-    log.info("partner_discovery: enrichment_call_started batch_size=%d", len(candidates))
-    prompt = _build_enrichment_prompt(candidates, ta_affiliated)
-    try:
-        result = await asyncio.to_thread(
-            partner_enrichment_llm_provider.generate, message=prompt,
-        )
-    except Exception:
-        log.warning(
-            "partner_discovery: enrichment fallback_reason=exception", exc_info=True,
-        )
-        return _apply_fallback_enrichment(candidates)
-
-    parsed, reason = _parse_enrichment_response(result.text, len(candidates))
-    if parsed is None:
-        log.warning("partner_discovery: enrichment fallback_reason=%s", reason)
-        return _apply_fallback_enrichment(candidates)
-
-    log.info("partner_discovery: enrichment success item_count=%d", len(parsed))
-    return [
-        {**candidate, **enriched}
-        for candidate, enriched in zip(candidates, parsed, strict=True)
-    ]
-
-
 async def _is_club_partner(
     partner_repository: PartnerRepository, workspace_context: WorkspaceContext,
 ) -> bool:
@@ -451,18 +228,6 @@ async def _is_ta_affiliated(
         return False
     profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
     return bool(profile is not None and getattr(profile, "ta_affiliated", False))
-
-
-def _candidate_to_dict(candidate: ProspectCandidate) -> dict:
-    return {
-        "name": candidate.name,
-        "url": candidate.url,
-        "prospect_type": candidate.prospect_type.value,
-        "query": candidate.query,
-        "evidence": candidate.evidence,
-        "evidence_source": candidate.evidence_source.value,
-        "fit": candidate.fit.value,
-    }
 
 
 def _render_card(candidates: list[dict], index: int) -> tuple[str, bool]:
@@ -487,65 +252,74 @@ def _render_card(candidates: list[dict], index: int) -> tuple[str, bool]:
         f"Источник:\n{candidate['url']}\n\n"
         f"Подтверждено: {evidence_label}"
     )
+    # Partner Discovery 2.0: only present once _qualify_if_v2 actually ran
+    # (candidate carries "total_score") - absent with the flag off, so v0
+    # cards render exactly as before.
+    if "total_score" in candidate:
+        why_fit = candidate.get("why_fit") or []
+        hook = candidate.get("hook") or ""
+        risk_flags = [f for f in (candidate.get("risk_flags") or []) if f != "no_public_contact"]
+        extra = [
+            f"Score: {candidate['total_score']}/100 · "
+            f"Confidence: {candidate.get('confidence', 0):.2f}"
+        ]
+        if why_fit:
+            extra.append("Почему подходит:\n" + "\n".join(f"• {item}" for item in why_fit))
+        if hook:
+            extra.append(f"Зацепка:\n{hook}")
+        extra.append("Связаться:\n" + _render_contact_line(candidate))
+        extra.append("Источники:\n" + "\n".join(_render_sources(candidate)))
+        if risk_flags:
+            extra.append("Риск/сомнение:\n" + ", ".join(risk_flags))
+        text += "\n\n" + "\n\n".join(extra)
     has_more = index + 1 < len(candidates)
     return text, has_more
 
 
+_CONTACT_TYPE_LABELS = {
+    "telegram": "Telegram", "vk": "VK", "website": "Сайт", "email": "Email",
+    "phone": "Телефон",
+}
+
+
+def _render_contact_line(candidate: dict) -> str:
+    """Answers "как с ним связаться?" (task requirement) - explicitly says
+    "Публичный контакт не найден" rather than silently omitting the line,
+    so a strong candidate without any confirmed channel is never mistaken
+    for one that simply wasn't checked. Shows the best channel plus up to
+    2 more distinct ones found in the same evidence (task: "Telegram +
+    email + сайт" style, never duplicates) - never more than 3 total, so
+    the card never gets overloaded."""
+    contact_type = candidate.get("contact_type")
+    if not contact_type:
+        return "Публичный контакт не найден."
+    lines = [_format_contact(candidate.get("contact_type"), candidate.get("contact_value") or candidate.get("contact_url") or "")]
+    for extra in (candidate.get("additional_contacts") or [])[:2]:
+        lines.append(_format_contact(extra["contact_type"], extra.get("contact_value") or extra.get("contact_url") or ""))
+    return "\n".join(lines)
+
+
+def _format_contact(contact_type: str | None, value: str) -> str:
+    label = _CONTACT_TYPE_LABELS.get(contact_type, contact_type or "")
+    return f"{label}: {value}"
+
+
+def _render_sources(candidate: dict) -> list[str]:
+    """Every public URL the card's claims/contact actually trace back to -
+    always at least the candidate's own url, see task requirement #2."""
+    sources = [candidate["url"]]
+    for item in candidate.get("evidence_claims") or []:
+        url = item.get("source_url")
+        if url and url not in sources:
+            sources.append(url)
+    contact_source = candidate.get("contact_source_url")
+    if contact_source and contact_source not in sources:
+        sources.append(contact_source)
+    return sources
+
+
 # ── Contact Discovery v0 integration (read-only layer on top of the same
 # FSM batch; app/services/contact_discovery.py itself is not modified here) ──
-
-def _dict_to_prospect(candidate: dict) -> ProspectCandidate:
-    """Rebuilds the ProspectCandidate that _candidate_to_dict flattened for
-    FSM storage. rank_score is not stored (it is an internal ranking aid,
-    never needed again once a prospect is already chosen) - 0 is a safe
-    placeholder since contact_discovery.find_contact never reads it.
-
-    UX fix (2026-10-07): uses the already-enriched "display_name" when
-    present (set once by _enrich_candidates right after search - see
-    _render_card, which already shows this same name on the prospect
-    card), falling back to the raw "name" (candidate.name - a search
-    result's title, occasionally the bare URL when a result had no real
-    title) only when no enrichment ran. Contact Discovery's own
-    _project_name() falls back to prospect.url when prospect.name is
-    falsy, and without this fix a PERSON card's "Проект:" line could
-    show that raw/URL-ish name instead of the pretty one already shown
-    everywhere else for this same prospect."""
-    return ProspectCandidate(
-        name=candidate.get("display_name") or candidate["name"],
-        url=candidate["url"],
-        prospect_type=ProspectType(candidate["prospect_type"]),
-        query=candidate["query"],
-        evidence=candidate["evidence"],
-        evidence_source=EvidenceSource(candidate["evidence_source"]),
-        fit=ProspectFit(candidate["fit"]),
-        rank_score=0,
-    )
-
-
-def _contact_to_dict(contact: ContactCandidate) -> dict:
-    return {
-        "contact_type": contact.contact_type.value,
-        "display_name": contact.display_name,
-        "role": contact.role,
-        "project_name": contact.project_name,
-        "public_url": contact.public_url,
-        "evidence_text": contact.evidence_text,
-        "evidence_url": contact.evidence_url,
-        "confidence": contact.confidence.value if contact.confidence else None,
-        "provenance": contact.provenance,
-    }
-
-
-def _strip_private_contact_data(text: str | None) -> str:
-    """Defense in depth (privacy requirement #9): strips any phone/email
-    that might have slipped into evidence text before it reaches the user,
-    reusing the same patterns _strip_noise already applies to prospect
-    cards. contact_discovery's own prompts already forbid this content -
-    this is a second, independent guard on the render path."""
-    cleaned = _PHONE_RE.sub(" ", text or "")
-    cleaned = _EMAIL_RE.sub(" ", cleaned)
-    return re.sub(r"\s+", " ", cleaned).strip()
-
 
 def _render_contact_card(contact: dict) -> str:
     if contact["contact_type"] == "person":
@@ -580,23 +354,113 @@ def _render_contact_card(contact: dict) -> str:
 
 
 async def _run_discovery(
-    web_search_service: WebSearchService | None, *, rotation_seed: int | None = None,
+    web_search_service: WebSearchService | None, *,
+    rotation_seed: int | None = None, use_all_variants: bool = False,
+    pool_limit: int | None = None,
 ) -> list[dict] | None:
     """Returns a list of candidate dicts, an empty list on zero results, or
     None on a search failure - the three cases the caller must render
     differently. rotation_seed (2026-10-07, the calling workspace_id) is
     passed straight through to PartnerDiscoveryService.find_candidates() -
     see that function's own docstring; None reproduces the exact original
-    fixed query set."""
+    fixed query set. use_all_variants (Partner Discovery 2.0) runs every
+    specialized query variant per category instead of one - only passed
+    True when partner_discovery_v2_enabled."""
     if web_search_service is None or web_search_service.provider is None:
         return None
     service = PartnerDiscoveryService(web_search_service.provider)
     try:
-        candidates = await service.find_candidates(rotation_seed=rotation_seed)
+        candidates = await service.find_candidates(
+            rotation_seed=rotation_seed, use_all_variants=use_all_variants,
+            **({"max_results": pool_limit} if pool_limit else {}),
+        )
     except Exception:
         log.warning("partner_discovery: find_candidates failed", exc_info=True)
         return None
     return [_candidate_to_dict(c) for c in candidates]
+
+
+async def _qualify_if_v2(
+    candidates: list[dict],
+    partner_enrichment_llm_provider: OpenAIChatProvider | None,
+    *,
+    partner_discovery_v2_enabled: bool,
+    partner_min_score: int,
+    partner_min_confidence: float,
+    partner_max_results: int,
+) -> list[dict] | None:
+    """No-op (returns candidates unchanged) unless partner_discovery_v2_enabled
+    - existing v0 card rendering/behavior stays byte-for-byte unchanged with
+    the flag off. See app.services.lead_qualification.
+
+    Returns None when the LLM qualification did not complete: the fallback
+    score is not a completed check, so the caller must show a failure
+    message, not "no candidates"."""
+    if not partner_discovery_v2_enabled:
+        return candidates
+    try:
+        return await _qualify_candidates(
+            candidates, partner_enrichment_llm_provider,
+            min_score=partner_min_score,
+            min_confidence=partner_min_confidence,
+            max_results=partner_max_results,
+            require_llm=True,
+        )
+    except QualificationUnavailable as exc:
+        log.warning("partner_discovery: qualification unavailable reason=%s", exc.reason)
+        return None
+    except Exception:
+        log.warning("partner_discovery: qualification failed", exc_info=True)
+        return None
+
+
+_POOL_LIMIT = 10
+_PARTIAL_CHECK_NOTE = (
+    "Проверка неполная: оценено {checked} из {total} найденных кандидатов, "
+    "остальные не успели проверить. Можно запустить поиск ещё раз."
+)
+
+
+async def _enrich_and_qualify(
+    candidates: list[dict],
+    partner_enrichment_llm_provider: OpenAIChatProvider | None,
+    *,
+    ta_affiliated: bool,
+    partner_discovery_v2_enabled: bool,
+    partner_min_score: int,
+    partner_min_confidence: float,
+    partner_max_results: int,
+) -> tuple[list[dict] | None, str | None]:
+    """(candidates, note). candidates is None when the LLM qualification did
+    not complete (a failure, not "no candidates"); note is set when only
+    part of the verified pool could be checked. With V2 off this is the
+    unchanged enrich + display-rank path."""
+    async def _enrich(batch: list[dict]) -> list[dict]:
+        return await _enrich_candidates(
+            batch, partner_enrichment_llm_provider, ta_affiliated=ta_affiliated,
+        )
+
+    if not partner_discovery_v2_enabled:
+        return _rank_for_club_partner_fit(await _enrich(candidates)), None
+    try:
+        outcome = await qualify_pool(
+            candidates, partner_enrichment_llm_provider,
+            enrich=_enrich, enrich_fallback=_apply_fallback_enrichment,
+            rank=_rank_for_club_partner_fit,
+            min_score=partner_min_score, min_confidence=partner_min_confidence,
+            max_results=partner_max_results,
+        )
+    except QualificationUnavailable as exc:
+        log.warning("partner_discovery: qualification unavailable reason=%s", exc.reason)
+        return None, None
+    except Exception:
+        log.warning("partner_discovery: qualification failed", exc_info=True)
+        return None, None
+    note = (
+        _PARTIAL_CHECK_NOTE.format(checked=outcome.checked, total=outcome.total)
+        if outcome.incomplete else None
+    )
+    return outcome.candidates, note
 
 
 @router.message(F.text == BTN_FIND_PARTNERS)
@@ -608,6 +472,10 @@ async def on_find_partners(
     web_search_service: WebSearchService | None = None,
     partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
     v2_menu_enabled: bool = False,
+    partner_discovery_v2_enabled: bool = False,
+    partner_min_score: int = 65,
+    partner_min_confidence: float = 0.60,
+    partner_max_results: int = 7,
 ) -> None:
     if workspace_context is None:
         await message.answer(
@@ -625,6 +493,8 @@ async def on_find_partners(
 
     candidates = await _run_discovery(
         web_search_service, rotation_seed=workspace_context.workspace_id,
+        use_all_variants=partner_discovery_v2_enabled,
+        pool_limit=_POOL_LIMIT if partner_discovery_v2_enabled else None,
     )
     if candidates is None:
         await message.answer(_SEARCH_FAILED)
@@ -634,14 +504,30 @@ async def on_find_partners(
         return
 
     ta_affiliated = await _is_ta_affiliated(partner_repository, workspace_context)
-    candidates = await _enrich_candidates(
+    candidates, note = await _enrich_and_qualify(
         candidates, partner_enrichment_llm_provider, ta_affiliated=ta_affiliated,
+        partner_discovery_v2_enabled=partner_discovery_v2_enabled,
+        partner_min_score=partner_min_score,
+        partner_min_confidence=partner_min_confidence,
+        partner_max_results=partner_max_results,
     )
-    candidates = _rank_for_club_partner_fit(candidates)
+    if candidates is None:
+        await message.answer(_QUALIFICATION_FAILED, reply_markup=partner_discovery_retry_keyboard())
+        return
+    if not candidates:
+        await message.answer(
+            _NO_RESULTS + (f"{chr(10)}{chr(10)}{note}" if note else ""),
+            reply_markup=partner_discovery_retry_keyboard(),
+        )
+        return
+    if note:
+        await message.answer(note)
     await state.update_data(**{_STATE_CANDIDATES: candidates, _STATE_INDEX: 0})
     text, has_more = _render_card(candidates, 0)
     await message.answer(
-        text, reply_markup=partner_discovery_card_keyboard(candidates[0]["url"], has_more),
+        text, reply_markup=partner_discovery_card_keyboard(
+            candidates[0]["url"], has_more, show_lead_actions="total_score" in candidates[0],
+        ),
     )
 
 
@@ -664,7 +550,9 @@ async def on_partner_discovery_next(callback: CallbackQuery, state: FSMContext) 
     text, has_more = _render_card(candidates, index)
     if callback.message is not None:
         await callback.message.answer(
-            text, reply_markup=partner_discovery_card_keyboard(candidates[index]["url"], has_more),
+            text, reply_markup=partner_discovery_card_keyboard(
+                candidates[index]["url"], has_more, show_lead_actions="total_score" in candidates[index],
+            ),
         )
 
 
@@ -676,10 +564,18 @@ async def on_partner_discovery_more(
     partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
     workspace_context: WorkspaceContext | None = None,
     partner_repository: PartnerRepository | None = None,
+    partner_discovery_v2_enabled: bool = False,
+    partner_min_score: int = 65,
+    partner_min_confidence: float = 0.60,
+    partner_max_results: int = 7,
 ) -> None:
     await callback.answer()
     rotation_seed = workspace_context.workspace_id if workspace_context is not None else None
-    candidates = await _run_discovery(web_search_service, rotation_seed=rotation_seed)
+    candidates = await _run_discovery(
+        web_search_service, rotation_seed=rotation_seed,
+        use_all_variants=partner_discovery_v2_enabled,
+        pool_limit=_POOL_LIMIT if partner_discovery_v2_enabled else None,
+    )
 
     if candidates is None:
         if callback.message is not None:
@@ -694,15 +590,35 @@ async def on_partner_discovery_more(
         await _is_ta_affiliated(partner_repository, workspace_context)
         if partner_repository is not None else False
     )
-    candidates = await _enrich_candidates(
+    candidates, note = await _enrich_and_qualify(
         candidates, partner_enrichment_llm_provider, ta_affiliated=ta_affiliated,
+        partner_discovery_v2_enabled=partner_discovery_v2_enabled,
+        partner_min_score=partner_min_score,
+        partner_min_confidence=partner_min_confidence,
+        partner_max_results=partner_max_results,
     )
-    candidates = _rank_for_club_partner_fit(candidates)
+    if candidates is None:
+        if callback.message is not None:
+            await callback.message.answer(
+                _QUALIFICATION_FAILED, reply_markup=partner_discovery_retry_keyboard(),
+            )
+        return
+    if not candidates:
+        if callback.message is not None:
+            await callback.message.answer(
+                _NO_RESULTS + (f"{chr(10)}{chr(10)}{note}" if note else ""),
+                reply_markup=partner_discovery_retry_keyboard(),
+            )
+        return
+    if note and callback.message is not None:
+        await callback.message.answer(note)
     await state.update_data(**{_STATE_CANDIDATES: candidates, _STATE_INDEX: 0})
     text, has_more = _render_card(candidates, 0)
     if callback.message is not None:
         await callback.message.answer(
-            text, reply_markup=partner_discovery_card_keyboard(candidates[0]["url"], has_more),
+            text, reply_markup=partner_discovery_card_keyboard(
+            candidates[0]["url"], has_more, show_lead_actions="total_score" in candidates[0],
+        ),
         )
 
 
@@ -774,7 +690,10 @@ async def on_partner_contact_back(callback: CallbackQuery, state: FSMContext) ->
     if callback.message is not None:
         await callback.message.answer(
             text,
-            reply_markup=partner_discovery_card_keyboard(candidates[index]["url"], has_more),
+            reply_markup=partner_discovery_card_keyboard(
+                candidates[index]["url"], has_more,
+                show_lead_actions="total_score" in candidates[index],
+            ),
         )
 
 
@@ -807,200 +726,6 @@ _DRAFT_COMMAND_RE = re.compile(
     r"|что\s+(?:ей|ему|им)\s+написать",
     re.IGNORECASE,
 )
-
-_OUTREACH_DRAFT_INSTRUCTIONS = """Ты помогаешь подготовить ЧЕРНОВИК первого персонального сообщения для знакомства с конкретным человеком, найденным через Partner Discovery / Contact Discovery. Это ЧЕРНОВИК для ручной проверки человеком перед отправкой - НЕ автоматическая рассылка, отвечай только текстом сообщения.
-
-Имя: {name}
-Роль (публично подтверждена): {role}
-Проект/сообщество: {project}
-Почему найден (public evidence): {evidence}
-
-Напиши короткое (4-6 предложений), вежливое, персонализированное первое сообщение на русском языке, которое ПОНЯТНО объясняет, зачем мы пишем - пустое "давайте познакомимся" без причины не годится. Структура:
-1) Обращение по имени (если из "Имя" можно уверенно выделить имя/имя-отчество - например из формата "Фамилия Имя Отчество" - используй именно имя/имя-отчество, а не полностью ФИО; если формат неясен - используй то, что есть).
-2) Фраза вида "Обращаюсь к вам как к {{роль}}" (адресуя роль ПОЛУЧАТЕЛЮ) + при наличии проекта/сообщества упомяни его. НИКОГДА не формулируй как "Пишу вам как {{роль}}" - это звучит, будто роль принадлежит отправителю, а не адресату.
-3) Объясни причину обращения.{ta_instruction}
-4) Заверши простым низкопороговым вопросом/предложением - например, можно ли коротко рассказать или прислать информацию, без развёрнутой презентации.
-
-СТРОГО ЗАПРЕЩЕНО:
-- начинать с "Увидел(а) вашу страницу" или любой похожей шаблонной фразы;
-- формулировку "Пишу вам как {{роль}}" или любую другую, где роль из evidence может быть прочитана как роль ОТПРАВИТЕЛЯ, а не получателя;
-- называть Travel Advantage каким-либо собственным/внутренним названием отправителя (например, упоминать проект/бренд/организацию отправителя рядом с Travel Advantage) - Travel Advantage называется только как "международный туристический клуб и платформа для путешествий", без смешивания с чем-либо ещё;
-- утверждать или подразумевать, что человек уже заинтересован, нуждается в Travel Advantage или ищет что-либо конкретное;
-- упоминать доход, заработок, окупаемость или любой гарантированный результат;
-- придумывать детали о человеке сверх предоставленных полей.
-
-ГРАММАТИЧЕСКИ ОБЯЗАТЕЛЬНО - сообщение пишется от лица отправителя, чей пол НЕИЗВЕСТЕН и не должен угадываться: используй ТОЛЬКО глагольные формы, не зависящие от рода (настоящее время/инфинитив/безличные конструкции): "обращаюсь", "пишу", "хочу познакомить", "думаю", "могу коротко рассказать" и подобные. СТРОГО ЗАПРЕЩЕНЫ любые родовые формы прошедшего времени или конструкции с "(а)": "нашёл/нашла", "увидел/увидела", "хотел/хотела", "решил/решила", "был/была", "рад/рада" и любые их варианты с "(а)".
-
-Верни только текст сообщения на русском языке, без пояснений, без markdown, без кавычек вокруг всего текста."""
-
-# Only appended when BusinessProfile.ta_affiliated - see _is_ta_affiliated.
-# Still forbids inventing interest/need - only permits NAMING Travel
-# Advantage as a possible tool for an introduction, same fail-closed posture
-# as _TA_AFFILIATED_ENRICHMENT_CLAUSE above. Deliberately names Travel
-# Advantage ONLY as "международный туристический клуб и платформа для
-# путешествий" - never alongside the sender's own business/project name
-# (2026-10-07 fix: that mixing previously produced confusing text like
-# "представляю Travel Advantage AI Ecosystem" for the admin/owner
-# workspace, whose own BusinessProfile.business_name happens to be an
-# internal ORCHESTRAVEL bootstrap label, not a Travel Advantage brand).
-_TA_AFFILIATED_DRAFT_INSTRUCTION = (
-    " Хочу познакомить вас с Travel Advantage - международным туристическим "
-    "клубом и платформой для путешествий. Думаю, этот формат может быть "
-    "интересен проектам/людям, которые напрямую работают с путешественниками "
-    "и туристической аудиторией - только как возможность, не обещая "
-    "конкретных результатов и не утверждая, что человек в этом уже "
-    "заинтересован или нуждается."
-)
-
-
-def _greeting_name(display_name: str) -> str:
-    """Best-effort "Имя Отчество" extraction from a "Фамилия Имя Отчество"
-    -shaped Russian display_name (e.g. "Ярмоленко Людмила Борисовна" ->
-    "Людмила Борисовна") - a greeting by full ФИО reads as noticeably more
-    formal/impersonal than addressing someone by name. Conservative: only
-    applied for a confident 3-space-separated-token shape; anything else
-    (a single name, a Western "Имя Фамилия" pair, a brand/project name with
-    no clear person-name shape) is used exactly as given rather than
-    guessing which token is which - never invents a name that isn't there."""
-    parts = [p for p in (display_name or "").split() if p]
-    if len(parts) == 3:
-        return f"{parts[1]} {parts[2]}"
-    return display_name or ""
-
-
-def _build_outreach_draft_prompt(
-    contact: dict, ta_affiliated: bool, sender_business_name: str | None,
-) -> str:
-    return _OUTREACH_DRAFT_INSTRUCTIONS.format(
-        name=_strip_private_contact_data(contact.get("display_name") or ""),
-        role=_strip_private_contact_data(contact.get("role") or "") or "не указана",
-        project=_strip_private_contact_data(contact.get("project_name") or ""),
-        evidence=_strip_private_contact_data(contact.get("evidence_text") or "")[:600] or "(нет)",
-        sender_business_name=_strip_private_contact_data(sender_business_name or "") or "(не указан)",
-        ta_instruction=_TA_AFFILIATED_DRAFT_INSTRUCTION if ta_affiliated else "",
-    )
-
-
-def _fallback_outreach_draft(
-    contact: dict, ta_affiliated: bool, sender_business_name: str | None = None,
-) -> str:
-    """Deterministic, noise-free fallback - same safety posture as
-    _apply_fallback_enrichment: no LLM required, never invents motive.
-
-    Fully gender-neutral by construction (2026-10-07 fix): every
-    self-referential verb is present-tense/modal ("обращаюсь", "пишу",
-    "хочу", "могу") - none of these decline by the sender's grammatical
-    gender, unlike the earlier "увидел(а)"/"решил(а)" phrasing this
-    replaces.
-
-    "Обращаюсь к вам как к {role}" (2026-10-07 wording fix), not "Пишу вам
-    как {role}" - the latter reads ambiguously as if the SENDER holds that
-    role, not the recipient. sender_business_name is still accepted (kept
-    for signature/call-site compatibility - no architecture change) but is
-    deliberately NOT interpolated into the message text any more: a live
-    production case showed it producing "Travel Advantage AI Ecosystem"
-    (the admin/owner workspace's own internal bootstrap business_name,
-    see _TA_OWNER_PROJECT_NAME in app.repositories.partner_repository) -
-    i.e. ORCHESTRAVEL's own internal label mixed into Travel Advantage
-    positioning. Travel Advantage is now named only ever as "международный
-    туристический клуб и платформа для путешествий", never alongside any
-    sender project/brand name."""
-    name = _strip_private_contact_data(contact.get("display_name") or "")
-    role = _strip_private_contact_data(contact.get("role") or "")
-    project = _strip_private_contact_data(contact.get("project_name") or "")
-    greeting_name = _greeting_name(name)
-
-    if role and project:
-        intro = f"Обращаюсь к вам как к {role} в «{project}»."
-    elif role:
-        intro = f"Обращаюсь к вам как к {role}."
-    elif project:
-        intro = f"Обращаюсь к вам в связи с «{project}»."
-    else:
-        intro = "Обращаюсь к вам, чтобы коротко познакомиться."
-
-    lines = [f"Здравствуйте, {greeting_name}!", "", intro, ""]
-    if ta_affiliated:
-        lines.append(
-            "Хочу познакомить вас с Travel Advantage - международным "
-            "туристическим клубом и платформой для путешествий."
-        )
-        lines.append("")
-        lines.append(
-            "Думаю, этот формат может быть интересен проектам, которые напрямую "
-            "работают с путешественниками и туристической аудиторией."
-        )
-        lines.append("")
-        lines.append(
-            "Если не возражаете, могу коротко рассказать, как это работает - без "
-            "длинной презентации."
-        )
-    else:
-        lines.append("Пишу, чтобы коротко познакомиться.")
-        lines.append("")
-        lines.append("Если не возражаете, могу написать чуть подробнее.")
-    return "\n".join(lines)
-
-
-async def _generate_outreach_draft(
-    contact: dict,
-    llm_provider: OpenAIChatProvider | None,
-    *,
-    ta_affiliated: bool,
-    sender_business_name: str | None = None,
-) -> str:
-    """Always returns a usable draft string - never None, never raises past
-    this function. Any failure (no provider, no credentials, transport
-    error, empty response) falls back to the deterministic template."""
-    if llm_provider is None or not llm_provider.config.api_key:
-        return _fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
-
-    prompt = _build_outreach_draft_prompt(contact, ta_affiliated, sender_business_name)
-    try:
-        result = await asyncio.to_thread(llm_provider.generate, message=prompt)
-    except Exception:
-        log.warning("partner_discovery: outreach draft llm call failed", exc_info=True)
-        return _fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
-
-    draft = _sanitize_enrichment_field(result.text, 1000)
-    if not draft:
-        return _fallback_outreach_draft(contact, ta_affiliated, sender_business_name)
-    return draft
-
-
-def _contact_identity_key(contact: dict) -> str:
-    """Deterministic cross-tenant claim identity (2026-10-07) - combines
-    evidence_url (the specific public page/result that named this person;
-    the most discriminating signal Contact Discovery produces) with a
-    normalized display_name, rather than display_name alone, which could
-    collide across genuinely different people sharing a common name.
-    public_url is used as a fallback only if evidence_url is somehow
-    missing (should not happen for a PERSON contact in practice)."""
-    url = (contact.get("evidence_url") or contact.get("public_url") or "").strip().lower()
-    name = (contact.get("display_name") or "").strip().lower()
-    raw = f"{url}|{name}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-async def _check_and_claim_contact(
-    contact: dict,
-    workspace_context: WorkspaceContext | None,
-    contact_claim_repository: ContactClaimRepository | None,
-) -> bool:
-    """True = this workspace may proceed with outreach right now (either it
-    already held the claim, or none existed and one was just created for
-    CLAIM_COOLDOWN_DAYS - see app.repositories.contact_claim_repository).
-    False = a DIFFERENT workspace currently holds an active claim - the
-    caller must show _CONTACT_CLAIMED_BY_OTHER and MUST NOT reveal which
-    workspace holds it. No repository/workspace available -> fail-open
-    (True), same posture as every other optional-dependency check in this
-    module (e.g. _is_ta_affiliated)."""
-    if contact_claim_repository is None or workspace_context is None:
-        return True
-    identity_key = _contact_identity_key(contact)
-    result = await contact_claim_repository.claim(identity_key, workspace_context.workspace_id)
-    return result.allowed
-
 
 async def _draft_for_current_contact(
     state: FSMContext,
@@ -1236,3 +961,424 @@ async def on_invitation_link_command_text(
         await message.answer(_INVITATION_LINK_MISSING)
         return
     await message.answer(_DRAFT_HEADER + invitation)
+
+
+# ── Partner Discovery 2.0 lead pipeline (2026-10-11) ─────────────────────
+# Turns a shown candidate card into a persisted, status-tracked lead - but
+# ONLY once the user actually presses one of the buttons below (minimal
+# mutation, see partner_discovery_card_keyboard's own docstring): viewing
+# a card, paging through the batch, or running Contact Discovery alone
+# never writes anything. No outgoing message is ever sent without the
+# explicit human action that already existed before this (✉️ Подготовить
+# первое сообщение still requires its own tap) - this layer only adds a
+# status/queue on top of that unchanged approval gate.
+
+def _current_candidate(candidates: list[dict], index: int) -> dict | None:
+    if not candidates or index >= len(candidates):
+        return None
+    return candidates[index]
+
+
+async def _ensure_lead_saved(
+    candidate: dict,
+    workspace_context: WorkspaceContext | None,
+    partner_lead_repository: PartnerLeadRepository | None,
+):
+    """Upserts the current candidate as a lead for this workspace - a
+    re-save of the same candidate (same identity_key) refreshes its
+    enrichment/score/confidence/contact fields but never resets an
+    already-advanced status back to "new" (see
+    PartnerLeadRepository.upsert_from_candidate)."""
+    if partner_lead_repository is None or workspace_context is None:
+        return None
+    identity_key = compute_lead_identity_key(candidate.get("url") or "")
+    return await partner_lead_repository.upsert_from_candidate(
+        workspace_context.workspace_id, identity_key, candidate,
+    )
+
+
+async def _transition_current_lead(
+    callback: CallbackQuery,
+    state: FSMContext,
+    workspace_context: WorkspaceContext | None,
+    partner_lead_repository: PartnerLeadRepository | None,
+    operational_event_repository: OperationalEventRepository | None,
+    new_status: PartnerLeadStatus,
+    success_message: str,
+):
+    await callback.answer()
+    if partner_lead_repository is None or workspace_context is None:
+        if callback.message is not None:
+            await callback.message.answer(_LEAD_FEATURE_UNAVAILABLE)
+        return
+    data = await state.get_data()
+    candidates: list[dict] = data.get(_STATE_CANDIDATES) or []
+    index: int = data.get(_STATE_INDEX, 0)
+    candidate = _current_candidate(candidates, index)
+    if candidate is None:
+        return
+
+    lead = await _ensure_lead_saved(candidate, workspace_context, partner_lead_repository)
+    if lead is None:
+        if callback.message is not None:
+            await callback.message.answer(_LEAD_FEATURE_UNAVAILABLE)
+        return
+
+    old_status = lead.status
+    result = await partner_lead_repository.set_status(
+        lead.lead_id, workspace_context.workspace_id, new_status,
+    )
+    if not result.ok:
+        if callback.message is not None:
+            await callback.message.answer(_LEAD_TRANSITION_BLOCKED)
+        return
+
+    await record_event(
+        operational_event_repository, module="partner_leads", event_type="status_changed",
+        success=True, workspace_id=workspace_context.workspace_id,
+        telegram_user_id=workspace_context.telegram_user_id,
+        metadata={
+            "lead_id": lead.lead_id, "old_status": old_status.value,
+            "new_status": new_status.value, "action_source": "telegram",
+        },
+    )
+    if callback.message is not None:
+        await callback.message.answer(success_message)
+
+
+@router.callback_query(F.data == PARTNER_LEAD_SAVE)
+async def on_partner_lead_save(
+    callback: CallbackQuery,
+    state: FSMContext,
+    workspace_context: WorkspaceContext | None = None,
+    partner_lead_repository: PartnerLeadRepository | None = None,
+) -> None:
+    """📌 Сохранить - persists the candidate as a lead (status NEW if this
+    is the first save) without changing its status otherwise."""
+    await callback.answer()
+    if partner_lead_repository is None or workspace_context is None:
+        if callback.message is not None:
+            await callback.message.answer(_LEAD_FEATURE_UNAVAILABLE)
+        return
+    data = await state.get_data()
+    candidates: list[dict] = data.get(_STATE_CANDIDATES) or []
+    index: int = data.get(_STATE_INDEX, 0)
+    candidate = _current_candidate(candidates, index)
+    if candidate is None:
+        return
+    lead = await _ensure_lead_saved(candidate, workspace_context, partner_lead_repository)
+    if lead is None:
+        if callback.message is not None:
+            await callback.message.answer(_LEAD_FEATURE_UNAVAILABLE)
+        return
+    if callback.message is not None:
+        await callback.message.answer(_LEAD_SAVED)
+
+
+@router.callback_query(F.data == PARTNER_LEAD_APPROVE)
+async def on_partner_lead_approve(
+    callback: CallbackQuery,
+    state: FSMContext,
+    workspace_context: WorkspaceContext | None = None,
+    partner_lead_repository: PartnerLeadRepository | None = None,
+    operational_event_repository: OperationalEventRepository | None = None,
+) -> None:
+    """✅ Одобрить - status -> approved. Never sends anything; outreach
+    still requires the separate, pre-existing draft+human-approval flow."""
+    await _transition_current_lead(
+        callback, state, workspace_context, partner_lead_repository,
+        operational_event_repository, PartnerLeadStatus.APPROVED, _LEAD_APPROVED,
+    )
+
+
+@router.callback_query(F.data == PARTNER_LEAD_SKIP)
+async def on_partner_lead_skip(
+    callback: CallbackQuery,
+    state: FSMContext,
+    workspace_context: WorkspaceContext | None = None,
+    partner_lead_repository: PartnerLeadRepository | None = None,
+    operational_event_repository: OperationalEventRepository | None = None,
+) -> None:
+    """⏭ Пропустить - status -> declined. History (the row) is kept, not
+    deleted - a later ✅/📌 on the same candidate can still reinstate it
+    (DECLINED -> REVIEWED is an allowed transition)."""
+    await callback.answer()
+    if partner_lead_repository is None or workspace_context is None:
+        if callback.message is not None:
+            await callback.message.answer(_LEAD_FEATURE_UNAVAILABLE)
+        return
+    data = await state.get_data()
+    candidates: list[dict] = data.get(_STATE_CANDIDATES) or []
+    index: int = data.get(_STATE_INDEX, 0)
+    candidate = _current_candidate(candidates, index)
+    if candidate is None:
+        return
+    lead = await _ensure_lead_saved(candidate, workspace_context, partner_lead_repository)
+    if lead is None:
+        if callback.message is not None:
+            await callback.message.answer(_LEAD_FEATURE_UNAVAILABLE)
+        return
+    old_status = lead.status
+    # NEW -> DECLINED is an allowed transition (see ALLOWED_TRANSITIONS);
+    # a lead already further along (e.g. CONTACTED) simply keeps its
+    # current status - "skip" never demotes progress, it only has an
+    # effect on a lead still at NEW/REVIEWED.
+    result = await partner_lead_repository.set_status(
+        lead.lead_id, workspace_context.workspace_id, PartnerLeadStatus.DECLINED,
+    )
+    if result.ok:
+        await record_event(
+            operational_event_repository, module="partner_leads", event_type="status_changed",
+            success=True, workspace_id=workspace_context.workspace_id,
+            telegram_user_id=workspace_context.telegram_user_id,
+            metadata={
+                "lead_id": lead.lead_id, "old_status": old_status.value,
+                "new_status": PartnerLeadStatus.DECLINED.value, "action_source": "telegram",
+            },
+        )
+    if callback.message is not None:
+        await callback.message.answer(_LEAD_SKIPPED)
+
+
+@router.callback_query(F.data == PARTNER_LEAD_DRAFT)
+async def on_partner_lead_draft(
+    callback: CallbackQuery,
+    state: FSMContext,
+    web_search_service: WebSearchService | None = None,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+    partner_repository: PartnerRepository | None = None,
+    workspace_context: WorkspaceContext | None = None,
+    contact_claim_repository: ContactClaimRepository | None = None,
+) -> None:
+    """📝 Черновик сообщения - reuses the EXISTING Contact Discovery +
+    outreach-draft chain verbatim (find_contact -> _draft_for_current_contact),
+    never a new drafting mechanism. Never sends anything - shows the draft
+    for manual review/edit, exactly like ✉️ Подготовить первое сообщение."""
+    await callback.answer()
+    data = await state.get_data()
+    candidates: list[dict] = data.get(_STATE_CANDIDATES) or []
+    index: int = data.get(_STATE_INDEX, 0)
+    candidate = _current_candidate(candidates, index)
+    if candidate is None:
+        return
+
+    prospect = _dict_to_prospect(candidate)
+    web_search_provider = (
+        web_search_service.provider if web_search_service is not None else None
+    )
+    try:
+        contact = await find_contact(
+            prospect, llm_provider=partner_enrichment_llm_provider,
+            web_search_provider=web_search_provider,
+        )
+    except Exception:
+        log.warning("partner_discovery: contact discovery failed", exc_info=True)
+        if callback.message is not None:
+            await callback.message.answer(_CONTACT_CHECK_FAILED)
+        return
+
+    contact_dict = _contact_to_dict(contact)
+    if contact_dict.get("contact_type") != "person":
+        if callback.message is not None:
+            await callback.message.answer(_DRAFT_UNAVAILABLE)
+        return
+    await state.update_data(**{_STATE_CONTACT: contact_dict})
+
+    _, draft, claimed_by_other = await _draft_for_current_contact(
+        state, partner_repository, workspace_context, partner_enrichment_llm_provider,
+        contact_claim_repository,
+    )
+    if claimed_by_other:
+        if callback.message is not None:
+            await callback.message.answer(_CONTACT_CLAIMED_BY_OTHER)
+        return
+    if draft is None:
+        if callback.message is not None:
+            await callback.message.answer(_DRAFT_UNAVAILABLE)
+        return
+    if callback.message is not None:
+        await callback.message.answer(_DRAFT_HEADER + draft)
+
+
+def _render_lead_queue(leads: list) -> str:
+    """Russian status labels are display-only (_LEAD_STATUS_LABELS) - the
+    stored PartnerLeadStatus enum value is never touched, see
+    PartnerLeadRepository."""
+    lines = ["📋 Лиды партнёров"]
+    for lead in leads:
+        status_label = _LEAD_STATUS_LABELS.get(lead.status.value, lead.status.value)
+        contact = (
+            f"{lead.contact_type}: {lead.contact_value}" if lead.contact_type else "контакт не найден"
+        )
+        score = lead.score if lead.score is not None else "-"
+        card = (
+            f"\n{lead.name}\n"
+            f"Статус: {status_label} · Score: {score}\n"
+            f"Контакт: {contact}"
+        )
+        if lead.next_action:
+            card += f"\nСледующий шаг: {lead.next_action}"
+        lines.append(card)
+    return "\n".join(lines)
+
+
+@router.message(F.text == BTN_PARTNER_LEADS)
+async def on_partner_leads_queue(
+    message: Message,
+    workspace_context: WorkspaceContext | None,
+    partner_lead_repository: PartnerLeadRepository | None = None,
+    v2_menu_enabled: bool = False,
+) -> None:
+    """📋 Лиды партнёров - a simple review queue, no analytics: new/
+    reviewed/approved/follow_up leads for this workspace, most recently
+    updated first. Minimal filter set per the task's own scope."""
+    if workspace_context is None or partner_lead_repository is None:
+        await message.answer(
+            _LEAD_FEATURE_UNAVAILABLE, reply_markup=active_main_menu(v2_menu_enabled),
+        )
+        return
+    leads = await partner_lead_repository.list_for_workspace(
+        workspace_context.workspace_id,
+        statuses=[
+            PartnerLeadStatus.NEW, PartnerLeadStatus.REVIEWED,
+            PartnerLeadStatus.APPROVED, PartnerLeadStatus.FOLLOW_UP,
+        ],
+    )
+    if not leads:
+        await message.answer(_NO_LEADS)
+        return
+    await message.answer(_render_lead_queue(leads), reply_markup=partner_lead_queue_keyboard(leads))
+
+
+# ── Saved lead card + draft (from the 📋 queue) ─────────────────────────────
+# Works ONLY from the stored PartnerLead row: no new search, no contact
+# discovery. Drafting reuses _generate_outreach_draft verbatim; sending stays
+# entirely manual.
+
+_LEAD_NOT_FOUND = "Лид не найден."
+
+
+def _lead_id_from_callback(data: str | None, prefix: str) -> int | None:
+    if not data or not data.startswith(prefix):
+        return None
+    tail = data[len(prefix):]
+    return int(tail) if tail.isdigit() else None
+
+
+async def _owned_lead(
+    callback: CallbackQuery, prefix: str, workspace_context: WorkspaceContext | None,
+    partner_lead_repository: PartnerLeadRepository | None,
+):
+    """The lead, but only if it belongs to the caller workspace (the
+    repository query filters by workspace_id); otherwise None."""
+    lead_id = _lead_id_from_callback(callback.data, prefix)
+    if lead_id is None or workspace_context is None or partner_lead_repository is None:
+        return None
+    return await partner_lead_repository.get(lead_id, workspace_context.workspace_id)
+
+
+def _render_lead_card(lead) -> str:
+    status_label = _LEAD_STATUS_LABELS.get(lead.status.value, lead.status.value)
+    contact = f"{lead.contact_type}: {lead.contact_value}" if lead.contact_type else "контакт не найден"
+    confidence = f"{lead.confidence:.2f}" if lead.confidence is not None else "-"
+    score = lead.score if lead.score is not None else "-"
+    lines = [
+        f"📂 {lead.name}",
+        f"Статус: {status_label} · Score: {score} · Уверенность: {confidence}",
+        f"Контакт: {contact}",
+    ]
+    if lead.why_fit:
+        lines.append("Почему подходит:\n" + "\n".join(f"- {item}" for item in lead.why_fit))
+    if lead.hook:
+        lines.append(f"Зацепка: {lead.hook}")
+    lines.append(f"Источник: {lead.source_url}")
+    if lead.next_action:
+        lines.append(f"Следующий шаг: {lead.next_action}")
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith(PARTNER_LEAD_OPEN_PREFIX))
+async def on_partner_lead_open(
+    callback: CallbackQuery,
+    workspace_context: WorkspaceContext | None = None,
+    partner_lead_repository: PartnerLeadRepository | None = None,
+) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    lead = await _owned_lead(callback, PARTNER_LEAD_OPEN_PREFIX, workspace_context, partner_lead_repository)
+    if lead is None:
+        await callback.message.answer(_LEAD_NOT_FOUND)
+        return
+    await callback.message.answer(
+        _render_lead_card(lead),
+        reply_markup=partner_lead_card_keyboard(lead.lead_id, lead.source_url),
+    )
+
+
+def _contact_dict_from_lead(lead) -> dict:
+    """Stored lead -> the contact dict shape the shared outreach-draft
+    generator expects. Only stored fields are used."""
+    evidence = "; ".join(item for item in lead.why_fit if item)
+    if lead.hook:
+        evidence = f"{evidence}; {lead.hook}" if evidence else lead.hook
+    return {
+        "contact_type": "person",
+        "display_name": lead.name,
+        "role": "",
+        "project_name": lead.name,
+        "evidence_text": evidence,
+        "evidence_url": lead.source_url,
+        "public_url": lead.source_url,
+    }
+
+
+@router.callback_query(F.data.startswith(PARTNER_LEAD_QUEUE_DRAFT_PREFIX))
+async def on_partner_lead_queue_draft(
+    callback: CallbackQuery,
+    partner_enrichment_llm_provider: OpenAIChatProvider | None = None,
+    partner_repository: PartnerRepository | None = None,
+    workspace_context: WorkspaceContext | None = None,
+    partner_lead_repository: PartnerLeadRepository | None = None,
+    contact_claim_repository: ContactClaimRepository | None = None,
+) -> None:
+    """Подготовить черновик on a saved lead card. Draft only - shown next to
+    the stored contact for the human to send manually; nothing is sent and
+    no search / contact discovery is run."""
+    await callback.answer()
+    if callback.message is None:
+        return
+    lead = await _owned_lead(
+        callback, PARTNER_LEAD_QUEUE_DRAFT_PREFIX, workspace_context, partner_lead_repository,
+    )
+    if lead is None:
+        await callback.message.answer(_LEAD_NOT_FOUND)
+        return
+
+    contact = _contact_dict_from_lead(lead)
+    if not await _check_and_claim_contact(contact, workspace_context, contact_claim_repository):
+        await callback.message.answer(_CONTACT_CLAIMED_BY_OTHER)
+        return
+
+    ta_affiliated = False
+    sender_business_name: str | None = None
+    if partner_repository is not None:
+        profile = await partner_repository.get_business_profile(workspace_context.workspace_id)
+        if profile is not None:
+            ta_affiliated = bool(getattr(profile, "ta_affiliated", False))
+            sender_business_name = getattr(profile, "business_name", None) or None
+
+    draft = await _generate_outreach_draft(
+        contact, partner_enrichment_llm_provider,
+        ta_affiliated=ta_affiliated, sender_business_name=sender_business_name,
+    )
+    contact_line = (
+        f"{lead.contact_type}: {lead.contact_value}" if lead.contact_type
+        else "публичный контакт не сохранён - используйте страницу источника"
+    )
+    await callback.message.answer(
+        f"{_DRAFT_HEADER}{draft}\n\n"
+        f"Контакт для отправки: {contact_line}\n"
+        f"Источник: {lead.source_url}\n"
+        "Отправка - только вручную."
+    )

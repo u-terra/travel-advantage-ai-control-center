@@ -1034,3 +1034,122 @@ def test_russian_status_label_never_changes_stored_enum(tmp_path):
 
     assert stored.status.value == "approved"  # storage enum untouched
     assert "Одобрен" in rendered  # display label is Russian
+
+
+# ── saved lead card + draft from the 📋 queue ───────────────────────────────
+
+from app.handlers.partner_discovery import (  # noqa: E402
+    on_partner_lead_open,
+    on_partner_lead_queue_draft,
+    on_partner_leads_queue,
+)
+
+
+def _saved_onvisor(repo, workspace_id=42):
+    candidate = {
+        "name": "Onvisor", "display_name": "Onvisor", "url": "https://onvisor.ru/",
+        "total_score": 79, "confidence": 0.93, "why_fit": ["Авторские туры"], "hook": "Набор группы",
+        "contact_type": "email", "contact_value": "go@trip.onvisor.ru",
+    }
+    lead = run(repo.upsert_from_candidate(workspace_id, "onvisor.ru", candidate))
+    run(repo.set_status(lead.lead_id, workspace_id, PartnerLeadStatus.APPROVED))
+    return lead
+
+
+def _all_buttons(markup):
+    return [b for row in markup.inline_keyboard for b in row]
+
+
+def test_queue_offers_an_open_button_per_lead(tmp_path):
+    repo = _lead_repo(tmp_path)
+    lead = _saved_onvisor(repo)
+    message = Message("📋 Лиды партнёров")
+
+    run(on_partner_leads_queue(message, context(), repo))
+
+    text, kwargs = message.answers[0]
+    assert "Onvisor" in text and "go@trip.onvisor.ru" in text
+    buttons = _all_buttons(kwargs["reply_markup"])
+    assert [b.callback_data for b in buttons] == [f"partner_lead:open:{lead.lead_id}"]
+
+
+def test_open_shows_stored_card_with_contact_and_draft_button(tmp_path):
+    repo = _lead_repo(tmp_path)
+    lead = _saved_onvisor(repo)
+    callback = Callback(f"partner_lead:open:{lead.lead_id}")
+
+    run(on_partner_lead_open(callback, context(), repo))
+
+    text, kwargs = callback.message.answers[0]
+    assert "Onvisor" in text and "Одобрен" in text and "79" in text
+    assert "email: go@trip.onvisor.ru" in text
+    callbacks = [b.callback_data for b in _all_buttons(kwargs["reply_markup"]) if b.callback_data]
+    assert callbacks == [f"partner_lead:draft:{lead.lead_id}"]
+
+
+def test_open_refuses_a_lead_of_another_workspace(tmp_path):
+    repo = _lead_repo(tmp_path)
+    lead = _saved_onvisor(repo, workspace_id=99)
+    callback = Callback(f"partner_lead:open:{lead.lead_id}")
+
+    run(on_partner_lead_open(callback, context(workspace_id=42), repo))
+
+    text, kwargs = callback.message.answers[0]
+    assert text == "Лид не найден." and "Onvisor" not in text and "reply_markup" not in kwargs
+
+
+def test_open_with_garbage_id_is_not_found(tmp_path):
+    repo = _lead_repo(tmp_path)
+    callback = Callback("partner_lead:open:abc")
+    run(on_partner_lead_open(callback, context(), repo))
+    assert callback.message.answers[0][0] == "Лид не найден."
+
+
+def test_draft_from_saved_lead_uses_stored_contact_and_runs_no_search(tmp_path):
+    repo = _lead_repo(tmp_path)
+    lead = _saved_onvisor(repo)
+    callback = Callback(f"partner_lead:draft:{lead.lead_id}")
+
+    with patch("app.handlers.partner_discovery.find_contact", AsyncMock()) as find, \
+            patch("app.handlers.partner_discovery.PartnerDiscoveryService.find_candidates",
+                  AsyncMock()) as search, \
+            patch("app.handlers.partner_discovery._generate_outreach_draft",
+                  AsyncMock(return_value="Здравствуйте, Onvisor!")) as generate:
+        run(on_partner_lead_queue_draft(
+            callback, None, partner_repository(), context(), repo,
+        ))
+
+    find.assert_not_called()
+    search.assert_not_called()
+    generate.assert_awaited_once()
+    contact_arg = generate.await_args.args[0]
+    assert contact_arg["display_name"] == "Onvisor" and contact_arg["evidence_url"] == "https://onvisor.ru/"
+    text = callback.message.answers[0][0]
+    assert "Здравствуйте, Onvisor!" in text
+    assert "email: go@trip.onvisor.ru" in text
+    assert "только вручную" in text
+    # sending is manual: status untouched, nothing marked contacted
+    assert run(repo.get(lead.lead_id, 42)).status == PartnerLeadStatus.APPROVED
+
+
+def test_draft_refuses_a_lead_of_another_workspace(tmp_path):
+    repo = _lead_repo(tmp_path)
+    lead = _saved_onvisor(repo, workspace_id=99)
+    callback = Callback(f"partner_lead:draft:{lead.lead_id}")
+
+    with patch("app.handlers.partner_discovery._generate_outreach_draft", AsyncMock()) as generate:
+        run(on_partner_lead_queue_draft(callback, None, partner_repository(), context(42), repo))
+
+    generate.assert_not_called()
+    assert callback.message.answers[0][0] == "Лид не найден."
+
+
+def test_draft_without_llm_uses_deterministic_fallback_draft(tmp_path):
+    repo = _lead_repo(tmp_path)
+    lead = _saved_onvisor(repo)
+    callback = Callback(f"partner_lead:draft:{lead.lead_id}")
+
+    run(on_partner_lead_queue_draft(callback, None, partner_repository(), context(), repo))
+
+    text = callback.message.answers[0][0]
+    assert "Здравствуйте" in text and "go@trip.onvisor.ru" in text
