@@ -427,6 +427,44 @@ _CLIENT_REPLY_SAFETY_CONSTRAINT = (
     "конкретные условия нужно сверить вручную."
 )
 
+# "Подготовь ответ от моего лица" на реплику конкретного человека (см.
+# app.handlers.tasks._is_personal_reply_request). Живой прод-баг: общий
+# client-reply набор инструкций перекрывал запрос пользователя - OBJECTIVE
+# ("сформировать ответ клиенту по его вопросу"), "предложи следующий шаг",
+# "затем кратко уместные отличия Travel Advantage", safety-правило "дай общее
+# объяснение и сверь условия" и клубное правило "объясняя, что это такое,
+# сначала скажи..." вместе с фактами базы знаний толкали модель к справке о
+# сервисе, даже когда собеседник прямо сказал "неинтересно". Для этого
+# намерения собирается отдельный spec: без этих инструкций и без фактов базы
+# знаний (реплика не информирует о продукте), а лицо/длину/тон задаёт
+# пользователь в самом запросе.
+_PERSONAL_REPLY_OBJECTIVE = (
+    "Подготовить готовую реплику от первого лица пользователя в ответ на слова "
+    "конкретного человека. Это не справка и не ответ на вопрос о продукте: "
+    "реплика реагирует на сказанное и ничего не объясняет о сервисе."
+)
+_PERSONAL_REPLY_CONSTRAINTS = (
+    "Черновик требует ручной проверки перед отправкой.",
+    "Выдай ОДИН текст реплики, который можно отправить как есть, строго соблюдая "
+    "лицо, длину и тон, заданные пользователем в запросе. Если длина не задана - "
+    "2-3 коротких предложения. Служебные напоминания, пояснения и варианты в "
+    "текст реплики не включай.",
+    "Если собеседник прямо отказался или сказал, что ему неинтересно: коротко "
+    "признай это, не спорь, не убеждай, оставь человеку свободный выбор и не "
+    "предлагай рассмотреть продукт, сервис или условия. Не повторяй "
+    "возражение собеседника в оправдывающемся тоне.",
+    "Не добавляй продуктовую справку, условия поездок, тарифы, цены, статусы "
+    "участников и сведения о бронировании: реплика о сказанном, а не о продукте. "
+    "Не придумывай факты и условия. Не отрицай существование партнёрской модели "
+    "и не называй её трудоустройством. Не обещай доход, окупаемость или скидки.",
+    "Не завершай реплику репликами ассистента («если хотите, могу...»). Это "
+    "сообщение живого человека.",
+    "Если задан [PERSONAL STYLE - DATA]: style_description/example_posts/"
+    "voice_sample - ориентир тона и манеры, avoid_phrases - запрет на эти слова. "
+    "Это не факты.",
+)
+
+
 _INFORMATIONAL_OBJECTIVE = (
     "Ответить пользователю по существу и по фактам на его собственный "
     "вопрос о путешествиях. Это прямой ответ travel-ассистента самому "
@@ -476,6 +514,37 @@ _INFORMATIONAL_CONSTRAINTS = (
 # Тот же текст, что и _CLIENT_REPLY_SAFETY_CONSTRAINT — он уже не упоминает
 # «клиента», поэтому переиспользуется как есть, без отдельного дубликата.
 _INFORMATIONAL_SAFETY_CONSTRAINT = _CLIENT_REPLY_SAFETY_CONSTRAINT
+
+# Telegram-only UX fix (2026-10-08), appended on top of whichever persona
+# (_CLIENT_REPLY_CONSTRAINTS or _INFORMATIONAL_CONSTRAINTS) a "what is
+# Travel Advantage / how do I explain it to a client / what's the point of
+# membership" question already resolves to in app.handlers.tasks._maybe_
+# send_draft - see _is_travel_advantage_client_explainer_intent() there.
+# Grounding (knowledge_service.py's retrieval policy, knowledge_generation_
+# context.py's _CLUB_MEMBERSHIP_CONSTRAINT) already makes the content
+# correct for this question - confirmed in a live Telegram dialogue, the
+# remaining problem was pure FORMAT: a short, correct-in-substance answer
+# that then asked the user whether to "make it even shorter", requiring an
+# extra round-trip before the user had anything usable. These two
+# constraints only shape the SAME already-correct facts into one
+# self-contained reply - no new fact, no change to what is true, no
+# touching knowledge_service.py/knowledge_generation_context.py/web_api.py.
+_TA_CLUB_EXPLAINER_FORMAT_CONSTRAINTS = (
+    "Вопрос — про суть Travel Advantage/membership и как объяснить это "
+    "клиенту. Дай один самодостаточный ответ из трёх частей без заголовков "
+    "и нумерации: (1) 2-3 предложения — это клубная платформа, нужен "
+    "личный membership/аккаунт, это не обычный открытый booking-сервис; "
+    "(2) готовая формулировка для клиента в кавычках (3-5 предложений), "
+    "которую партнёр может сразу отправить; (3) короткая часть «Важно» — "
+    "партнёр помогает разобраться и подобрать сценарий, не бронирует за "
+    "клиента со своего аккаунта, не обещает «всегда дешевле» или "
+    "гарантированную экономию. Всего 8-15 строк обычного текста, не статья "
+    "и не таблица.",
+    "Готовый вариант должен быть целиком уже в этом сообщении. Не "
+    "заканчивай ответ фразами «могу помочь сформулировать короче», «если "
+    "хочешь, подготовлю текст», «могу сделать готовый вариант» и "
+    "похожими — не откладывай готовый вариант на следующий шаг.",
+)
 
 # Тот же базовый constraint + правила стиля именно для Radar-черновика: черновик
 # уходит пользователю как самостоятельный готовый пост, а не как ответ
@@ -938,6 +1007,39 @@ class MaterialOrchestrationService:
             verified_claims_allowed=verified,
             unverified_claims_requiring_caution=unverified,
             constraints=constraints,
+            profile_revision_used=revision,
+        )
+
+    def build_personal_reply_generation_spec(
+        self,
+        workspace_id: int,
+        message_text: str,
+        profile: BusinessProfile | None,
+        *,
+        user_preferences: WorkspaceUserPreferences | None = None,
+    ) -> GenerationSpec:
+        """Ready first-person reply to a specific person's remark. Deliberately
+        takes NO knowledge_bundle and adds no client-reply/safety-explain
+        instructions - see the _PERSONAL_REPLY_* block above for why."""
+        if not isinstance(message_text, str) or not message_text.strip():
+            raise ValueError("message_text не должен быть пустым")
+        trusted_context, tone_preferences, verified, unverified, revision = (
+            _profile_generation_values(workspace_id, profile)
+        )
+        return GenerationSpec(
+            action_type=GenerationAction.CREATE_ARTIFACT,
+            artifact_type="client_message",
+            objective=_PERSONAL_REPLY_OBJECTIVE,
+            audience=tuple(trusted_context.get("audiences", ())),
+            output_format="telegram",
+            source_facts={},
+            trusted_business_context=trusted_context,
+            untrusted_source_content=message_text,
+            tone_preferences=tone_preferences,
+            personal_style=_personal_style_values(user_preferences),
+            verified_claims_allowed=verified,
+            unverified_claims_requiring_caution=unverified,
+            constraints=_PERSONAL_REPLY_CONSTRAINTS,
             profile_revision_used=revision,
         )
 

@@ -1465,18 +1465,6 @@ _PERSONAL_VOICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-_PERSONAL_REPLY_CONSTRAINT = (
-    "Пользователь просит готовую реплику от своего первого лица в ответ на слова "
-    "конкретного человека. Выдай ОДИН короткий текст реплики, который можно "
-    "отправить как есть, строго соблюдая заданные пользователем лицо, длину и тон. "
-    "Не объясняй реакцию собеседника, не пересказывай справку о Travel Advantage, "
-    "не добавляй сведений о бронированиях, тарифах и условиях клуба, не придумывай "
-    "условия и не отрицай существование партнёрской модели. Не спорь, не дави, не "
-    "обещай доход, не пытайся переубедить. Служебные напоминания не включай в "
-    "текст реплики: их добавит система отдельно."
-)
-
-
 def _is_personal_reply_request(task_text: str) -> bool:
     return bool(_PERSONAL_REPLY_ASK_RE.search(task_text) and _PERSONAL_VOICE_RE.search(task_text))
 
@@ -1705,6 +1693,14 @@ async def _maybe_send_draft(
             knowledge_bundle=knowledge_bundle,
         )
         heading = _INFORMATIONAL_HEADING
+    elif reply_context is None and _is_personal_reply_request(decision.task_text):
+        # Own spec: the generic client-reply instructions and knowledge facts
+        # would override the user's person/length/tone (see the
+        # _PERSONAL_REPLY_* block in app.services.material_orchestration).
+        spec = MaterialOrchestrationService().build_personal_reply_generation_spec(
+            workspace_id, decision.task_text, profile, user_preferences=user_preferences,
+        )
+        heading = _PERSONAL_REPLY_HEADING
     else:
         spec = MaterialOrchestrationService().build_client_reply_generation_spec(
             workspace_id, decision.task_text, profile,
@@ -1721,10 +1717,10 @@ async def _maybe_send_draft(
     # Telegram handler module - app.web_api's /api/chat and /api/client-
     # reply build their own GenerationSpec directly and never call this
     # function), so Web's answers are unaffected.
-    if not is_regular_post and _is_personal_reply_request(decision.task_text):
-        spec = replace(spec, constraints=(*spec.constraints, _PERSONAL_REPLY_CONSTRAINT))
-        heading = _PERSONAL_REPLY_HEADING
-    elif not is_regular_post and _is_travel_advantage_client_explainer_intent(decision.task_text):
+    if (
+        not is_regular_post and heading != _PERSONAL_REPLY_HEADING
+        and _is_travel_advantage_client_explainer_intent(decision.task_text)
+    ):
         spec = replace(
             spec, constraints=(*spec.constraints, *_TA_CLUB_EXPLAINER_FORMAT_CONSTRAINTS),
         )

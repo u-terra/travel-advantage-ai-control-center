@@ -1,20 +1,34 @@
 """Regression (2026-10-12): "Знакомый говорит: «Travel Advantage — это сетевой
-маркетинг…». Подготовь короткий спокойный ответ от моего лица…" was routed to
-the INFORMATIONAL persona (the brand name is a router topic keyword), which
-answered with a reference article about the club instead of a ready reply.
-A request to prepare a reply in the user's own voice must reach reply-draft
-generation, keeping the requested person/length/tone; ordinary questions such
-as "Что такое Travel Advantage?" must keep their previous behaviour."""
+маркетинг…». Подготовь короткий спокойный ответ от моего лица…" was (1) routed
+to the INFORMATIONAL persona and, after that was fixed, (2) still answered with
+a product reference because the generic client-reply instructions and the
+knowledge-base facts in the final prompt overrode the user's request
+("предложи следующий шаг", "затем кратко отличия Travel Advantage", safety
+"дай общее объяснение и сверь условия", club "объясняя, что это такое…").
+A personal-reply request now gets its own spec; ordinary questions keep
+their previous behaviour."""
 
 from __future__ import annotations
+
+import asyncio
 
 from app.handlers.tasks import (
     _CLIENT_REPLY_HEADING,
     _INFORMATIONAL_HEADING,
-    _PERSONAL_REPLY_CONSTRAINT,
     _PERSONAL_REPLY_HEADING,
     _is_personal_reply_request,
+    on_free_text,
 )
+from app.services.llm.models import ContentDraft
+from app.services.material_orchestration import (
+    _PERSONAL_REPLY_CONSTRAINTS,
+    _PERSONAL_REPLY_OBJECTIVE,
+)
+from app.services.reference_resolver import ReferenceResolver
+from tests.llm_fakes import FakeLLMProvider
+from tests.test_journal_handlers import Message, business_profile, context, journal, profile_repository
+from tests.test_knowledge_retrieval import service
+from tests.test_reference_resolver_integration import CountingKnowledgeService
 from tests.test_travel_assistant_informational_mode import run_free_text
 
 _OBJECTION = (
@@ -23,9 +37,34 @@ _OBJECTION = (
     "и попытки переубедить любой ценой"
 )
 
+# Instructions of the generic client-reply / knowledge persona that push the
+# model toward a product explanation and must NOT be in a personal reply prompt.
+_CONFLICTING = (
+    "Сформировать короткий личный ответ клиенту",
+    "уместные отличия Travel Advantage",
+    "предложи уточнить детали",
+    "уместно, но должно звучать",
+    "Дай только общее объяснение",
+    "сверить вручную",
+    "Объясняя клиенту, что это такое",
+    "ta.platform",
+    "canonical_facts",
+)
+
 
 def _source(provider) -> str:
     return provider.generate_draft.call_args.kwargs["source_text"]
+
+
+def _with_knowledge(tmp_path, text):
+    knowledge = CountingKnowledgeService(service(tmp_path))
+    message = Message(text)
+    provider = FakeLLMProvider(draft=ContentDraft("Понимаю, спасибо что сказали.", ()))
+    asyncio.run(on_free_text(
+        message, journal(), provider, context(), profile_repository(business_profile()),
+        reference_resolver=ReferenceResolver(knowledge),
+    ))
+    return message, provider
 
 
 def test_objection_reply_request_is_recognised() -> None:
@@ -39,47 +78,49 @@ def test_objection_reply_request_gets_reply_heading_not_reference_heading() -> N
     assert _INFORMATIONAL_HEADING not in text
 
 
-def test_objection_reply_request_keeps_user_instructions_and_reply_constraint() -> None:
-    _, provider = run_free_text(_OBJECTION, web_search_service=None)
+def test_final_prompt_keeps_user_instructions_and_has_no_conflicting_instructions(tmp_path) -> None:
+    _, provider = _with_knowledge(tmp_path, _OBJECTION)
     source = _source(provider)
-    # the user's own person / length / tone instructions reach the model verbatim
     for fragment in ("от моего лица", "короткий спокойный ответ", "без спора, давления"):
-        assert fragment in source
-    assert _PERSONAL_REPLY_CONSTRAINT[:60] in source
-    # reply persona, not the "answer the user's own question directly" persona
-    assert "ответ travel-ассистента самому пользователю" not in source.lower()
+        assert fragment in source          # the user's person / length / tone, verbatim
+    assert _PERSONAL_REPLY_OBJECTIVE in source
+    for rule in _PERSONAL_REPLY_CONSTRAINTS[:4]:
+        assert rule in source
+    for conflicting in _CONFLICTING:
+        assert conflicting not in source, conflicting
+    # the personal objective is the only objective, and constraints come last
+    assert source.count("[OBJECTIVE - CONTROL]") == 1
 
 
-def test_personal_reply_constraint_forbids_reference_dump_and_denying_the_model() -> None:
-    text = _PERSONAL_REPLY_CONSTRAINT
-    assert "ОДИН короткий текст реплики" in text
-    assert "не пересказывай справку" in text
-    assert "не отрицай существование партнёрской модели" in text
-    assert "не придумывай условия" in text
-    assert "Служебные напоминания не включай в текст реплики" in text
+def test_constraints_cover_refusal_handling_without_a_fixed_answer() -> None:
+    joined = " ".join(_PERSONAL_REPLY_CONSTRAINTS)
+    assert "2-3 коротких предложения" in joined                 # default length, user may override
+    assert "не спорь" in joined and "не предлагай рассмотреть продукт" in joined
+    assert "Не отрицай существование партнёрской модели" in joined.replace("не отрицай", "Не отрицай")
+    assert "Служебные напоминания" in joined
+    assert "Понимаю, уговаривать не буду" not in joined         # no canned reply
 
 
-def test_service_reminder_is_separate_from_the_sendable_text() -> None:
+def test_service_reminder_is_appended_separately_from_the_draft() -> None:
     message, _ = run_free_text(_OBJECTION, web_search_service=None)
     text = message.answers[-1][0]
-    body, _, reminder = text.partition("🛡 Safety Layer")
-    assert "Черновик" in body  # the draft text sits before the reminder
-    assert reminder == "" or reminder.startswith(":")
+    assert text.index("Черновик") < text.index("🛡 Safety Layer")
 
 
-def test_what_is_travel_advantage_keeps_its_previous_behaviour() -> None:
-    message, provider = run_free_text("Что такое Travel Advantage?", web_search_service=None)
-    text = message.answers[-1][0]
+def test_what_is_travel_advantage_still_gets_knowledge_and_client_persona(tmp_path) -> None:
+    message, provider = _with_knowledge(tmp_path, "Что такое Travel Advantage?")
+    text, source = message.answers[-1][0], _source(provider)
     assert _is_personal_reply_request("Что такое Travel Advantage?") is False
     assert _CLIENT_REPLY_HEADING in text and _PERSONAL_REPLY_HEADING not in text
-    assert _PERSONAL_REPLY_CONSTRAINT[:60] not in _source(provider)
+    assert "ta.platform" in source                       # facts are still supplied
+    assert _PERSONAL_REPLY_OBJECTIVE not in source
 
 
 def test_plain_informational_question_is_still_informational() -> None:
     message, provider = run_free_text(
         "Какие сейчас изменения правил въезда в Индонезию для россиян?", web_search_service=None)
     assert _INFORMATIONAL_HEADING in message.answers[-1][0]
-    assert _PERSONAL_REPLY_CONSTRAINT[:60] not in _source(provider)
+    assert _PERSONAL_REPLY_OBJECTIVE not in _source(provider)
 
 
 def test_unrelated_requests_are_not_treated_as_personal_replies() -> None:
