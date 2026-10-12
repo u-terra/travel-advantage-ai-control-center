@@ -481,6 +481,17 @@ def _parse_qualification_response(
     return result, None
 
 
+class QualificationUnavailable(RuntimeError):
+    """The LLM qualification step did not complete (no provider, timeout,
+    transport error or unparseable answer). Raised only when the caller asked
+    for ``require_llm=True``: the deterministic fallback score is a guess, not
+    a completed check, so "nobody qualified" must not be reported from it."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 async def qualify_candidates(
     candidates: list[dict],
     llm_provider: OpenAIChatProvider | None,
@@ -488,11 +499,18 @@ async def qualify_candidates(
     min_score: int = 65,
     min_confidence: float = 0.60,
     max_results: int = 7,
+    require_llm: bool = False,
+    llm_timeout_seconds: float | None = None,
 ) -> list[dict]:
     """Returns at most ``max_results`` qualified candidate dicts, each
     merged with score/confidence/why_fit/hook/risk_flags/evidence fields,
     sorted by total_score descending. Candidates below min_score OR
     min_confidence are dropped - never padded back in to reach max_results.
+
+    ``require_llm=True`` raises QualificationUnavailable instead of silently
+    switching to the deterministic fallback when the LLM step fails.
+    ``llm_timeout_seconds`` bounds the wait for the LLM answer (the worker
+    thread itself is bounded by the provider's own HTTP timeout).
     """
     if not candidates:
         log.info("partner_discovery.qualified count=0")
@@ -503,20 +521,31 @@ async def qualify_candidates(
     provider_present = llm_provider is not None and bool(llm_provider.config.api_key)
     if not provider_present:
         log.info("partner_discovery: qualification fallback_reason=no_provider")
+        if require_llm:
+            raise QualificationUnavailable("no_provider")
         scored = apply_fallback_qualification(candidates)
     else:
         prompt = _build_qualification_prompt(candidates)
         try:
-            result = await asyncio.to_thread(llm_provider.generate, message=prompt)
-        except Exception:
+            call = asyncio.to_thread(llm_provider.generate, message=prompt)
+            if llm_timeout_seconds is not None:
+                result = await asyncio.wait_for(call, timeout=llm_timeout_seconds)
+            else:
+                result = await call
+        except Exception as exc:
             log.warning(
-                "partner_discovery: qualification fallback_reason=exception", exc_info=True,
+                "partner_discovery: qualification fallback_reason=exception exc_type=%s",
+                type(exc).__name__, exc_info=True,
             )
+            if require_llm:
+                raise QualificationUnavailable("exception") from exc
             scored = apply_fallback_qualification(candidates)
         else:
             parsed, reason = _parse_qualification_response(result.text, candidates)
             if parsed is None:
                 log.warning("partner_discovery: qualification fallback_reason=%s", reason)
+                if require_llm:
+                    raise QualificationUnavailable(reason or "unparseable")
                 scored = apply_fallback_qualification(candidates)
             else:
                 scored = [

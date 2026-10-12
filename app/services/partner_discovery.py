@@ -125,6 +125,10 @@ _RESULTS_PER_QUERY = 5
 # results/duplicates came back across all queries - this is what keeps one
 # discovery run's cost flat regardless of query/result volume.
 _MAX_PAGE_VERIFY_CANDIDATES = 10
+# A transient-failure retry of one query is only started when at least this
+# many seconds of the search budget remain (a Yandex call can take up to its
+# 5 s timeout).
+_RETRY_MIN_REMAINING_S = 10.0
 _MAX_RESULTS = 5
 _EVIDENCE_EXCERPT_CHARS = 400
 
@@ -281,6 +285,7 @@ class PartnerDiscoveryService:
 
     async def find_candidates(
         self, *, rotation_seed: int | None = None, use_all_variants: bool = False,
+        search_deadline: float | None = None, verify_deadline: float | None = None,
     ) -> list[ProspectCandidate]:
         """Runs the fixed-size (always 5) query list, dedupes, filters
         noise, ranks, page-verifies the best survivors, and returns at most
@@ -292,7 +297,13 @@ class PartnerDiscoveryService:
         _select_discovery_queries. None (the default) reproduces the
         original fixed DISCOVERY_QUERIES exactly - this parameter changes
         NOTHING about scoring/dedupe/noise-filtering/ranking, only which
-        search strings are sent."""
+        search strings are sent.
+
+        ``search_deadline`` / ``verify_deadline`` (``time.monotonic()``
+        values, default None = unlimited, i.e. Telegram's behaviour) bound
+        the query phase and the page-verification phase: past the deadline
+        no new query is started / pages are no longer fetched and the
+        search snippet is used as evidence (tagged SNIPPET as always)."""
         queries = (
             _select_all_variant_queries(rotation_seed) if use_all_variants
             else _select_discovery_queries(rotation_seed)
@@ -300,11 +311,35 @@ class PartnerDiscoveryService:
         log.info("partner_discovery.search_started query_count=%d", len(queries))
         seen: dict[str, tuple[SearchResult, str]] = {}
         for query_index, query in enumerate(queries, start=1):
+            if search_deadline is not None and time.monotonic() >= search_deadline:
+                log.warning(
+                    "partner_discovery.search_budget_exhausted skipped_queries=%d/%d",
+                    len(queries) - query_index + 1, len(queries),
+                )
+                break
             query_started = time.monotonic()
             try:
                 response = await asyncio.to_thread(
                     self._provider.search, query, limit=_RESULTS_PER_QUERY,
                 )
+                # At most ONE retry, only for a transient network failure
+                # (timeout / connection error) and only while the search
+                # budget still has room - never for HTTP/parse failures.
+                if (
+                    response is None
+                    and getattr(self._provider, "last_failure_transient", False) is True
+                    and (
+                        search_deadline is None
+                        or time.monotonic() + _RETRY_MIN_REMAINING_S < search_deadline
+                    )
+                ):
+                    log.info(
+                        "partner_discovery.query_retry index=%d/%d query=%r",
+                        query_index, len(queries), query,
+                    )
+                    response = await asyncio.to_thread(
+                        self._provider.search, query, limit=_RESULTS_PER_QUERY,
+                    )
             except Exception:
                 log.warning(
                     "partner_discovery: search failed for query '%s'", query, exc_info=True,
@@ -347,7 +382,11 @@ class PartnerDiscoveryService:
         )
         verified: list[tuple[SearchResult, str, ProspectType, int, str, EvidenceSource]] = []
         for result, query, prospect_type, score in ranked[:_MAX_PAGE_VERIFY_CANDIDATES]:
-            evidence, evidence_source = await self._verify(result)
+            if verify_deadline is not None and time.monotonic() >= verify_deadline:
+                evidence = _collapse_whitespace(result.snippet)[:_EVIDENCE_EXCERPT_CHARS]
+                evidence_source = EvidenceSource.SNIPPET
+            else:
+                evidence, evidence_source = await self._verify(result)
             verified.append((result, query, prospect_type, score, evidence, evidence_source))
         log.info(
             "partner_discovery.verified %s",

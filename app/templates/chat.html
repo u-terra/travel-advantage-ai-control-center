@@ -3709,8 +3709,50 @@ function renderPartnersNoResults() {
 // A full search takes 1-2 minutes. While one is running, extra clicks are
 // ignored (the server also joins a repeated request to the run in progress,
 // so a retry after a dropped connection never starts a second pipeline).
+// The server stops a run after 180 s, so it always answers before this
+// 200 s browser wait (nginx allows 240 s).
 let partnersSearchRunning = false;
 const PARTNERS_CLIENT_TIMEOUT_MS = 200000;
+const PARTNERS_RECOVER_POLL_MS = 4000;
+const PARTNERS_RECOVER_MAX_MS = 200000;
+
+function showPartnersResult(data) {
+    if (!data || data.error) {
+        renderPartnersError(
+            (data && data.error) || "Не удалось получить результат поиска. Нажмите «Повторить»."
+        );
+        return;
+    }
+    const items = Array.isArray(data.candidates) ? data.candidates : [];
+    if (items.length === 0) {
+        renderPartnersNoResults();
+    } else {
+        renderPartnersList(items);
+    }
+}
+
+// After a dropped connection / browser timeout the search may still be
+// running or already finished on the server. Ask for ITS outcome (GET never
+// starts a pipeline) instead of re-submitting. Returns true when it rendered.
+async function recoverPartnersResult() {
+    const deadline = Date.now() + PARTNERS_RECOVER_MAX_MS;
+    while (Date.now() < deadline) {
+        try {
+            const response = await fetch("/api/partners/discover/result");
+            if (!response.ok) return false;
+            const data = await response.json();
+            if (data && data.status === "done") {
+                showPartnersResult(data);
+                return true;
+            }
+            if (!data || data.status !== "running") return false;
+        } catch (_) {
+            return false;
+        }
+        await new Promise((resolve) => setTimeout(resolve, PARTNERS_RECOVER_POLL_MS));
+    }
+    return false;
+}
 
 async function discoverPartners() {
     if (partnersSearchRunning) return;
@@ -3734,23 +3776,20 @@ async function discoverPartners() {
             data = null;
         }
 
-        if (!response.ok || !data || data.error) {
+        if (!response.ok) {
+            // Gateway cut the request (e.g. 502/504): the run may still be alive.
+            if (!data && await recoverPartnersResult()) return;
             renderPartnersError(
                 (data && data.error) ||
-                "Сервер не ответил вовремя. Поиск мог ещё идти — нажмите «Повторить», " +
-                "он подключится к текущему поиску."
+                "Сервер не ответил вовремя. Нажмите «Повторить» — если поиск ещё идёт, " +
+                "он подключится к нему."
             );
             return;
         }
-
-        const items = Array.isArray(data.candidates) ? data.candidates : [];
-        if (items.length === 0) {
-            renderPartnersNoResults();
-        } else {
-            renderPartnersList(items);
-        }
+        showPartnersResult(data);
 
     } catch (err) {
+        if (await recoverPartnersResult()) return;
         renderPartnersError(
             err && err.name === "AbortError"
                 ? "Поиск идёт дольше обычного. Нажмите «Повторить» — он подключится к текущему поиску."

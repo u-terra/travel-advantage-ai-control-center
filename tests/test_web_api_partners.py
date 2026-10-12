@@ -110,7 +110,7 @@ def test_discover_returns_enriched_candidates(api) -> None:
         evidence_source=EvidenceSource.PAGE, fit=ProspectFit.STRONG, rank_score=10,
     )
 
-    async def _fake_find_candidates(self, *, rotation_seed=None, use_all_variants=False):
+    async def _fake_find_candidates(self, *, rotation_seed=None, use_all_variants=False, **_kw):
         return [prospect]
 
     with patch.object(web_api, "web_search_service") as fake_service:
@@ -270,7 +270,7 @@ def test_discover_zero_results_is_plain_empty_list_not_error(api) -> None:
     client, web_api, _ = api
     _login(client, web_api)
 
-    async def _fake_find_candidates(self, *, rotation_seed=None, use_all_variants=False):
+    async def _fake_find_candidates(self, *, rotation_seed=None, use_all_variants=False, **_kw):
         return []
 
     with patch.object(web_api, "web_search_service") as fake_service:
@@ -289,7 +289,7 @@ def test_discover_concurrent_requests_share_one_pipeline_run(api) -> None:
     calls = 0
     release = asyncio.Event()
 
-    async def _slow_find_candidates(self, *, rotation_seed=None, use_all_variants=False):
+    async def _slow_find_candidates(self, *, rotation_seed=None, use_all_variants=False, **_kw):
         nonlocal calls
         calls += 1
         await release.wait()
@@ -328,7 +328,7 @@ def test_discover_run_survives_dropped_request_and_retry_joins_it(api) -> None:
         evidence_source=EvidenceSource.PAGE, fit=ProspectFit.STRONG, rank_score=10,
     )
 
-    async def _slow_find_candidates(self, *, rotation_seed=None, use_all_variants=False):
+    async def _slow_find_candidates(self, *, rotation_seed=None, use_all_variants=False, **_kw):
         nonlocal calls
         calls += 1
         await release.wait()
@@ -369,7 +369,7 @@ def _chat_html() -> str:
 
 
 def _discover_partners_js(html: str) -> str:
-    start = html.index("async function discoverPartners()")
+    start = html.index("let partnersSearchRunning")
     return html[start:html.index("async function findPartnerContact", start)]
 
 

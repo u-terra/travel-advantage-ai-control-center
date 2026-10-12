@@ -151,6 +151,11 @@ class YandexSearchProvider(WebSearchProvider):
 
     def __init__(self, config: YandexSearchConfig) -> None:
         self.config = config
+        # True when the most recent search() returned None because of a
+        # transient network failure (timeout / connection error) - the only
+        # failure class a caller may retry. Callers run searches serially, so
+        # a single flag is enough; reset at the start of every search().
+        self.last_failure_transient = False
 
     def search(
         self,
@@ -169,6 +174,7 @@ class YandexSearchProvider(WebSearchProvider):
         default False reproduces the exact prior clamped formula, so every
         existing caller (including the default/normal search, which never
         passes this) is unaffected."""
+        self.last_failure_transient = False
         if not self.config.is_configured:
             return None
         query_text = (query or "").strip()
@@ -201,6 +207,7 @@ class YandexSearchProvider(WebSearchProvider):
         try:
             decoded_text = self._call(payload)
         except _YandexSearchCallError as exc:
+            self.last_failure_transient = exc.safe_reason == "network_error"
             # Fixed, secret-free reason only - see _YandexSearchCallError.
             log.warning(
                 "web_search: yandex request failed (%s) exc_type=%s elapsed_ms=%d timeout_s=%s",

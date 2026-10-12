@@ -132,13 +132,14 @@ from app.services.access_state import is_access_granted
 from app.services.llm.factory import create_llm_provider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.contact_discovery import find_contact
-from app.services.lead_qualification import qualify_candidates
+from app.services.lead_qualification import QualificationUnavailable, qualify_candidates
 from app.services.partner_discovery import PartnerDiscoveryService
 from app.services.partner_outreach import (
     candidate_to_dict,
     check_and_claim_contact,
     contact_to_dict,
     dict_to_prospect,
+    apply_fallback_enrichment,
     enrich_candidates,
     generate_outreach_draft,
     rank_for_club_partner_fit,
@@ -2042,13 +2043,36 @@ async def _web_is_ta_affiliated(workspace_id: int) -> bool:
 _partner_discovery_inflight: dict[int, asyncio.Task] = {}
 
 
+# Time budget of one run. Ordering that must hold:
+#   run hard cap (180 s) < browser wait (chat.html, 200 s) < nginx (240 s)
+# so the server always answers - with a result or an explicit error - before
+# the browser gives up. Stage deadlines leave the qualification LLM call the
+# remaining time instead of letting earlier stages eat it.
+_PARTNER_RUN_BUDGET_S = 180.0
+_PARTNER_SEARCH_PHASE_S = 75.0     # Yandex queries (+ at most one retry each)
+_PARTNER_VERIFY_PHASE_END_S = 110.0  # after this, pages are no longer fetched
+_PARTNER_ENRICH_MAX_S = 40.0
+_PARTNER_QUALIFY_MIN_S = 20.0      # less than this left: don't start the LLM
+_PARTNER_QUALIFY_MARGIN_S = 3.0
+
+# The finished outcome (candidates, empty result or error status) of the
+# latest run per workspace is kept briefly, so a client that lost its
+# connection can fetch it with GET instead of paying for a new pipeline.
+# In-memory, per process, keyed by workspace_id - never shared across tenants.
+_PARTNER_RESULT_TTL_S = 600.0
+_partner_discovery_results: dict[int, tuple[float, dict]] = {}
+
+
 @app.post("/api/partners/discover")
 async def discover_partners(principal: WebPrincipal = Depends(require_csrf_and_subscription)):
     """Runs the same PartnerDiscoveryService.find_candidates() pipeline
     Telegram's "🔎 Найти потенциальных партнёров" uses (fixed/rotated query
     set - this endpoint intentionally takes no free-text query, since the
     underlying service has none to offer either), then the same one-call
-    LLM enrichment and club_partner-fit display ranking."""
+    LLM enrichment and club_partner-fit display ranking.
+
+    An explicit POST always starts a new run unless one is already running
+    for this workspace (then it joins that one)."""
     if not await _web_is_club_partner(principal.workspace_id):
         return {"error": "Этот раздел доступен только для club_partner рабочих пространств.", "candidates": []}
 
@@ -2058,7 +2082,7 @@ async def discover_partners(principal: WebPrincipal = Depends(require_csrf_and_s
     workspace_id = principal.workspace_id
     task = _partner_discovery_inflight.get(workspace_id)
     if task is None or task.done():
-        task = asyncio.create_task(_run_partner_discovery(workspace_id))
+        task = asyncio.create_task(_run_and_store_partner_discovery(workspace_id))
         _partner_discovery_inflight[workspace_id] = task
         task.add_done_callback(
             lambda t, ws=workspace_id: (
@@ -2073,6 +2097,63 @@ async def discover_partners(principal: WebPrincipal = Depends(require_csrf_and_s
     return await asyncio.shield(task)
 
 
+@app.get("/api/partners/discover/result")
+async def get_partner_discovery_result(principal: WebPrincipal = Depends(get_active_principal)):
+    """Re-delivers the outcome of this workspace's latest run without starting
+    anything: {"status": "running"} while it is in flight, {"status": "done",
+    ...the run's payload (candidates / error)} for a fresh finished run, or
+    {"status": "none"}. Used by the browser after a dropped connection."""
+    if not await _web_is_club_partner(principal.workspace_id):
+        return {"status": "none"}
+    workspace_id = principal.workspace_id
+    task = _partner_discovery_inflight.get(workspace_id)
+    if task is not None and not task.done():
+        return {"status": "running"}
+    stored = _partner_discovery_results.get(workspace_id)
+    if stored is not None:
+        finished_at, payload = stored
+        if time.monotonic() - finished_at <= _PARTNER_RESULT_TTL_S:
+            return {**payload, "status": "done"}
+        _partner_discovery_results.pop(workspace_id, None)
+    return {"status": "none"}
+
+
+async def _run_and_store_partner_discovery(workspace_id: int) -> dict:
+    try:
+        payload = await asyncio.wait_for(
+            _run_partner_discovery(workspace_id), timeout=_PARTNER_RUN_BUDGET_S,
+        )
+    except asyncio.TimeoutError:
+        log.warning("web: partner discovery exceeded budget=%.0fs workspace_id=%s",
+                    _PARTNER_RUN_BUDGET_S, workspace_id)
+        payload = {
+            "error": "Поиск не уложился в отведённое время и был остановлен. "
+                     "Это сбой, а не отсутствие партнёров — попробуйте ещё раз.",
+            "error_code": "budget_exceeded",
+            "candidates": [],
+        }
+    except Exception:
+        log.warning("web: partner discovery crashed", exc_info=True)
+        payload = {"error": "Не удалось выполнить поиск сейчас. Попробуйте немного позже.",
+                   "candidates": []}
+    _partner_discovery_results[workspace_id] = (time.monotonic(), payload)
+    return payload
+
+
+_QUALIFICATION_UNAVAILABLE_MESSAGE = (
+    "Не удалось завершить проверку кандидатов: сервис оценки не ответил вовремя. "
+    "Это сбой, а не отсутствие подходящих партнёров — попробуйте запустить поиск ещё раз."
+)
+
+
+def _qualification_unavailable_payload() -> dict:
+    return {
+        "error": _QUALIFICATION_UNAVAILABLE_MESSAGE,
+        "error_code": "qualification_unavailable",
+        "candidates": [],
+    }
+
+
 async def _run_partner_discovery(workspace_id: int) -> dict:
     started = time.monotonic()
     service = PartnerDiscoveryService(web_search_service.provider)
@@ -2080,6 +2161,8 @@ async def _run_partner_discovery(workspace_id: int) -> dict:
         found = await service.find_candidates(
             rotation_seed=workspace_id,
             use_all_variants=settings.partner_discovery_v2_enabled,
+            search_deadline=started + _PARTNER_SEARCH_PHASE_S,
+            verify_deadline=started + _PARTNER_VERIFY_PHASE_END_S,
         )
     except Exception:
         log.warning("web: partner discovery failed", exc_info=True)
@@ -2091,19 +2174,44 @@ async def _run_partner_discovery(workspace_id: int) -> dict:
 
     candidates = [candidate_to_dict(c) for c in found]
     ta_affiliated = await _web_is_ta_affiliated(workspace_id)
-    candidates = await enrich_candidates(candidates, chat_provider, ta_affiliated=ta_affiliated)
+    enrich_timeout = max(1.0, min(
+        _PARTNER_ENRICH_MAX_S,
+        _PARTNER_RUN_BUDGET_S - (time.monotonic() - started) - _PARTNER_QUALIFY_MIN_S,
+    ))
+    try:
+        candidates = await asyncio.wait_for(
+            enrich_candidates(candidates, chat_provider, ta_affiliated=ta_affiliated),
+            timeout=enrich_timeout,
+        )
+    except asyncio.TimeoutError:
+        # Same deterministic cleanup enrich_candidates itself uses on failure.
+        log.warning("web: partner enrichment timed out after %.0fs - using fallback", enrich_timeout)
+        candidates = apply_fallback_enrichment(candidates)
     candidates = rank_for_club_partner_fit(candidates)
     if settings.partner_discovery_v2_enabled:
+        remaining = _PARTNER_RUN_BUDGET_S - (time.monotonic() - started)
+        llm_timeout = remaining - _PARTNER_QUALIFY_MARGIN_S
+        if llm_timeout < _PARTNER_QUALIFY_MIN_S:
+            log.warning("web: partner qualification skipped - only %.0fs of budget left", remaining)
+            return _qualification_unavailable_payload()
         try:
             candidates = await qualify_candidates(
                 candidates, chat_provider,
                 min_score=settings.partner_min_score,
                 min_confidence=settings.partner_min_confidence,
                 max_results=settings.partner_max_results,
+                require_llm=True,
+                llm_timeout_seconds=llm_timeout,
             )
+        except QualificationUnavailable as exc:
+            log.warning(
+                "web: partner qualification unavailable reason=%s elapsed=%.0fs",
+                exc.reason, time.monotonic() - started,
+            )
+            return _qualification_unavailable_payload()
         except Exception:
             log.warning("web: partner lead qualification failed", exc_info=True)
-            candidates = candidates[: settings.partner_max_results]
+            return _qualification_unavailable_payload()
     log.info(
         "web: partner discovery finished found=%d returned=%d elapsed=%.0fs",
         len(found), len(candidates), time.monotonic() - started,
