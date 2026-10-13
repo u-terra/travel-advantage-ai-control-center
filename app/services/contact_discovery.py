@@ -326,6 +326,11 @@ _HANDLE_STOPLIST = frozenset({
 })
 
 
+# vk.com/club1, /public123, /id5 ... are numeric ids / the network's own
+# service pages, not a handle that identifies one project.
+_NUMERIC_HANDLE_RE = re.compile(r"^(club|public|id|event|group)\d+$")
+
+
 def _social_handle(url: str) -> str:
     try:
         parts = urlsplit(url)
@@ -339,7 +344,10 @@ def _social_handle(url: str) -> str:
     if not segments:
         return ""
     handle = segments[0].lower()
-    if handle in _HANDLE_STOPLIST or len(handle) < 5 or handle.isdigit():
+    if (
+        handle in _HANDLE_STOPLIST or len(handle) < 5 or handle.isdigit()
+        or _NUMERIC_HANDLE_RE.match(handle)
+    ):
         return ""
     return handle
 

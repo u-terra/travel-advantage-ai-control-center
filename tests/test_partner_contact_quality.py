@@ -396,3 +396,12 @@ def test_extract_html_full_collects_contact_links():
     )
     links = _extract_html_full(html)[2]
     assert ("mailto:info@x.ru", "Почта") in links and ("tel:+79000000000", "Звонок") in links
+
+
+def test_service_vk_links_do_not_become_project_identity():
+    # Live check 13.10: the site links vk.com/club1 (VK's own page); "club1"
+    # must not tie unrelated search results to the project.
+    page = _home(links=HOME_LINKS + (("https://vk.com/club1", ""), ("https://vk.com/id5", "")))
+    identity = project_identity(_prospect(), page)
+    assert "club1" not in identity and "id5" not in identity
+    assert {"vershina-trip.ru", "vershina.trip", "vershina_vip"} <= identity
