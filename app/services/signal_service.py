@@ -42,8 +42,10 @@ from app.repositories.workspace_signal_repository import (
     WorkspaceSignalRecord,
     WorkspaceSignalRepository,
 )
+from app.services.article_pages import url_looks_like_catalog
 from app.services.lead_radar import LeadRadarConfig, LeadSignal, build_workspace_signals
 from app.services.llm.base import LLMProvider
+from app.services.signal_explanation import angle_for, web_reason
 from app.services.web_search.base import WebSearchProvider
 from app.services.web_signal_collector import WebSignalCollector
 from app.services.web_source_discovery import (
@@ -102,6 +104,10 @@ class UnifiedSignal:
     action_reason: str | None
     content_hint: str | None
     freshness_hours: Optional[float]
+    # "fresh" | "unknown" | "archive". unknown = the source declared no
+    # publication date (NOT the same as fresh); archive = the material
+    # itself names an old year. Shown to the user, never silently merged.
+    freshness_state: str = "fresh"
 
 
 async def sync_and_list_radar_signals(
@@ -219,9 +225,12 @@ def _freshness_hours(timestamp: str | None) -> Optional[float]:
     return (datetime.now(timezone.utc) - parsed).total_seconds() / 3600.0
 
 
-def _freshness_tier(hours: Optional[float]) -> int:
+def _freshness_tier(hours: Optional[float], state: str = "fresh") -> int:
     """Lower is fresher. Unknown age sorts after everything with a known age -
-    it is neither promoted nor dropped, just not preferred over dated items."""
+    it is neither promoted nor dropped, just not preferred over dated items.
+    Archive material sorts last of all."""
+    if state == "archive":
+        return 4
     if hours is None:
         return 3
     if hours <= _FRESH_TIER_HOURS:
@@ -299,6 +308,11 @@ def build_unified_feed(
         # feed up immediately, without any DB migration/backfill.
         if record.item_url and url_fails_quality_gate(record.item_url):
             continue
+        # Catalog/listing pages stored as "articles" by earlier collection
+        # runs (t-j.ru/flows/..., lonelyplanet.com/articles/category/...):
+        # a list of headlines is not a publication to write a post about.
+        if record.item_url and url_looks_like_catalog(record.item_url):
+            continue
         # Quality Gate fix (title/content): a generic section/landing page
         # ("Журнал ПСЖР", "Блог OneTwoTrip - Все о путешествиях",
         # "Путеводитель по странам мира...") can be stored under a URL the
@@ -307,11 +321,19 @@ def build_unified_feed(
         # re-check-already-stored-rows reasoning as the URL gate above.
         if record.title and title_looks_like_generic_section(record.title):
             continue
-        # Stage 3: published_at only ever set from a reliably-found date;
-        # fall back to fetched_at (when the page was actually collected) -
-        # never a fabricated date.
+        # Stage 3: published_at only ever set from a reliably-found date.
+        # Freshness is judged ONLY from it: the collection time (fetched_at)
+        # says when WE looked, not when the material appeared, so an
+        # undated page must not read as brand new. It is still shown (with
+        # fetched_at as the display timestamp) but marked as undated.
+        hours = _freshness_hours(record.published_at)
+        if record.is_stale_dated:
+            state = "archive"
+        elif hours is None:
+            state = "unknown"
+        else:
+            state = "fresh"
         best_timestamp = record.published_at or record.fetched_at
-        hours = _freshness_hours(best_timestamp)
         unified.append(UnifiedSignal(
             id=f"web:{record.id}",
             kind="web",
@@ -325,9 +347,12 @@ def build_unified_feed(
             created_at=best_timestamp or record.created_at,
             url=record.item_url,
             score=None,
-            action_reason=None,
-            content_hint=None,
+            action_reason=web_reason(
+                record.source_name, record.title, record.body or record.summary,
+            ),
+            content_hint=angle_for(record.title, record.body or record.summary),
             freshness_hours=hours,
+            freshness_state=state,
         ))
 
     # User history management: drop anything older than the display
@@ -372,7 +397,7 @@ def build_unified_feed(
     ranked = sorted(
         best_by_fingerprint.values(),
         key=lambda item: (
-            _freshness_tier(item.freshness_hours),
+            _freshness_tier(item.freshness_hours, item.freshness_state),
             _hour_bucket(item),
             _trip_tie_break(item),
         ),

@@ -183,6 +183,14 @@ class FetchedPublicSource:
     title: str
     text: str
     content_type: str
+    # Additive (signal -> post quality): (href, anchor text) pairs found on
+    # an HTML page, in document order, and a publication date ONLY when the
+    # page itself declares one (article:published_time / <time datetime> /
+    # JSON-LD datePublished). Both default empty so every existing caller
+    # and test constructing this dataclass is unaffected. A missing date is
+    # "" (unknown), never a guess.
+    links: tuple[tuple[str, str], ...] = ()
+    published_at: str = ""
 
 
 class _RedirectCapture(Exception):
@@ -454,8 +462,26 @@ class _TextExtractingParser(HTMLParser):
         self._main_depth = 0
         self._in_title = False
         self.title = ""
+        self.links: list[list[str]] = []
+        self._open_anchor: list[str] | None = None
+        self.published_at = ""
+
+    def _note_date(self, value: str | None) -> None:
+        if value and not self.published_at and _DATE_PREFIX_RE.match(value.strip()):
+            self.published_at = value.strip()[:40]
 
     def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag == "a" and not self._skip_depth:
+            href = dict(attrs).get("href") or ""
+            self._open_anchor = [href, ""]
+            self.links.append(self._open_anchor)
+        elif tag == "meta":
+            attr = {k.lower(): (v or "") for k, v in attrs}
+            key = (attr.get("property") or attr.get("name") or attr.get("itemprop") or "").lower()
+            if key in _DATE_META_KEYS:
+                self._note_date(attr.get("content"))
+        elif tag == "time":
+            self._note_date(dict(attrs).get("datetime"))
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
         if tag in self._MAIN_CONTENT_TAGS:
@@ -464,6 +490,8 @@ class _TextExtractingParser(HTMLParser):
             self._in_title = True
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._open_anchor = None
         if tag in self._SKIP_TAGS and self._skip_depth > 0:
             self._skip_depth -= 1
         if tag in self._MAIN_CONTENT_TAGS and self._main_depth > 0:
@@ -478,6 +506,8 @@ class _TextExtractingParser(HTMLParser):
             self.title += data
             return
         stripped = data.strip()
+        if stripped and self._open_anchor is not None:
+            self._open_anchor[1] = (self._open_anchor[1] + " " + stripped).strip()
         if stripped:
             self._chunks.append(stripped)
             if self._main_depth:
@@ -490,13 +520,39 @@ class _TextExtractingParser(HTMLParser):
         return "\n".join(self._main_chunks)
 
 
+_DATE_PREFIX_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DATE_META_KEYS = frozenset({
+    "article:published_time", "og:published_time", "datepublished",
+    "pubdate", "publishdate", "date", "dc.date", "dc.date.issued",
+})
+_JSON_LD_DATE_RE = re.compile(r'"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2}[^"]{0,30})"')
+_MAX_LINKS = 400
+
+
 def _extract_html(html_text: str) -> tuple[str, str]:
+    text, title, _links, _published = _extract_html_full(html_text)
+    return text, title
+
+
+def _extract_html_full(
+    html_text: str,
+) -> tuple[str, str, tuple[tuple[str, str], ...], str]:
     parser = _TextExtractingParser()
     try:
         parser.feed(html_text)
         parser.close()
     except Exception as exc:
         raise PublicSourceFetchError(f"failed to parse HTML: {exc}") from exc
+    links = tuple(
+        (href.strip(), anchor)
+        for href, anchor in parser.links[:_MAX_LINKS]
+        if href and href.strip()
+    )
+    published = parser.published_at
+    if not published:
+        match = _JSON_LD_DATE_RE.search(html_text)
+        if match:
+            published = match.group(1)
 
     # Prefer <main>/<article> text over the full page when it's present and
     # substantial (not just a stray empty/near-empty tag) - see
@@ -505,8 +561,8 @@ def _extract_html(html_text: str) -> tuple[str, str]:
     # page exactly as before <main>/<article> tracking existed.
     main_text = parser.get_main_text()
     if len(main_text) >= MIN_EXTRACTED_TEXT_CHARS:
-        return main_text, parser.title.strip()
-    return parser.get_text(), parser.title.strip()
+        return main_text, parser.title.strip(), links, published
+    return parser.get_text(), parser.title.strip(), links, published
 
 
 def _collapse_whitespace(text: str) -> str:
@@ -570,8 +626,10 @@ def _fetch_and_extract(fetch_url: str, *, original_url: str) -> FetchedPublicSou
     normalized_content_type = _require_allowed_content_type(content_type)
     decoded = _decode_body(body, content_type)
 
+    links: tuple[tuple[str, str], ...] = ()
+    published = ""
     if normalized_content_type == "text/html":
-        text, title = _extract_html(decoded)
+        text, title, links, published = _extract_html_full(decoded)
     else:
         text, title = decoded.strip(), ""
 
@@ -584,6 +642,8 @@ def _fetch_and_extract(fetch_url: str, *, original_url: str) -> FetchedPublicSou
         title=title[:300],
         text=text[:MAX_EXTRACTED_TEXT_CHARS],
         content_type=normalized_content_type,
+        links=links,
+        published_at=published,
     )
 
 

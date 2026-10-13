@@ -9,6 +9,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
+from app.services.signal_explanation import angle_for, reason_for
+
 log = logging.getLogger(__name__)
 
 
@@ -144,6 +146,10 @@ class LeadSignal:
     recommended_action: str
     action_label: str
     action_reason: str
+    # The material's own text (title/summary), kept so the explanation and
+    # the presentation angle can be checked against what the post is
+    # actually about. Defaults keep older constructors valid.
+    summary: str = ""
 
 
 # ── Загрузка существующего action_recommender.py из проекта Lead Radar ───────
@@ -437,7 +443,11 @@ def fetch_signals_sync(
                 url=str(d.get("item_url") or ""),
                 recommended_action=action,
                 action_label=str(label),
-                action_reason=str(reason).strip(),
+                action_reason=reason_for(
+                    str(reason).strip(), str(d.get("item_title") or ""),
+                    str(d.get("item_summary") or ""), recommended_action=action,
+                ),
+                summary=str(d.get("item_summary") or ""),
             )
         )
 
@@ -509,7 +519,12 @@ def build_workspace_signals(
             url=record.item_url,
             recommended_action=action,
             action_label=str(label),
-            action_reason=str((info or {}).get("action_reason") or "").strip(),
+            action_reason=reason_for(
+                str((info or {}).get("action_reason") or "").strip(),
+                record.item_title, record.item_summary,
+                recommended_action=action,
+            ),
+            summary=record.item_summary or "",
         ))
 
     # Квота на bucket, без добивки отсутствующей категории другой. ai_score
@@ -598,11 +613,14 @@ def why_text(signal: LeadSignal) -> str:
     return _WHY_FALLBACK.get(signal.recommended_action, _WHY_DEFAULT_FALLBACK)
 
 
-def content_angle_hint() -> str:
-    """«Как можно подать» для content-сигналов — тот же текст, что уже видит
-    Telegram (см. _format_signal_block). Единственный источник для обоих
-    интерфейсов, чтобы Web не завёл свою собственную формулировку."""
-    return _CONTENT_ANGLE_HINT
+def content_angle_hint(signal: Optional[LeadSignal] = None) -> str:
+    """«Как можно подать» для content-сигналов — единственный источник для
+    Telegram и Web. С сигналом даёт конкретный угол по тому, о чём материал
+    на самом деле (маршрут, гид, сезон, советы...), а не одну заготовку для
+    всех идей; без сигнала — прежний нейтральный текст."""
+    if signal is None:
+        return _CONTENT_ANGLE_HINT
+    return angle_for(signal.title, signal.summary)
 
 
 def _format_signal_block(signal: LeadSignal, index: int) -> str:
@@ -622,7 +640,7 @@ def _format_signal_block(signal: LeadSignal, index: int) -> str:
         lines.extend([
             "",
             "Как можно подать:",
-            _truncate(_CONTENT_ANGLE_HINT, 160),
+            _truncate(content_angle_hint(signal), 260),
         ])
     lines.extend(["", signal.url or "—"])
     return "\n".join(lines)

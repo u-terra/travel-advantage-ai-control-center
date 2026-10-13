@@ -49,7 +49,7 @@ def _formatters():
     return dict(
         category_label=lambda category: (category or "").upper(),
         why_text=lambda signal: signal.action_reason,
-        content_angle_hint=lambda: "hint",
+        content_angle_hint=lambda signal=None: "hint",
     )
 
 

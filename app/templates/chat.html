@@ -4185,7 +4185,15 @@ function renderSignalsList(items) {
             dot.className = "dot";
             meta.appendChild(dot);
         }
-        meta.appendChild(document.createTextNode(formatSignalDate(item.created_at)));
+        // Дата публикации неизвестна / архив показываем явно: время сбора
+        // страницы не выдаётся за дату выхода материала.
+        if (item.freshness_state === "unknown") {
+            meta.appendChild(document.createTextNode("дата публикации не указана"));
+        } else if (item.freshness_state === "archive") {
+            meta.appendChild(document.createTextNode("архивный материал"));
+        } else {
+            meta.appendChild(document.createTextNode(formatSignalDate(item.created_at)));
+        }
         card.appendChild(meta);
 
         // "Почему стоит обратить внимание" - тот же action_reason (с тем же

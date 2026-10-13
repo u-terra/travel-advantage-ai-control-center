@@ -53,6 +53,7 @@ _SCHEMA_STATEMENTS = (
     -- a fresh real article but still above a landing-page fallback - see
     -- list_for_workspace()'s ORDER BY.
     is_stale_dated INTEGER NOT NULL DEFAULT 0 CHECK (is_stale_dated IN (0, 1)),
+    body TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (workspace_id) REFERENCES partner_workspaces(id),
@@ -83,6 +84,11 @@ _STAGE3_COLUMNS = (
         "ALTER TABLE web_source_signals ADD COLUMN is_stale_dated INTEGER "
         "NOT NULL DEFAULT 0 CHECK (is_stale_dated IN (0, 1))",
     ),
+    # Signal -> post quality: the extracted text of the concrete publication
+    # itself (bounded by the collector). Before this, only a <=600-char LLM
+    # summary survived, so a post could only be written from a summary of a
+    # summary. '' = body not captured (legacy rows / unreadable page).
+    ("body", "ALTER TABLE web_source_signals ADD COLUMN body TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -109,6 +115,7 @@ class WebSignalRecord:
     is_stale_dated: bool = False
     created_at: str = ""
     updated_at: str = ""
+    body: str = ""
 
 
 class WebSignalRepository:
@@ -155,21 +162,21 @@ class WebSignalRepository:
                         "INSERT INTO web_source_signals "
                         "(workspace_id, source_id, dedupe_key, source_name, source_url, "
                         "item_url, title, summary, fetched_at, published_at, is_fallback, "
-                        "is_stale_dated, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                        "is_stale_dated, body, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                         "ON CONFLICT(workspace_id, dedupe_key) DO UPDATE SET "
                         "source_name = excluded.source_name, title = excluded.title, "
                         "summary = excluded.summary, item_url = excluded.item_url, "
                         "fetched_at = excluded.fetched_at, published_at = excluded.published_at, "
                         "is_fallback = excluded.is_fallback, "
-                        "is_stale_dated = excluded.is_stale_dated, "
+                        "is_stale_dated = excluded.is_stale_dated, body = excluded.body, "
                         "updated_at = excluded.updated_at",
                         (
                             record.workspace_id, record.source_id, dedupe_key,
                             record.source_name, record.source_url, record.item_url,
                             record.title, record.summary, record.fetched_at,
                             record.published_at, int(record.is_fallback),
-                            int(record.is_stale_dated), now, now,
+                            int(record.is_stale_dated), record.body or "", now, now,
                         ),
                     )
                 await db.commit()
@@ -261,6 +268,7 @@ def _record(row: aiosqlite.Row) -> WebSignalRecord:
         is_fallback=bool(row["is_fallback"]),
         is_stale_dated=bool(row["is_stale_dated"]), created_at=row["created_at"],
         updated_at=row["updated_at"],
+        body=(row["body"] if "body" in row.keys() else "") or "",
     )
 
 

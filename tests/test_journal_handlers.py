@@ -280,7 +280,7 @@ def test_radar_handler_passes_workspace_id_without_changing_flow() -> None:
         interpretation_id=7, raw_created_at=date.today().isoformat(), source_type="rss",
         origin_type="publisher_post", ai_score=72.0,
         ai_category="market_signal", ai_reason="релевантно",
-        item_title="Тема", item_summary="Описание", item_url="https://example.org/1",
+        item_title="Тема", item_summary=RADAR_SUMMARY, item_url="https://example.org/1",
     )
     repository = signal_repository(record)
     artifacts = artifact_repository(artifact_id=501)
@@ -333,7 +333,7 @@ def test_radar_content_selected_does_not_show_technical_route_card() -> None:
         interpretation_id=7, raw_created_at=date.today().isoformat(), source_type="rss",
         origin_type="publisher_post", ai_score=72.0,
         ai_category="market_signal", ai_reason="релевантно",
-        item_title="Тема", item_summary="Описание", item_url="https://example.org/1",
+        item_title="Тема", item_summary=RADAR_SUMMARY, item_url="https://example.org/1",
     )
     repository = signal_repository(record)
     artifacts = artifact_repository(artifact_id=501)
@@ -355,7 +355,13 @@ def test_radar_content_selected_does_not_show_technical_route_card() -> None:
     assert not any("Маршрут" in (text or "") for text in all_texts)
 
 
-def radar_record(*, summary="Описание", title="Тема"):
+RADAR_SUMMARY = (
+    "Описание: тропа начинается у станции Петяярви, идти около 13 км. "
+    "Добраться из Петербурга можно на электричке от Девяткино, дорога занимает полтора часа."
+)
+
+
+def radar_record(*, summary=RADAR_SUMMARY, title="Тема"):
     return SimpleNamespace(
         interpretation_id=7, raw_created_at=date.today().isoformat(), source_type="rss",
         origin_type="publisher_post", ai_score=72.0,
@@ -492,7 +498,7 @@ def test_radar_calls_source_analysis_before_generation():
     provider.generate_draft.side_effect = (
         lambda **kw: events.append("generate") or ContentDraft("Черновик", ())
     )
-    repository = signal_repository(radar_record(title="Тема", summary="Описание источника"))
+    repository = signal_repository(radar_record(title="Тема", summary=RADAR_SUMMARY + " Описание источника"))
     artifacts = artifact_repository()
     with patch("app.services.lead_radar._load_recommender") as load:
         load.return_value = SimpleNamespace(
@@ -506,7 +512,9 @@ def test_radar_calls_source_analysis_before_generation():
             repository, radar_config(), profile_repository(), artifacts,
         ))
     assert events == ["analyze", "generate"]
-    provider.analyze_source.assert_called_once_with(source_text="Тема\nОписание источника")
+    provider.analyze_source.assert_called_once_with(
+        source_text="Тема\n" + RADAR_SUMMARY + " Описание источника"
+    )
 
 
 def test_radar_disputed_claims_reach_generation_spec():
@@ -2716,3 +2724,36 @@ def test_rewrite_followup_without_prior_turn_does_not_crash_and_still_generates(
         Message(followup_text), journal(), provider, context(), profiles, state=state,
     ))
     provider.generate_draft.assert_called_once()
+
+
+# --- 13.10 incident: signal -> post reaches a saved draft -------------------
+
+def test_radar_oversized_signal_fits_content_factory_cap_and_reaches_saved_draft():
+    # Production 13.10 08:19 UTC: Content Factory answered HTTP 400 "Исходный
+    # текст слишком длинный (10062 символов). Максимум — 6000" because this
+    # path used the 11_000 default. The provider is a FAKE here, but the
+    # request that would be sent is the real one: it must fit the cap, keep
+    # the publication text, and the idea must end up as a saved artifact.
+    artifacts = artifact_repository(artifact_id=777)
+    long_summary = RADAR_SUMMARY + " " + ("Ехать по тропе удобно в сухую погоду. " * 120)
+    callback, provider, _, _, _ = run_radar(
+        record=radar_record(summary=long_summary), artifact_repo=artifacts,
+    )
+    sent = provider.generate_draft.call_args.kwargs["source_text"]
+    assert len(sent) <= 6000
+    assert "[CONSTRAINTS - INTERNAL" in sent and "Петяярви" in sent
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    assert "Radar draft" in callback.message.answers[-1][0]
+
+
+def test_radar_thin_material_gets_clear_refusal_instead_of_generic_post():
+    artifacts = artifact_repository(artifact_id=778)
+    callback, provider, _, _, _ = run_radar(
+        record=radar_record(summary="Подборка статей."), artifact_repo=artifacts,
+    )
+    provider.analyze_source.assert_not_called()
+    provider.generate_draft.assert_not_called()
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+    shown = callback.message.answers[-1][0]
+    assert "мало конкретики" in shown
+    assert "Не удалось получить черновик" not in shown

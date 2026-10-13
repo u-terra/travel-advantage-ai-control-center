@@ -52,6 +52,11 @@ from app.planner.fetch import (
 from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.repositories.usage_ledger_repository import UsageLedgerRepository
 from app.repositories.web_signal_repository import WebSignalRecord, WebSignalRepository
+from app.services.article_pages import (
+    extract_article_links,
+    looks_like_catalog_page,
+    parse_published_at,
+)
 from app.services.llm.base import LLMProvider
 from app.services.usage_recorder import record_llm_call
 from app.services.web_search.base import WebSearchProvider
@@ -66,6 +71,10 @@ from app.services.web_source_discovery import (
 log = logging.getLogger(__name__)
 
 _ANALYSIS_TEXT_CHARS = 6_000
+# Bounded copy of the publication's own extracted text kept with the signal
+# (signal -> post quality): enough to write a concrete post from, small
+# enough that the generation request stays inside Content Factory's 6000.
+_BODY_MAX_CHARS = 4_000
 _SUMMARY_MAX_CHARS = 600
 _TITLE_MAX_CHARS = 300
 
@@ -151,7 +160,7 @@ class WebSignalCollector:
         # per run. Discovered article candidates are not cached this way -
         # discovery is already domain-restricted per source, so two
         # different sources cannot plausibly discover the same article.
-        landing_page_cache: dict[str, WebSignalRecord | None] = {}
+        landing_page_cache: dict[str, list[WebSignalRecord]] = {}
         # Live bug: dedup across the whole run, not just within one source -
         # two different sources' domain-restricted searches can independently
         # surface the same underlying story (e.g. a syndicated piece), and a
@@ -192,7 +201,7 @@ class WebSignalCollector:
         self,
         workspace_id: int,
         source: WorkspaceSource,
-        landing_page_cache: dict[str, WebSignalRecord | None],
+        landing_page_cache: dict[str, list[WebSignalRecord]],
         seen_titles: set[str],
     ) -> list[WebSignalRecord]:
         """One source, isolated: discovers up to _MAX_ARTICLES_PER_SOURCE
@@ -223,36 +232,85 @@ class WebSignalCollector:
         for url in candidate_urls:
             if len(records) >= _MAX_ARTICLES_PER_SOURCE:
                 break
-            record = await self._fetch_and_analyze(
+            found = await self._records_for_url(
                 workspace_id, source, url, is_fallback=False,
+                budget=_MAX_ARTICLES_PER_SOURCE - len(records),
             )
-            if record is None:
-                continue
-            title_key = normalize_article_title(record.title)
-            if title_key and title_key in seen_titles:
-                log.info(
-                    "web_signal_collector: duplicate title rejected for '%s' (%s)",
-                    source.id, url,
-                )
-                continue
-            if title_key:
-                seen_titles.add(title_key)
-            records.append(record)
+            for record in found:
+                title_key = normalize_article_title(record.title)
+                if title_key and title_key in seen_titles:
+                    log.info(
+                        "web_signal_collector: duplicate title rejected for '%s' (%s)",
+                        source.id, record.item_url,
+                    )
+                    continue
+                if title_key:
+                    seen_titles.add(title_key)
+                records.append(record)
+                if len(records) >= _MAX_ARTICLES_PER_SOURCE:
+                    break
         if records:
             return records
 
         landing_url = source.target
         if landing_url not in landing_page_cache:
-            landing_page_cache[landing_url] = await self._fetch_and_analyze(
+            landing_page_cache[landing_url] = await self._records_for_url(
                 workspace_id, source, landing_url, is_fallback=True,
+                budget=_MAX_ARTICLES_PER_SOURCE,
             )
-        fallback = landing_page_cache[landing_url]
-        if fallback is None:
+        return [
+            replace(record, source_id=source.id, source_name=source.name)
+            for record in landing_page_cache[landing_url]
+        ]
+
+    async def _records_for_url(
+        self, workspace_id: int, source: WorkspaceSource, url: str, *,
+        is_fallback: bool, budget: int,
+    ) -> list[WebSignalRecord]:
+        """One URL -> zero or more concrete-publication records.
+
+        A catalog/listing page is NEVER stored as an article: it is used only
+        to discover the concrete articles it links to, and each of those is
+        fetched and analyzed on its own (so the stored URL, date and body
+        belong to the real publication). A catalog with no usable article
+        links yields nothing - not a summary of the list. A non-catalog page
+        is analyzed as one publication, as before."""
+        try:
+            page = await asyncio.to_thread(self._fetcher, url)
+        except PublicSourceFetchError as exc:
+            log.info(
+                "web_signal_collector: fetch failed for '%s' (%s): %s",
+                source.id, url, exc,
+            )
             return []
-        return [replace(fallback, source_id=source.id, source_name=source.name)]
+        page_url = page.final_url or url
+        if looks_like_catalog_page(page_url, page.text, getattr(page, "links", ())):
+            article_urls = extract_article_links(
+                page_url, getattr(page, "links", ()), limit=_MAX_DISCOVERY_CANDIDATES,
+            )
+            log.info(
+                "web_signal_collector: catalog page for '%s' (%s): %d article link(s)",
+                source.id, url, len(article_urls),
+            )
+            found: list[WebSignalRecord] = []
+            for article_url in article_urls:
+                if len(found) >= budget:
+                    break
+                record = await self._fetch_and_analyze(
+                    workspace_id, source, article_url, is_fallback=False,
+                    allow_catalog=False,
+                )
+                if record is not None:
+                    found.append(record)
+            return found
+        record = await self._analyze_page(
+            workspace_id, source, url, page, is_fallback=is_fallback,
+        )
+        return [record] if record is not None else []
 
     async def _fetch_and_analyze(
         self, workspace_id: int, source: WorkspaceSource, url: str, *, is_fallback: bool,
+        allow_catalog: bool = True,
     ) -> WebSignalRecord | None:
         """Isolated per-URL: any failure here (bad fetch, unusable content,
         LLM error) returns None instead of raising - the caller moves on to
@@ -266,7 +324,22 @@ class WebSignalCollector:
                 source.id, url, exc,
             )
             return None
+        if not allow_catalog and looks_like_catalog_page(
+            page.final_url or url, page.text, getattr(page, "links", ()),
+        ):
+            log.info(
+                "web_signal_collector: linked page for '%s' is itself a catalog, skipped (%s)",
+                source.id, url,
+            )
+            return None
+        return await self._analyze_page(
+            workspace_id, source, url, page, is_fallback=is_fallback,
+        )
 
+    async def _analyze_page(
+        self, workspace_id: int, source: WorkspaceSource, url: str,
+        page: FetchedPublicSource, *, is_fallback: bool,
+    ) -> WebSignalRecord | None:
         # Stage 3.1 Quality Gate, requirement 2: catches what the pre-fetch
         # URL heuristic (app.services.web_source_discovery.
         # _rejected_by_url_heuristic) cannot - a 404/vacancy/support page
@@ -309,7 +382,11 @@ class WebSignalCollector:
             # only ever hands back extracted plain text (HTML/meta stripped),
             # so there is no reliable structured date signal to read here.
             # None (unknown) stays honest; see the repository schema comment.
-            published_at=None,
+            # Signal -> post quality: a date is stored ONLY when the page
+            # itself declares one (meta/time/JSON-LD, see fetch.py); unknown
+            # stays None and is never treated as fresh downstream.
+            published_at=parse_published_at(getattr(page, "published_at", "")),
+            body=(page.text or "")[:_BODY_MAX_CHARS],
             is_fallback=is_fallback,
             # Stage 3.1, requirement 3: a ranking signal only, never a
             # substitute for published_at - checked against our OWN

@@ -72,7 +72,10 @@ from app.repositories.web_signal_repository import WebSignalRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.conversation_state_service import ConversationStateService
 from app.services.draft_sanitizer import sanitize_draft_text
-from app.services.generation_request_builder import build_provider_generation_request
+from app.services.generation_request_builder import (
+    build_budgeted_provider_request,
+    source_content_is_sufficient,
+)
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
 from app.services.plan_quota_service import PlanQuotaService
@@ -107,6 +110,10 @@ _RADAR_ARTIFACT_FAILURE = (
 # Fail-closed (не fail-open): без Source Analysis нет disputed_claims и Stage 1
 # Content Quality Gate не может дать никаких гарантий про черновик — значит
 # черновик вообще не генерируется, а не генерируется непроверенным.
+_RADAR_NOT_ENOUGH_MATERIAL = (
+    "В этой записи мало конкретики, чтобы написать из неё хороший пост, "
+    "а общий пересказ я делать не буду. Выберите другую идею."
+)
 _RADAR_ANALYSIS_UNAVAILABLE = (
     "⚠️ Сейчас не удалось проверить исходный материал.\n"
     "Черновик не создан, чтобы не передавать вам непроверенные сведения.\n"
@@ -726,6 +733,19 @@ async def on_radar_content_selected(
     # свою же запись по (workspace_id, telegram_user_id) из workspace_context.
     user_preferences = await UserStyleService(partner_repository).get(workspace_context)
 
+    # Достаточность материала проверяется ДО анализа и генерации (тот же
+    # критерий, что в вебе): если в записи нет конкретики, общий пересказ
+    # не создаётся.
+    if not source_content_is_sufficient(
+        record.item_title, record.item_summary,
+        getattr(record, "source_name", "") or "",
+    ):
+        await callback.answer("Готовлю черновик…")
+        if callback.message is not None:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(_RADAR_NOT_ENOUGH_MATERIAL)
+        return
+
     # Stage 1 Content Quality Gate: переиспользуем существующий Source
     # Analysis (тот же llm_provider.analyze_source(), что и в обычном
     # Content Factory flow) до генерации черновика, а не отдельный
@@ -769,7 +789,9 @@ async def on_radar_content_selected(
                 await callback.message.edit_reply_markup(reply_markup=None)
                 await callback.message.answer(decision.message)
             return
-    request = build_provider_generation_request(spec)
+    # Content Factory принимает source_text не длиннее 6000 символов (HTTP 400
+    # выше). Прежний лимит по умолчанию (11 000) давал обрыв генерации.
+    request = build_budgeted_provider_request(spec, limit=6000)
     task_text = f"Radar draft: {signal.title}"
 
     await callback.answer("Готовлю черновик…")

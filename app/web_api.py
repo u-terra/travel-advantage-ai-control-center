@@ -108,6 +108,8 @@ from app.services.generation_request_builder import (
     build_client_reply_provider_request,
     build_provider_generation_request,
     safe_material_title,
+    build_budgeted_provider_request,
+    signal_material_is_sufficient,
     source_content_is_sufficient,
 )
 from app.services.knowledge_generation_context import advisory_judgment_constraints
@@ -2443,6 +2445,7 @@ async def list_signals(principal: WebPrincipal = Depends(get_active_principal)):
                     "url": item.url,
                     "action_reason": item.action_reason,
                     "content_hint": item.content_hint,
+                    "freshness_state": item.freshness_state,
                 }
                 for item in unified
             ]
@@ -2495,9 +2498,11 @@ async def _create_material_from_web_signal(
         )
 
         web_source_text = "\n".join(
-            value for value in (record.title, record.summary) if value
-        )
-        if not source_content_is_sufficient(record.title, record.summary, record.source_name):
+            value for value in (record.title, record.summary, record.body) if value
+        )[:6000]
+        if not signal_material_is_sufficient(
+            record.title, record.summary, record.body, record.source_name,
+        ):
             await record_event(
                 operational_event_repository, module="materials",
                 event_type="material_created_from_signal",
@@ -2534,7 +2539,7 @@ async def _create_material_from_web_signal(
             url=record.item_url, category="",
             reason=f"Материал с сайта-источника: {record.source_name}",
             analysis=analysis, user_preferences=user_preferences,
-            artifact_type=request.action,
+            artifact_type=request.action, body=record.body,
         )
         # Material quota applies only to a "post" (material) action - see
         # the identical gate in create_material_from_competitor_opportunity.
@@ -2544,17 +2549,10 @@ async def _create_material_from_web_signal(
             )
             if not quota_decision.allowed:
                 return {"error": quota_decision.message, "material": None}
-        # Bug fix (production radar:22378/22379, "content_factory: request
-        # failed"): Content Factory's /internal/generate hard-caps source_text
-        # at 6000 chars and returns HTTP 400 above that (see
-        # generation_request_builder.SOURCE_ANALYSIS_REQUEST_LIMIT's docstring
-        # for the confirmed-live incident) - build_provider_generation_request's
-        # own default limit is 11_000, which can exceed that cap once the
-        # spec's prefix (business context/personal style/tone) is large
-        # enough. The competitor-signal branch above already overrides this
-        # to limit=6000; this call must match it, not silently fall back to
-        # the unsafe default.
-        provider_request = build_provider_generation_request(spec, limit=6000)
+        # Content Factory hard-caps source_text at 6000 chars (HTTP 400
+        # above it); the budgeted packer drops whole low-priority sections
+        # instead of slicing the string.
+        provider_request = build_budgeted_provider_request(spec, limit=6000)
 
         draft = await asyncio.to_thread(
             competitor_llm_provider.generate_draft,
@@ -2752,7 +2750,7 @@ async def create_material_from_signal(
         # enough. The competitor-signal branch above already overrides this
         # to limit=6000; this call must match it, not silently fall back to
         # the unsafe default.
-        provider_request = build_provider_generation_request(spec, limit=6000)
+        provider_request = build_budgeted_provider_request(spec, limit=6000)
 
         draft = await asyncio.to_thread(
             competitor_llm_provider.generate_draft,

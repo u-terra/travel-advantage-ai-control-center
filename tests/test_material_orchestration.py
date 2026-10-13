@@ -359,7 +359,7 @@ def test_radar_spec_constraints_forbid_internal_process_notes():
     spec = radar_spec(profile())
     joined = " ".join(spec.constraints)
     assert "нужно проверить" in joined or "перепроверить" in joined
-    assert "внутренние заметки" in joined
+    assert "заметки о процессе" in joined
 
 
 def test_radar_spec_constraints_forbid_assistant_style_ending():
@@ -389,8 +389,11 @@ def test_radar_spec_constraints_require_standalone_post_and_no_invented_facts():
 def test_radar_spec_constraints_forbid_unsupported_entity_attribution():
     spec = radar_spec(profile())
     joined = " ".join(spec.constraints)
-    assert "значит, что эта сущность входит" in joined
-    assert "пункты в сигнале не перечислены" in joined
+    assert "не значит, что она в него входит" in joined
+    # The earlier rule suggested the literal phrase "пункты в сигнале не
+    # перечислены" as a model sentence, which leaked internal wording
+    # ("сигнал") into published posts - it must not be suggested any more.
+    assert "пункты в сигнале не перечислены" not in joined
 
 
 def test_radar_spec_constraints_do_not_leak_into_other_flows():

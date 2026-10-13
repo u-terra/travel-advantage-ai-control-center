@@ -202,6 +202,21 @@ def source_content_is_sufficient(title: str, summary: str, source_name: str = ""
     return _has_concrete_detail(useful_parts)
 
 
+def signal_material_is_sufficient(
+    title: str, summary: str, body: str = "", source_name: str = "",
+) -> bool:
+    """Single sufficiency gate for every signal -> post path (Telegram radar,
+    Web radar, Web-source). When the concrete publication's own text was
+    stored (``body``) and is long enough, that is the material; otherwise the
+    short summary must pass ``source_content_is_sufficient``. Callers fail
+    closed (no generation, a clear message) when this is False."""
+    from app.services.article_pages import has_publication_body
+
+    if has_publication_body(body):
+        return True
+    return source_content_is_sufficient(title, summary, source_name)
+
+
 # Quality fix (signal -> post): the Artifact/Material's own title was being
 # set directly from the raw signal title (LeadSignal.title / item_title for
 # Radar, WebSignalRecord.title for web) - a forwarded Telegram post's first
@@ -422,6 +437,17 @@ def build_client_reply_provider_request(
         material_type=material_type,
         output_format=spec.output_format.value,
     )
+
+
+def build_budgeted_provider_request(
+    spec: GenerationSpec, *, limit: int = 6000,
+) -> ProviderGenerationRequest:
+    """Signal -> post packer: always fits Content Factory's 6000-char cap
+    (HTTP 400 above it - production 13.10 08:19 UTC, 10062 chars from the
+    Telegram radar path that used the 11_000 default) and drops whole
+    low-priority sections instead of slicing the string, so OBJECTIVE,
+    CONSTRAINTS and the publication text itself always survive intact."""
+    return build_client_reply_provider_request(spec, limit=limit)
 
 
 # Fix: Content Factory (/internal/generate) жёстко ограничивает входной
