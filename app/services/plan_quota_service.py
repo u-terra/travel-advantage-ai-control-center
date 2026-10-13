@@ -46,8 +46,9 @@ from app.services.plan_limits import (
     NEXT_TIER,
     PlanResolution,
     competitor_slot_message,
+    is_owner_unlimited_workspace,
     plan_display_name,
-    resolve_plan,
+    resolve_workspace_plan,
     source_slot_message,
 )
 
@@ -80,10 +81,14 @@ class PlanQuotaService:
         self._usage = plan_usage_repository
 
     async def _resolution_for_workspace(self, workspace_id: int) -> PlanResolution:
+        if is_owner_unlimited_workspace(workspace_id):
+            return resolve_workspace_plan(workspace_id, None)  # personal owner exception
         subscription: Subscription | None = await self._subscriptions.get_for_workspace(
             workspace_id
         )
-        return resolve_plan(subscription.plan if subscription is not None else None)
+        return resolve_workspace_plan(
+            workspace_id, subscription.plan if subscription is not None else None,
+        )
 
     async def check_material_quota(self, workspace_id: int) -> QuotaDecision:
         resolution = await self._resolution_for_workspace(workspace_id)

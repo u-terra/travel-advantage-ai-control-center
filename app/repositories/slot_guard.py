@@ -33,6 +33,7 @@ from app.services.plan_limits import (
     UNKNOWN_PLAN_MESSAGE,
     competitor_slot_message,
     resolve_plan,
+    resolve_workspace_plan,
     source_slot_message,
 )
 
@@ -85,7 +86,7 @@ async def free_slots(
     plan = await _plan_of(db, workspace_id)
     if plan is None and unprovisioned_is_unlimited:
         return None
-    resolution = resolve_plan(plan)
+    resolution = resolve_workspace_plan(workspace_id, plan)
     if resolution.block_message is not None:
         raise SlotLimitReached(resolution.block_message)
     limits = resolution.limits

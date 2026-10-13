@@ -402,9 +402,18 @@ function usageRow(label, used, limit) {
     return row;
 }
 
-function renderUsage(usage) {
+function renderUsage(usage, ownerAccess, ownerLabel) {
     const panel = document.getElementById("usagePanel");
     panel.innerHTML = "";
+    if (ownerAccess) {
+        panel.classList.add("show");
+        const note = document.createElement("div");
+        note.className = "usage-row";
+        note.style.fontWeight = "600";
+        note.textContent = ownerLabel || "Доступ владельца — без тарифных ограничений";
+        panel.appendChild(note);
+        return;
+    }
     if (!usage) {
         panel.classList.remove("show");
         return;
@@ -440,7 +449,7 @@ async function loadStatus() {
         }
 
         renderPlans(data.plans || [], data.billing_configured);
-        renderUsage(data.usage || null);
+        renderUsage(data.usage || null, data.owner_access === true, data.owner_access_label);
     } catch (_) {
         showError("Не удалось загрузить статус подписки.");
     }

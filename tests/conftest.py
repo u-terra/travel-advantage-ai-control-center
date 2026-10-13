@@ -11,6 +11,17 @@ from app.services.source_registry import (
 
 
 @pytest.fixture(autouse=True)
+def no_owner_quota_exception_by_default(monkeypatch):
+    """The production owner workspace (id 1) has no tariff quotas. Test
+    databases also use id 1 for their first workspace, so the exception is
+    switched off for every test unless the test enables it explicitly
+    (see tests/test_owner_unlimited_workspace.py)."""
+    from app.services import plan_limits
+
+    monkeypatch.setattr(plan_limits, "OWNER_UNLIMITED_WORKSPACE_IDS", frozenset())
+
+
+@pytest.fixture(autouse=True)
 def isolated_runtime_registry(tmp_path_factory, monkeypatch):
     """Уводит рабочий реестр источников во временный каталог.
 

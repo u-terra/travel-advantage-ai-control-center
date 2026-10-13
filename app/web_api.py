@@ -145,7 +145,13 @@ from app.services.partner_outreach import (
     generate_outreach_draft,
     rank_for_club_partner_fit,
 )
-from app.services.plan_limits import get_plan_limits, is_quota_counted_material, plan_display_name
+from app.services.plan_limits import (
+    get_plan_limits,
+    is_owner_unlimited_workspace,
+    is_quota_counted_material,
+    plan_display_name,
+    OWNER_ACCESS_LABEL,
+)
 from app.repositories.slot_guard import SlotLimitReached
 from app.services.plan_quota_service import PlanQuotaService
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
@@ -967,6 +973,8 @@ async def _current_plan_usage(workspace_id: int, plan_code: str | None) -> dict 
     when the plan has no enforced limits (legacy/beta/unknown), so the
     billing UI shows plan cards without a usage panel for those workspaces.
     """
+    if is_owner_unlimited_workspace(workspace_id):
+        return None  # no quota panel: the owner has no tariff quotas
     limits = get_plan_limits(plan_code) if plan_code is not None else None
     if limits is None:
         return None
@@ -1043,6 +1051,13 @@ async def billing_status(principal: WebPrincipal = Depends(get_current_principal
         # Current usage against the workspace's OWN active plan - None for
         # legacy/beta/no-subscription workspaces (see _current_plan_usage).
         "usage": await _current_plan_usage(principal.workspace_id, plan_code),
+        # True only for the verified owner workspace (personal exception, see
+        # app.services.plan_limits) - the page then shows OWNER_ACCESS_LABEL
+        # instead of quota bars. Access status/expiry above are unchanged.
+        "owner_access": is_owner_unlimited_workspace(principal.workspace_id),
+        "owner_access_label": (
+            OWNER_ACCESS_LABEL if is_owner_unlimited_workspace(principal.workspace_id) else None
+        ),
     }
 
 

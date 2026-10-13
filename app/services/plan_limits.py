@@ -175,6 +175,38 @@ def resolve_plan(plan: SubscriptionPlan | str | None) -> PlanResolution:
     return PlanResolution(limits=limits)
 
 
+# ── personal owner exception ────────────────────────────────────────────────
+#
+# Workspaces that carry NO tariff quotas (materials, competitor analyses,
+# competitor slots, source slots) because they belong to the platform owner.
+# Verified against the production database, never guessed: workspace_id 1
+# ("Основное рабочее пространство") is bound to u-terra@yandex.ru and to the
+# owner's Telegram account (active 'owner' membership). This is a per-
+# workspace exception - NOT a global switch: every other workspace keeps
+# resolving its own plan through resolve_plan().
+#
+# It lifts QUOTAS only. Subscription status/expiry (access_state), workspace
+# isolation, billing, prices and external-API limits are untouched: the
+# access gate still decides whether the workspace may use the product at all.
+_PRODUCTION_OWNER_WORKSPACE_IDS: frozenset[int] = frozenset({1})
+OWNER_UNLIMITED_WORKSPACE_IDS: frozenset[int] = _PRODUCTION_OWNER_WORKSPACE_IDS
+OWNER_ACCESS_LABEL = "Доступ владельца — без тарифных ограничений"
+
+
+def is_owner_unlimited_workspace(workspace_id: int | None) -> bool:
+    return workspace_id is not None and workspace_id in OWNER_UNLIMITED_WORKSPACE_IDS
+
+
+def resolve_workspace_plan(
+    workspace_id: int | None, plan: SubscriptionPlan | str | None,
+) -> PlanResolution:
+    """resolve_plan() plus the personal owner exception - the entry point
+    every quota/slot decision uses (PlanQuotaService, slot_guard)."""
+    if is_owner_unlimited_workspace(workspace_id):
+        return PlanResolution(unlimited=True)
+    return resolve_plan(plan)
+
+
 def _free_slot_hint(plan_code: str) -> str:
     next_code = NEXT_TIER.get(plan_code)
     if next_code is None:
