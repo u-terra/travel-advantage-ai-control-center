@@ -463,6 +463,10 @@ class _TextExtractingParser(HTMLParser):
         self._in_title = False
         self.title = ""
         self.links: list[list[str]] = []
+        # Anchors inside <main>/<article> only: a catalog's real article
+        # list lives there, while the header/footer menus (country hubs,
+        # "Destinations") are navigation, not publications.
+        self.main_links: list[list[str]] = []
         self._open_anchor: list[str] | None = None
         self.published_at = ""
 
@@ -475,6 +479,8 @@ class _TextExtractingParser(HTMLParser):
             href = dict(attrs).get("href") or ""
             self._open_anchor = [href, ""]
             self.links.append(self._open_anchor)
+            if self._main_depth:
+                self.main_links.append(self._open_anchor)
         elif tag == "meta":
             attr = {k.lower(): (v or "") for k, v in attrs}
             key = (attr.get("property") or attr.get("name") or attr.get("itemprop") or "").lower()
@@ -543,9 +549,10 @@ def _extract_html_full(
         parser.close()
     except Exception as exc:
         raise PublicSourceFetchError(f"failed to parse HTML: {exc}") from exc
+    chosen = parser.main_links if parser.main_links else parser.links
     links = tuple(
         (href.strip(), anchor)
-        for href, anchor in parser.links[:_MAX_LINKS]
+        for href, anchor in chosen[:_MAX_LINKS]
         if href and href.strip()
     )
     published = parser.published_at

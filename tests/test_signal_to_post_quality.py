@@ -325,3 +325,15 @@ def test_radar_rules_do_not_suggest_internal_wording_to_the_model():
     assert "пункты в сигнале не перечислены" not in joined
     assert "живо и разговорно" in joined
     assert "личный опыт" in joined
+
+
+def test_catalog_article_links_come_from_main_block_not_navigation_menu():
+    # Live check 13.10 (Lonely Planet category page): the header menu's
+    # "/destinations/in/europe" hubs were being picked up as articles.
+    html = (
+        '<html><body><nav><a href="/destinations/in/europe">Top Europe destinations list</a></nav>'
+        "<main><p>" + "текст " * 30 + '</p><a href="/articles/how-to-pack-for-a-week-in-japan">'
+        "How to pack for a week in Japan</a></main></body></html>"
+    )
+    links = _extract_html_full(html)[2]
+    assert links == (("/articles/how-to-pack-for-a-week-in-japan", "How to pack for a week in Japan"),)
