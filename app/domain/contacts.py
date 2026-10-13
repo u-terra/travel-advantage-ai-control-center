@@ -35,6 +35,34 @@ class ContactConfidence(str, Enum):
     MEDIUM = "MEDIUM"
 
 
+class SearchStatus(str, Enum):
+    """How the contact check ended. ``NOT_FOUND`` means every step ran to
+    completion and nothing qualified; ``INCOMPLETE`` means a step could not
+    run (page unreachable, LLM/search unavailable, unreadable model answer)
+    - the absence of a person is then NOT a finding. Before this, both
+    collapsed into the same 'person not found' fallback."""
+
+    FOUND = "found"
+    NOT_FOUND = "not_found"
+    INCOMPLETE = "incomplete"
+
+
+@dataclass(frozen=True)
+class ContactChannel:
+    """One way to reach someone that a public page publishes verbatim.
+
+    ``owner`` says whose it is: ``"person"`` only when the page ties it to
+    the named person (their name in the link text / right before the value),
+    otherwise ``"project"`` (a general address of the project). A website or
+    a community page is never a channel - see
+    app.services.contact_discovery.extract_channels."""
+
+    kind: str  # email | phone | telegram | whatsapp | form
+    value: str
+    source_url: str
+    owner: str  # person | project
+
+
 @dataclass(frozen=True)
 class ContactCandidate:
     contact_type: ContactType
@@ -46,3 +74,7 @@ class ContactCandidate:
     provenance: str
     role: str | None = None
     confidence: ContactConfidence | None = None
+    # Additive fields (defaults keep every existing constructor valid).
+    channels: tuple[ContactChannel, ...] = ()
+    search_status: str = SearchStatus.FOUND.value
+    incomplete_reasons: tuple[str, ...] = ()

@@ -3844,16 +3844,95 @@ async function findPartnerContact(candidate, resultWrap) {
     }
 }
 
+const PARTNER_CHANNEL_LABELS = {
+    telegram: "Telegram", whatsapp: "WhatsApp", phone: "Телефон",
+    email: "Email", form: "Форма обращения", vk: "Сообщения сообщества VK",
+};
+const PARTNER_INCOMPLETE_LABELS = {
+    llm_unavailable: "модуль анализа текста сейчас не подключён",
+    llm_failed: "анализ текста не ответил",
+    llm_bad_answer: "анализ текста вернул нечитаемый ответ",
+    search_unavailable: "веб-поиск сейчас не подключён",
+    search_failed: "веб-поиск не ответил",
+    page_unavailable: "страница проекта не открылась",
+};
+
+function partnerContactStatusNote(contact) {
+    if (!contact) return "";
+    if (contact.search_status === "incomplete") {
+        const why = (contact.incomplete_reasons || [])
+            .map(code => PARTNER_INCOMPLETE_LABELS[code] || code).join("; ");
+        return "Проверка не завершена: " + (why || "часть проверки не выполнена") +
+            ". Это не значит, что контакта нет — попробуйте позже.";
+    }
+    if (contact.search_status === "not_found") {
+        return "Проверка завершена: публичного представителя проекта найти не удалось.";
+    }
+    return "";
+}
+
+function appendPartnerChannels(contact, resultWrap) {
+    const channels = contact.channels || [];
+    const personal = channels.filter(c => c.owner === "person");
+    const shared = channels.filter(c => c.owner !== "person");
+
+    const addGroup = (title, items) => {
+        const head = document.createElement("p");
+        head.className = "info-card-text";
+        head.innerHTML = "<strong></strong>";
+        head.firstChild.textContent = title;
+        resultWrap.appendChild(head);
+        items.forEach(c => {
+            const line = document.createElement("p");
+            line.className = "info-card-text";
+            line.textContent =
+                (PARTNER_CHANNEL_LABELS[c.kind] || c.kind) + ": " + c.value +
+                " (источник: " + c.source_url + ")";
+            resultWrap.appendChild(line);
+        });
+    };
+
+    if (personal.length) addGroup("Личные контакты (названы рядом с этим человеком)", personal);
+    if (shared.length) addGroup("Общие контакты проекта", shared);
+    if (!personal.length && !shared.length) {
+        const none = document.createElement("p");
+        none.className = "info-card-text";
+        none.textContent = "Канал связи не найден";
+        resultWrap.appendChild(none);
+    } else if (!personal.length && contact.contact_type === "person") {
+        const none = document.createElement("p");
+        none.className = "info-card-text";
+        none.textContent = "Личный контакт этого человека не найден.";
+        resultWrap.appendChild(none);
+    }
+}
+
 function renderPartnerContact(contact, resultWrap) {
     resultWrap.innerHTML = "";
 
     if (!contact || contact.contact_type !== "person") {
-        const p = document.createElement("p");
-        p.className = "info-card-text";
-        p.textContent =
-            "Конкретный публичный представитель не найден. Можно обратиться через " +
-            "официальный канал проекта: " + (contact && contact.public_url ? contact.public_url : "");
-        resultWrap.appendChild(p);
+        const note = document.createElement("p");
+        note.className = "info-card-text";
+        note.textContent = partnerContactStatusNote(contact) ||
+            "Конкретный публичный представитель не найден.";
+        resultWrap.appendChild(note);
+
+        if (contact) appendPartnerChannels(contact, resultWrap);
+
+        // The site / community is where the project lives - not a contact
+        // channel - so it is labelled as such and kept apart from channels.
+        if (contact && contact.public_url) {
+            const site = document.createElement("p");
+            site.className = "info-card-text";
+            site.appendChild(document.createTextNode("Сайт проекта (это страница проекта, а не канал связи): "));
+            const siteLink = document.createElement("a");
+            siteLink.href = contact.public_url;
+            siteLink.target = "_blank";
+            siteLink.rel = "noopener noreferrer";
+            siteLink.textContent = contact.public_url;
+            site.appendChild(siteLink);
+            resultWrap.appendChild(site);
+        }
         return;
     }
 
@@ -3877,6 +3956,12 @@ function renderPartnerContact(contact, resultWrap) {
     resultWrap.appendChild(evidence);
 
     if (contact.evidence_url) {
+        const sourceLabel = document.createElement("p");
+        sourceLabel.className = "info-card-text";
+        sourceLabel.textContent = "Источник связи с проектом" +
+            (contact.link_source_label ? " (" + contact.link_source_label + ")" : "") + ":";
+        resultWrap.appendChild(sourceLabel);
+
         const link = document.createElement("a");
         link.href = contact.evidence_url;
         link.target = "_blank";
@@ -3885,6 +3970,8 @@ function renderPartnerContact(contact, resultWrap) {
         link.className = "info-card-text";
         resultWrap.appendChild(link);
     }
+
+    appendPartnerChannels(contact, resultWrap);
 
     const draftBtn = document.createElement("button");
     draftBtn.type = "button";
@@ -3923,6 +4010,15 @@ async function draftPartnerOutreach(contact, draftWrap, draftBtn) {
         label.className = "info-card-text";
         label.innerHTML = "<strong>Черновик — проверьте и отредактируйте перед отправкой:</strong>";
         draftWrap.appendChild(label);
+
+        // The draft is only text: it does not confirm who the addressee is or
+        // that a channel works. Say so instead of implying it.
+        const caveat = document.createElement("p");
+        caveat.className = "info-card-text";
+        caveat.textContent = (contact.channels || []).some(c => c.owner === "person")
+            ? "Канал взят с публичной страницы. Перед отправкой убедитесь, что он принадлежит этому человеку."
+            : "Адресат и канал связи не подтверждены автоматически. Прежде чем отправлять, убедитесь сами, кому и куда пишете.";
+        draftWrap.appendChild(caveat);
 
         const draftText = document.createElement("p");
         draftText.className = "info-card-text partner-draft-text";

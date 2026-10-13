@@ -166,6 +166,9 @@ _BOT_OR_LOGIN_WALL_MARKERS = (
     "captcha",
 )
 
+# Visible-text length at which a page is treated as real content, not a wall.
+_WALL_MARKER_MAX_TEXT_CHARS = 1_500
+
 _WHITESPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 
@@ -598,7 +601,13 @@ def _require_meaningful_content(text: str, raw_decoded: str) -> None:
        generic "too short" case below.
     """
     raw_lower = raw_decoded.lower()
-    if _looks_like_bot_or_login_wall(raw_lower):
+    # A wall/interstitial has (almost) no real content. A page that already
+    # yielded a substantial amount of visible text is content, even when its
+    # raw HTML mentions "captcha" in a config blob or a form script - live
+    # case 13.10: vershina-trip.ru (HTTP 200, 10k chars of text, phone,
+    # Telegram, WhatsApp) was rejected on `"captcha_signup": false` inside the
+    # site-builder config, and the contact search then never read the site.
+    if len(text) < _WALL_MARKER_MAX_TEXT_CHARS and _looks_like_bot_or_login_wall(raw_lower):
         raise PublicSourceFetchError(
             "page appears to be a login wall or bot/verification check "
             "(detected an explicit marker in the page) - not usable content"

@@ -225,12 +225,12 @@ def test_targeted_results_explicit_person_role_project_is_medium(monkeypatch):
     hit = _result(
         "Пётр Петров - основатель Example Club",
         "https://news.example/article",
-        "Пётр Петров, основатель Example Club, рассказал о проекте.",
+        "Пётр Петров, основатель Example Club (example-club.ru), рассказал о проекте.",
     )
     llm = _FakeLLM([
         json.dumps({
             "found": True, "display_name": "Пётр Петров", "role": "основатель",
-            "evidence_text": "Пётр Петров, основатель Example Club, рассказал о проекте.",
+            "evidence_text": "Пётр Петров, основатель Example Club (example-club.ru), рассказал о проекте.",
             "evidence_url": "https://news.example/article",
         }),
     ])

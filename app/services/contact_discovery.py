@@ -55,16 +55,18 @@ ContactType.PROJECT ContactCandidate pointing at the prospect's own URL -
 never an empty/null result and never a guess.
 
 Privacy boundary: only public, professional facts ever enter or leave this
-module - a display name, a role, a public URL, and a short evidence
-excerpt. No phone, email, address, or private/closed-profile data is ever
-extracted, stored on ContactCandidate (see app.domain.contacts - the
-dataclass has no such fields), or sent to the LLM for "discovery" (only
-already-fetched public page text / already-returned public search
-snippets are ever in the prompt). No private API is used or could be used:
-app.services.web_search only exposes WebSearchProvider.search() (public web
-search), and fetch_public_source_sync only fetches a public URL - neither
-has any member-list/users.search-style capability to call in the first
-place.
+module - a display name, a role, a public URL, a short evidence excerpt and,
+since 13.10, the contact channels (email, phone, Telegram, WhatsApp, a
+contact form) that the project's OWN public page publishes verbatim - each
+with the page it was read from and whose it is (the named person's or the
+project's general one; see extract_channels). Nothing is guessed, composed
+or looked up elsewhere, no private/closed-profile data is read, and the LLM
+never receives or returns a channel (they are extracted deterministically
+from the already-fetched page). A website or a community page is never a
+channel. No private API is used or could be used: app.services.web_search
+only exposes WebSearchProvider.search() (public web search), and
+fetch_public_source_sync only fetches a public URL - neither has any
+member-list/users.search-style capability to call in the first place.
 
 Universal across ORCHESTRAVEL: nothing here is Travel-Advantage-specific,
 and ``ta_affiliated`` plays no role - same posture as
@@ -83,10 +85,17 @@ import dataclasses
 import html
 import json
 import logging
-from urllib.parse import urlsplit, urlunsplit
+import re
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from app.chat_provider import OpenAIChatProvider
-from app.domain.contacts import ContactCandidate, ContactConfidence, ContactType
+from app.domain.contacts import (
+    ContactCandidate,
+    ContactChannel,
+    ContactConfidence,
+    ContactType,
+    SearchStatus,
+)
 from app.domain.prospects import ProspectCandidate
 from app.planner.fetch import FetchedPublicSource, PublicSourceFetchError, fetch_public_source_sync
 from app.services.web_search.base import SearchResult, WebSearchProvider
@@ -129,6 +138,248 @@ def _looks_like_community_directory(prospect: ProspectCandidate) -> bool:
         part for part in (prospect.name, prospect.evidence, prospect.url) if part
     ).lower()
     return any(marker in haystack for marker in _COMMUNITY_DIRECTORY_MARKERS)
+
+# ── Incomplete vs. not found (13.10 incident) ────────────────────────────────
+# Every failure used to collapse into the same "person not found" fallback, so
+# a blocked page, an unreachable search or an unreadable model answer looked
+# exactly like "we looked and there is nobody". A step that could not run is
+# recorded here and turns the final answer into INCOMPLETE.
+
+REASON_LLM_UNAVAILABLE = "llm_unavailable"
+REASON_LLM_FAILED = "llm_failed"
+REASON_LLM_BAD_ANSWER = "llm_bad_answer"
+REASON_SEARCH_UNAVAILABLE = "search_unavailable"
+REASON_SEARCH_FAILED = "search_failed"
+REASON_PAGE_UNAVAILABLE = "page_unavailable"
+
+INCOMPLETE_REASON_LABELS = {
+    REASON_LLM_UNAVAILABLE: "модуль анализа текста сейчас не подключён",
+    REASON_LLM_FAILED: "анализ текста не ответил",
+    REASON_LLM_BAD_ANSWER: "анализ текста вернул нечитаемый ответ",
+    REASON_SEARCH_UNAVAILABLE: "веб-поиск сейчас не подключён",
+    REASON_SEARCH_FAILED: "веб-поиск не ответил",
+    REASON_PAGE_UNAVAILABLE: "страница проекта не открылась",
+}
+
+
+class _Diag:
+    """Collects the steps that could not run during one find_contact call."""
+
+    def __init__(self) -> None:
+        self.reasons: list[str] = []
+
+    def fail(self, reason: str) -> None:
+        if reason not in self.reasons:
+            self.reasons.append(reason)
+
+
+# ── Public contact channels published on the project's own page ──────────────
+# Only what the page itself publishes verbatim, with the page as the source.
+# A website or a community page is NOT a channel (it is where the project
+# lives, not a way to reach someone); VK/Instagram community links are
+# therefore skipped, except a VK "write to the community" link.
+
+_MAX_CHANNELS = 8
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
+_PHONE_RE = re.compile(
+    r"(?<!\d)(?:\+7|8)[\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}(?!\d)"
+)
+_JUNK_EMAIL_PARTS = (
+    "noreply", "no-reply", "example.", "sentry", "wixpress", ".png", ".jpg",
+    ".jpeg", ".webp", ".svg", ".gif",
+)
+_TG_HOSTS = frozenset({"t.me", "telegram.me", "telegram.dog"})
+_TG_SKIP_FIRST = frozenset({"share", "m", "s", "addstickers", "joinchat", "proxy", "socks", "iv"})
+_VK_HOSTS = frozenset({"vk.com", "vk.ru", "m.vk.com"})
+_FORM_ANCHOR_RE = re.compile(
+    r"оставить заявку|отправить заявку|обратн\w+ связ|заказать звонок|написать нам|форма заявки",
+    re.IGNORECASE,
+)
+_CHANNEL_ORDER = {"telegram": 0, "whatsapp": 1, "phone": 2, "email": 3, "form": 4, "vk": 5}
+_KIND_LABELS = {
+    "telegram": "Telegram", "whatsapp": "WhatsApp", "phone": "Телефон",
+    "email": "Email", "form": "Форма обращения", "vk": "Сообщения сообщества VK",
+}
+
+
+def channel_kind_label(kind: str) -> str:
+    return _KIND_LABELS.get(kind, kind)
+
+
+def _clean_host(url: str) -> str:
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _normalize_phone(raw: str) -> str:
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 11 and digits[0] in "78":
+        digits = "7" + digits[1:]
+    return f"+{digits}" if len(digits) >= 10 else ""
+
+
+def _name_tokens(display_name: str | None) -> list[str]:
+    return [t for t in re.findall(r"\w+", (display_name or "").lower()) if len(t) >= 4]
+
+
+def _mentions_person(context: str, tokens: list[str]) -> bool:
+    low = (context or "").lower()
+    return any(t[:5] in low for t in tokens)
+
+
+def extract_channels(
+    page: FetchedPublicSource, *, person_name: str | None = None,
+) -> tuple[ContactChannel, ...]:
+    """Contact channels the page publishes, with the page URL as source.
+
+    ``owner`` is ``"person"`` only when the named person's name stands in the
+    link text or right before the value in the page text; otherwise the
+    channel is the project's general one."""
+    source_url = page.final_url or page.url
+    tokens = _name_tokens(person_name)
+    found: dict[tuple[str, str], ContactChannel] = {}
+
+    def add(kind: str, value: str, context: str) -> None:
+        if not value or len(found) >= 40:
+            return
+        key = (kind, value.lower())
+        owner = "person" if tokens and _mentions_person(context, tokens) else "project"
+        existing = found.get(key)
+        if existing is None or (existing.owner == "project" and owner == "person"):
+            found[key] = ContactChannel(kind=kind, value=value, source_url=source_url, owner=owner)
+
+    page_host = _clean_host(source_url)
+    for href, anchor in getattr(page, "links", ()):
+        low = href.lower()
+        if low.startswith("mailto:"):
+            email = href[7:].split("?", 1)[0].strip()
+            if _EMAIL_RE.fullmatch(email) and not any(j in email.lower() for j in _JUNK_EMAIL_PARTS):
+                add("email", email, anchor)
+        elif low.startswith("tel:"):
+            phone = _normalize_phone(href[4:])
+            if phone:
+                add("phone", phone, anchor)
+        else:
+            try:
+                parts = urlsplit(href)
+            except ValueError:
+                continue
+            host = (parts.hostname or "").lower()
+            host = host[4:] if host.startswith("www.") else host
+            segments = [seg for seg in parts.path.split("/") if seg]
+            if host in _TG_HOSTS and segments:
+                handle = segments[0]
+                if (
+                    len(handle) >= 5 and not handle.startswith("+")
+                    and handle.lower() not in _TG_SKIP_FIRST and len(segments) == 1
+                ):
+                    add("telegram", f"https://t.me/{handle}", anchor)
+            elif host == "wa.me" and segments and segments[0].isdigit():
+                add("whatsapp", f"+{segments[0]}", anchor)
+            elif host in ("api.whatsapp.com", "web.whatsapp.com", "whatsapp.com"):
+                phone = (parse_qs(parts.query).get("phone") or [""])[0]
+                if phone.isdigit():
+                    add("whatsapp", f"+{phone}", anchor)
+            elif host in _VK_HOSTS and segments == ["im"] and "sel" in parse_qs(parts.query):
+                add("vk", href, anchor)
+            elif _FORM_ANCHOR_RE.search(anchor or "") and (
+                low.startswith("#") or (host and host == page_host)
+            ):
+                add("form", source_url if low.startswith("#") else href, anchor)
+
+    text = page.text or ""
+    for match in _EMAIL_RE.finditer(text):
+        email = match.group(0).strip(".")
+        if not any(j in email.lower() for j in _JUNK_EMAIL_PARTS):
+            add("email", email, text[max(0, match.start() - 100):match.start()])
+    for match in _PHONE_RE.finditer(text):
+        phone = _normalize_phone(match.group(0))
+        if phone:
+            add("phone", phone, text[max(0, match.start() - 100):match.start()])
+
+    ordered = sorted(
+        found.values(),
+        key=lambda ch: (0 if ch.owner == "person" else 1, _CHANNEL_ORDER.get(ch.kind, 9)),
+    )
+    return tuple(ordered[:_MAX_CHANNELS])
+
+
+# ── Does the evidence really belong to THIS project? ─────────────────────────
+# A matching project NAME is not an identity (two unrelated projects can both
+# be called "Вершина Трип"). Evidence from a page the project does not control
+# is accepted only when it carries a verifiable handle of the project: its
+# domain or its own social account (the prospect URL itself, or an account the
+# project's own page links to).
+
+_SOCIAL_HOSTS = frozenset({
+    "vk.com", "vk.ru", "m.vk.com", "t.me", "telegram.me", "instagram.com",
+    "facebook.com", "ok.ru", "youtube.com", "dzen.ru",
+})
+_HANDLE_STOPLIST = frozenset({
+    "share", "share.php", "sharer", "sharer.php", "intent", "dialog", "widget", "widgets",
+    "away.php", "login", "feed", "im", "id", "club", "public", "wall", "app", "apps",
+    "video", "photo", "albums", "music", "market", "groups", "events", "pages", "watch",
+    "channel", "user", "c", "playlist",
+})
+
+
+def _social_handle(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    host = (parts.hostname or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    if host not in _SOCIAL_HOSTS:
+        return ""
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if not segments:
+        return ""
+    handle = segments[0].lower()
+    if handle in _HANDLE_STOPLIST or len(handle) < 5 or handle.isdigit():
+        return ""
+    return handle
+
+
+def project_identity(prospect: ProspectCandidate, page: FetchedPublicSource | None) -> frozenset[str]:
+    """Verifiable handles of the project: its own domain / social handle and
+    the social accounts its own page links to."""
+    tokens: set[str] = set()
+    host = _clean_host(prospect.url)
+    handle = _social_handle(prospect.url)
+    if handle:
+        tokens.add(handle)
+    elif host and host not in _SOCIAL_HOSTS:
+        tokens.add(host)
+    if page is not None:
+        for href, _anchor in getattr(page, "links", ()):
+            linked = _social_handle(href)
+            if linked:
+                tokens.add(linked)
+    return frozenset(tokens)
+
+
+def _ties_to_project(identity: frozenset[str], result: SearchResult) -> bool:
+    if not identity:
+        return False
+    hay = f"{result.url} {result.title} {result.snippet}".lower()
+    return any(token in hay for token in identity)
+
+
+def _supported_name(display_name: str, *haystacks: str) -> str | None:
+    """The part of ``display_name`` that the source text really contains.
+    A model that adds a surname the source never printed gets it trimmed
+    off; a name with no supported part at all is rejected."""
+    hay = " ".join(h or "" for h in haystacks).lower()
+    kept = [
+        tok for tok in display_name.split()
+        if len(tok) >= 2 and tok.lower().strip(".,()")[: max(3, min(5, len(tok)))] in hay
+    ]
+    return " ".join(kept) if kept else None
+
 
 _PAGE_EXTRACTION_INSTRUCTIONS = """Ты обрабатываешь данные для внутреннего инструмента Partner Discovery. Это НЕ диалог с пользователем - разовая техническая задача. Отвечай только данными, без приветствий и комментариев.
 
@@ -243,7 +494,17 @@ def _project_name(prospect: ProspectCandidate) -> str:
     return prospect.name or prospect.url
 
 
-def _project_fallback(prospect: ProspectCandidate, provenance: str) -> ContactCandidate:
+def _project_fallback(
+    prospect: ProspectCandidate, provenance: str, *,
+    diag: "_Diag | None" = None,
+    channels: tuple[ContactChannel, ...] = (),
+) -> ContactCandidate:
+    """No named person. ``NOT_FOUND`` only when every step ran to completion;
+    any step that could not run makes it ``INCOMPLETE`` (absence is then not a
+    finding). ``public_url`` is the project's website/community - where it
+    lives, NOT a contact channel; real channels, if the page published any,
+    are in ``channels``."""
+    reasons = tuple(diag.reasons) if diag is not None else ()
     return ContactCandidate(
         contact_type=ContactType.PROJECT,
         display_name=_project_name(prospect),
@@ -252,6 +513,9 @@ def _project_fallback(prospect: ProspectCandidate, provenance: str) -> ContactCa
         evidence_text="",
         evidence_url=prospect.url,
         provenance=provenance,
+        channels=channels,
+        search_status=(SearchStatus.INCOMPLETE if reasons else SearchStatus.NOT_FOUND).value,
+        incomplete_reasons=reasons,
     )
 
 
@@ -280,19 +544,35 @@ def _sanitize_text(value: object, max_len: int) -> str | None:
     return cleaned[:max_len]
 
 
-async def _call_llm(llm_provider: OpenAIChatProvider, prompt: str) -> str | None:
+async def _call_llm(
+    llm_provider: OpenAIChatProvider, prompt: str, diag: "_Diag | None" = None,
+) -> str | None:
     try:
         result = await asyncio.to_thread(llm_provider.generate, message=prompt)
     except Exception:
         log.warning("contact_discovery: llm call failed", exc_info=True)
+        if diag is not None:
+            diag.fail(REASON_LLM_FAILED)
         return None
     return result.text
+
+
+def _parsed_or_flag(raw_text: str | None, diag: "_Diag | None") -> dict | None:
+    """Parsed JSON object, or None. A model answer that cannot be parsed is a
+    failed step (flagged), not an answer of "nobody"."""
+    if raw_text is None:
+        return None
+    parsed = _parse_json_object(raw_text)
+    if parsed is None and diag is not None:
+        diag.fail(REASON_LLM_BAD_ANSWER)
+    return parsed
 
 
 async def _extract_from_page(
     prospect: ProspectCandidate,
     page: FetchedPublicSource,
     llm_provider: OpenAIChatProvider,
+    diag: "_Diag | None" = None,
 ) -> ContactCandidate | None:
     """Step B: one LLM extraction call over the page already fetched in
     step A. Returns a HIGH-confidence ContactCandidate, or None if no
@@ -300,11 +580,8 @@ async def _extract_from_page(
     prompt = _PAGE_EXTRACTION_INSTRUCTIONS.format(
         project_name=_project_name(prospect), url=prospect.url, page_text=page.text[:6000],
     )
-    raw_text = await _call_llm(llm_provider, prompt)
-    if raw_text is None:
-        return None
-
-    parsed = _parse_json_object(raw_text)
+    raw_text = await _call_llm(llm_provider, prompt, diag)
+    parsed = _parsed_or_flag(raw_text, diag)
     if parsed is None or parsed.get("found") is not True:
         return None
 
@@ -312,6 +589,11 @@ async def _extract_from_page(
     role = _sanitize_text(parsed.get("role"), 120)
     evidence_text = _sanitize_text(parsed.get("evidence_text"), 300)
     if not display_name or not role or not evidence_text:
+        return None
+    # Only the part of the name the page really prints (a surname the model
+    # adds from nowhere is trimmed; no supported part at all -> no person).
+    display_name = _supported_name(display_name, evidence_text, page.text)
+    if not display_name:
         return None
 
     return ContactCandidate(
@@ -324,6 +606,7 @@ async def _extract_from_page(
         evidence_url=page.final_url or prospect.url,
         confidence=ContactConfidence.HIGH,
         provenance="official_page",
+        channels=extract_channels(page, person_name=display_name),
     )
 
 
@@ -332,7 +615,7 @@ def _targeted_queries(project_name: str) -> list[str]:
 
 
 def _run_targeted_searches(
-    provider: WebSearchProvider, project_name: str,
+    provider: WebSearchProvider, project_name: str, diag: "_Diag | None" = None,
 ) -> list[SearchResult]:
     """Step C: up to _MAX_TARGETED_QUERIES searches, each capped at
     _TARGETED_SEARCH_LIMIT results. Deliberately NOT a broad person search:
@@ -343,9 +626,16 @@ def _run_targeted_searches(
             response = provider.search(query, limit=_TARGETED_SEARCH_LIMIT)
         except Exception:
             log.warning("contact_discovery: targeted search failed", exc_info=True)
+            if diag is not None:
+                diag.fail(REASON_SEARCH_FAILED)
             continue
-        if response is not None:
-            results.extend(response.results)
+        if response is None:
+            # WebSearchProvider.search() returns None on ANY error (429,
+            # timeout, bad answer) - that is a failed search, not an empty one.
+            if diag is not None:
+                diag.fail(REASON_SEARCH_FAILED)
+            continue
+        results.extend(response.results)
     return _normalize_search_results(results)
 
 
@@ -362,6 +652,9 @@ async def _validate_search_results(
     prospect: ProspectCandidate,
     results: list[SearchResult],
     llm_provider: OpenAIChatProvider,
+    diag: "_Diag | None" = None,
+    identity: frozenset[str] = frozenset(),
+    channels: tuple[ContactChannel, ...] = (),
 ) -> ContactCandidate | None:
     """Step D: one LLM validation call over all step-C results combined.
     Returns a MEDIUM-confidence ContactCandidate, or None."""
@@ -373,11 +666,8 @@ async def _validate_search_results(
         project_url=prospect.url,
         results_block=_format_results_block(results),
     )
-    raw_text = await _call_llm(llm_provider, prompt)
-    if raw_text is None:
-        return None
-
-    parsed = _parse_json_object(raw_text)
+    raw_text = await _call_llm(llm_provider, prompt, diag)
+    parsed = _parsed_or_flag(raw_text, diag)
     if parsed is None or parsed.get("found") is not True:
         return None
 
@@ -390,7 +680,17 @@ async def _validate_search_results(
     # evidence_url must be one of the URLs actually returned by search -
     # the LLM must never be able to introduce a URL of its own (see module
     # docstring: "fail-closed by construction").
-    if evidence_url not in {result.url for result in results}:
+    matched = next((r for r in results if r.url == evidence_url), None)
+    if matched is None:
+        return None
+    # A matching project NAME is not proof (13.10: the name "Вершина Трип" can
+    # belong to unrelated projects). The evidence must carry the project's own
+    # domain or social handle; otherwise the person is not attributed.
+    if not _ties_to_project(identity, matched):
+        log.info("contact_discovery: evidence rejected - no project identity in %s", evidence_url)
+        return None
+    display_name = _supported_name(display_name, evidence_text, matched.title, matched.snippet)
+    if not display_name:
         return None
 
     return ContactCandidate(
@@ -403,6 +703,7 @@ async def _validate_search_results(
         evidence_url=evidence_url,
         confidence=ContactConfidence.MEDIUM,
         provenance="targeted_search",
+        channels=channels,
     )
 
 
@@ -413,7 +714,7 @@ def _professional_queries(project_name: str) -> list[str]:
 
 
 def _run_professional_searches(
-    provider: WebSearchProvider, project_name: str,
+    provider: WebSearchProvider, project_name: str, diag: "_Diag | None" = None,
 ) -> list[SearchResult]:
     """Step E's search pass - same shape/limits as step C's
     _run_targeted_searches (up to _MAX_PROFESSIONAL_QUERIES queries, each
@@ -427,9 +728,14 @@ def _run_professional_searches(
             response = provider.search(query, limit=_PROFESSIONAL_SEARCH_LIMIT)
         except Exception:
             log.warning("contact_discovery: professional search failed", exc_info=True)
+            if diag is not None:
+                diag.fail(REASON_SEARCH_FAILED)
             continue
-        if response is not None:
-            results.extend(response.results)
+        if response is None:
+            if diag is not None:
+                diag.fail(REASON_SEARCH_FAILED)
+            continue
+        results.extend(response.results)
     return _normalize_search_results(results)
 
 
@@ -437,6 +743,9 @@ async def _validate_professional_search_results(
     prospect: ProspectCandidate,
     results: list[SearchResult],
     llm_provider: OpenAIChatProvider,
+    diag: "_Diag | None" = None,
+    identity: frozenset[str] = frozenset(),
+    channels: tuple[ContactChannel, ...] = (),
 ) -> ContactCandidate | None:
     """Step E's validation call - same fail-closed shape as
     _validate_search_results (step D), with the professional-vs-owner
@@ -451,11 +760,8 @@ async def _validate_professional_search_results(
         project_url=prospect.url,
         results_block=_format_results_block(results),
     )
-    raw_text = await _call_llm(llm_provider, prompt)
-    if raw_text is None:
-        return None
-
-    parsed = _parse_json_object(raw_text)
+    raw_text = await _call_llm(llm_provider, prompt, diag)
+    parsed = _parsed_or_flag(raw_text, diag)
     if parsed is None or parsed.get("found") is not True:
         return None
 
@@ -467,7 +773,17 @@ async def _validate_professional_search_results(
         return None
     # evidence_url must be one of the URLs actually returned by search -
     # same anti-hallucination guard as step D.
-    if evidence_url not in {result.url for result in results}:
+    matched = next((r for r in results if r.url == evidence_url), None)
+    if matched is None:
+        return None
+    # A matching project NAME is not proof (13.10: the name "Вершина Трип" can
+    # belong to unrelated projects). The evidence must carry the project's own
+    # domain or social handle; otherwise the person is not attributed.
+    if not _ties_to_project(identity, matched):
+        log.info("contact_discovery: evidence rejected - no project identity in %s", evidence_url)
+        return None
+    display_name = _supported_name(display_name, evidence_text, matched.title, matched.snippet)
+    if not display_name:
         return None
 
     return ContactCandidate(
@@ -480,6 +796,7 @@ async def _validate_professional_search_results(
         evidence_url=evidence_url,
         confidence=ContactConfidence.MEDIUM,
         provenance="professional_search",
+        channels=channels,
     )
 
 
@@ -490,27 +807,42 @@ async def find_contact(
     web_search_provider: WebSearchProvider | None,
 ) -> ContactCandidate:
     """Entry point. Always returns a ContactCandidate - never None, never
-    raises past this function (every failure mode - missing provider, fetch
-    failure, LLM exception/invalid response - resolves to the safe
-    ContactType.PROJECT fallback pointing at the prospect's own page)."""
+    raises past this function. The result says HOW the check ended
+    (``search_status``): FOUND (a person, with the source tying them to the
+    project), NOT_FOUND (every step ran, nobody qualified) or INCOMPLETE (a
+    step could not run - e.g. the project page did not open or search/LLM
+    failed - so "nobody" would be a guess)."""
+    diag = _Diag()
     if llm_provider is None or not llm_provider.config.api_key:
-        return _project_fallback(prospect, provenance="no_llm_provider")
+        diag.fail(REASON_LLM_UNAVAILABLE)
+        return _project_fallback(prospect, provenance="no_llm_provider", diag=diag)
 
     try:
         page = await asyncio.to_thread(fetch_public_source_sync, prospect.url)
     except PublicSourceFetchError:
         page = None
+        diag.fail(REASON_PAGE_UNAVAILABLE)
+
+    project_channels: tuple[ContactChannel, ...] = (
+        extract_channels(page) if page is not None else ()
+    )
 
     if page is not None:
-        found = await _extract_from_page(prospect, page, llm_provider)
+        found = await _extract_from_page(prospect, page, llm_provider, diag)
         if found is not None:
             return found
 
     if web_search_provider is None:
-        return _project_fallback(prospect, provenance="person_not_found")
+        diag.fail(REASON_SEARCH_UNAVAILABLE)
+        return _project_fallback(
+            prospect, provenance="person_not_found", diag=diag, channels=project_channels,
+        )
 
-    results = _run_targeted_searches(web_search_provider, _project_name(prospect))
-    found = await _validate_search_results(prospect, results, llm_provider)
+    identity = project_identity(prospect, page)
+    results = _run_targeted_searches(web_search_provider, _project_name(prospect), diag)
+    found = await _validate_search_results(
+        prospect, results, llm_provider, diag, identity, project_channels,
+    )
     if found is not None:
         return found
 
@@ -522,12 +854,18 @@ async def find_contact(
     # the same PROJECT fallback as before this step existed.
     if _looks_like_community_directory(prospect):
         professional_results = _run_professional_searches(
-            web_search_provider, _project_name(prospect),
+            web_search_provider, _project_name(prospect), diag,
         )
         professional_found = await _validate_professional_search_results(
-            prospect, professional_results, llm_provider,
+            prospect, professional_results, llm_provider, diag, identity, project_channels,
         )
         if professional_found is not None:
             return professional_found
 
-    return _project_fallback(prospect, provenance="person_not_found")
+    log.info(
+        "contact_discovery: no person for %s page_read=%s search_results=%d channels=%d reasons=%s",
+        prospect.url, page is not None, len(results), len(project_channels), diag.reasons,
+    )
+    return _project_fallback(
+        prospect, provenance="person_not_found", diag=diag, channels=project_channels,
+    )

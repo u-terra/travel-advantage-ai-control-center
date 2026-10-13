@@ -357,7 +357,7 @@ def partner_contact_card_keyboard(contact_type: str, url: str) -> InlineKeyboard
     on a PROJECT fallback card. See app/handlers/partner_discovery.py's
     on_partner_contact_draft - draft only, human approval before any send,
     never auto-sent."""
-    open_label = "🌐 Открыть профиль/источник" if contact_type == "person" else "🌐 Открыть проект"
+    open_label = "🌐 Открыть источник связи" if contact_type == "person" else "🌐 Открыть сайт проекта"
     rows = [[InlineKeyboardButton(text=open_label, url=url)]]
     if contact_type == "person":
         rows.append([

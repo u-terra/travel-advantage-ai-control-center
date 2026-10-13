@@ -98,6 +98,10 @@ from app.services.lead_qualification import qualify_candidates as _qualify_candi
 from app.services.partner_discovery import PartnerDiscoveryService
 from app.services.telemetry import record_event
 from app.services.partner_outreach import (
+    NO_CHANNEL_TEXT,
+    contact_status_note,
+    format_channel_line,
+    split_channels,
     build_explanation as _build_explanation,
     build_outreach_draft_prompt as _build_outreach_draft_prompt,
     candidate_to_dict as _candidate_to_dict,
@@ -322,6 +326,25 @@ def _render_sources(candidate: dict) -> list[str]:
 # ── Contact Discovery v0 integration (read-only layer on top of the same
 # FSM batch; app/services/contact_discovery.py itself is not modified here) ──
 
+def _render_channels(contact: dict) -> str:
+    """Personal vs. project channels, each with its source; an honest
+    "Канал связи не найден" when the page published none. A website or a
+    community is never listed here as a channel."""
+    personal, project = split_channels(contact)
+    lines: list[str] = []
+    if personal:
+        lines.append("Личные контакты (названы рядом с этим человеком):")
+        lines.extend(f"- {format_channel_line(c)}" for c in personal)
+    if project:
+        lines.append("Общие контакты проекта:")
+        lines.extend(f"- {format_channel_line(c)}" for c in project)
+    if not lines:
+        lines.append(NO_CHANNEL_TEXT)
+    elif not personal and contact.get("contact_type") == "person":
+        lines.append("Личный контакт этого человека не найден.")
+    return "\n".join(lines)
+
+
 def _render_contact_card(contact: dict) -> str:
     if contact["contact_type"] == "person":
         name = _strip_private_contact_data(contact["display_name"])
@@ -331,14 +354,17 @@ def _render_contact_card(contact: dict) -> str:
         confidence_label = _CONTACT_CONFIDENCE_LABELS.get(
             contact.get("confidence"), contact.get("confidence") or "",
         )
+        link_label = contact.get("link_source_label") or ""
         return (
             "Найден публичный контакт\n\n"
             f"{name}\n"
             f"Роль: {role}\n"
             f"Проект: {project}\n\n"
             f"Почему выбран:\n{evidence}\n\n"
-            f"Источник:\n{contact['evidence_url']}\n\n"
-            f"Подтверждение: {confidence_label}"
+            f"Источник связи с проектом"
+            f"{f' ({link_label})' if link_label else ''}:\n{contact['evidence_url']}\n\n"
+            f"Подтверждение: {confidence_label}\n\n"
+            f"{_render_channels(contact)}"
         )
 
     # UX fix (2026-10-07): the URL used to appear both here in the card
@@ -346,11 +372,15 @@ def _render_contact_card(contact: dict) -> str:
     # contact_dict["public_url"] in both places) - shown once now, via the
     # button only.
     project = _strip_private_contact_data(contact["project_name"])
+    note = contact_status_note(contact) or (
+        "Конкретный публичный представитель проекта не найден."
+    )
+    # The site/community address itself stays on the button below (shown once,
+    # see the 2026-10-07 UX fix); the text only says what it is.
     return (
-        "Конкретный публичный представитель проекта не найден в доступных "
-        "публичных источниках.\n\n"
-        "Можно обратиться через официальный канал проекта:\n\n"
-        f"{project}"
+        f"{project}\n\n{note}\n\n"
+        f"{_render_channels(contact)}\n\n"
+        "Сайт проекта - по кнопке ниже. Это страница проекта, а не канал связи."
     )
 
 
@@ -713,7 +743,9 @@ _DRAFT_UNAVAILABLE = (
     "«👤 Найти человека для контакта»."
 )
 _DRAFT_HEADER = (
-    "✉️ Черновик первого сообщения - проверьте и отредактируйте перед отправкой:\n\n"
+    "✉️ Черновик первого сообщения - проверьте и отредактируйте перед отправкой.\n"
+    "Адресат и канал связи не подтверждены автоматически: прежде чем "
+    "отправлять, убедитесь сами, кому и куда пишете.\n\n"
 )
 
 # Matches the task's own example phrasings ("Подготовь письмо Ярмоленко",

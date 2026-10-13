@@ -340,6 +340,53 @@ def dict_to_prospect(candidate: dict) -> ProspectCandidate:
     )
 
 
+_LINK_SOURCE_LABELS = {
+    "official_page": "официальный сайт проекта",
+    "targeted_search": "страница, где проект назван вместе с этим человеком",
+    "professional_search": "страница, где проект назван вместе с этим человеком",
+}
+NO_CHANNEL_TEXT = "Канал связи не найден"
+
+
+def contact_status_note(contact: dict) -> str:
+    """One honest sentence about HOW the check ended, for a contact dict.
+    Empty for a found person."""
+    from app.services.contact_discovery import INCOMPLETE_REASON_LABELS
+
+    status = contact.get("search_status")
+    if status == "incomplete":
+        reasons = [
+            INCOMPLETE_REASON_LABELS.get(code, code)
+            for code in contact.get("incomplete_reasons") or ()
+        ]
+        why = "; ".join(reasons) if reasons else "часть проверки не выполнена"
+        return (
+            f"Проверка не завершена: {why}. Это не значит, что контакта нет, "
+            "- попробуйте позже."
+        )
+    if status == "not_found":
+        return "Проверка завершена: публичного представителя проекта найти не удалось."
+    return ""
+
+
+def split_channels(contact: dict) -> tuple[list[dict], list[dict]]:
+    """(personal, project) channels of a contact dict."""
+    channels = contact.get("channels") or []
+    return (
+        [c for c in channels if c.get("owner") == "person"],
+        [c for c in channels if c.get("owner") != "person"],
+    )
+
+
+def format_channel_line(channel: dict) -> str:
+    from app.services.contact_discovery import channel_kind_label
+
+    return (
+        f"{channel_kind_label(channel.get('kind', ''))}: {channel.get('value', '')} "
+        f"(источник: {channel.get('source_url', '')})"
+    )
+
+
 def contact_to_dict(contact: ContactCandidate) -> dict:
     return {
         "contact_type": contact.contact_type.value,
@@ -351,6 +398,14 @@ def contact_to_dict(contact: ContactCandidate) -> dict:
         "evidence_url": contact.evidence_url,
         "confidence": contact.confidence.value if contact.confidence else None,
         "provenance": contact.provenance,
+        # Where the person-project link comes from (a person only).
+        "link_source_label": _LINK_SOURCE_LABELS.get(contact.provenance, "") if contact.contact_type.value == "person" else "",
+        "channels": [
+            {"kind": ch.kind, "value": ch.value, "source_url": ch.source_url, "owner": ch.owner}
+            for ch in contact.channels
+        ],
+        "search_status": contact.search_status,
+        "incomplete_reasons": list(contact.incomplete_reasons),
     }
 
 
