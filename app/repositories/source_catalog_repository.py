@@ -11,6 +11,12 @@ from typing import Iterable, Literal
 import aiosqlite
 
 from app.domain.sources import WorkspaceSource
+from app.repositories.slot_guard import (
+    SLOT_SOURCES,
+    SlotLimitReached,
+    ensure_free_slot,
+    free_slots,
+)
 from app.services.source_catalog_export import export_radar_projection
 from app.services.source_registry import SEED_REGISTRY_PATH, SourceRegistry, load_registry
 from app.services.source_registry_store import UnknownSourceError, resolve_address
@@ -152,9 +158,19 @@ _SCHEMA_STATEMENTS = (
 
 
 class SourceCatalogRepository:
-    def __init__(self, db_path: Path, projection_path: Path) -> None:
+    def __init__(
+        self, db_path: Path, projection_path: Path, *, enforce_plan_slots: bool = False,
+    ) -> None:
         self.db_path = Path(db_path)
         self.projection_path = Path(projection_path)
+        # Production wiring (web, bot, admin CLI) turns this on: every path
+        # that CONNECTS a new source to a workspace (add_source, request
+        # approval, default pack, legacy import) then checks the plan's slot
+        # limit inside its own write transaction (app.repositories.
+        # slot_guard). Re-connecting a source the workspace already has
+        # (enabled or disabled) never takes a new slot. Off by default only
+        # so repository-level tests without a subscription table keep working.
+        self.enforce_plan_slots = enforce_plan_slots
 
     async def init(
         self,
@@ -209,7 +225,25 @@ class SourceCatalogRepository:
         self, db: aiosqlite.Connection, registry: SourceRegistry, workspace_id: int
     ) -> None:
         now = _now()
-        for source in registry:
+        # One-time migration of the owner's own legacy registry. When the
+        # owner already sits on an enforced tariff, only as many sources as
+        # the plan allows are CONNECTED (highest priority first); every
+        # source still lands in the catalog. A fresh database has no
+        # subscription rows yet at this point - that case is unlimited.
+        free: int | None = None
+        if self.enforce_plan_slots:
+            try:
+                free = await free_slots(
+                    db, workspace_id, SLOT_SOURCES, unprovisioned_is_unlimited=True,
+                )
+            except SlotLimitReached:
+                free = 0
+        skipped = 0
+        ordered = (
+            list(registry) if free is None
+            else sorted(registry, key=lambda s: (s.priority, s.id))
+        )
+        for source in ordered:
             created_at = source.created_at or now
             updated_at = source.updated_at or created_at
             await db.execute(
@@ -227,11 +261,22 @@ class SourceCatalogRepository:
                     created_at, updated_at,
                 ),
             )
+            if free is not None:
+                if free <= 0:
+                    skipped += 1
+                    continue
+                free -= 1
             await db.execute(
                 "INSERT INTO workspace_source_subscriptions "
                 "(workspace_id, source_id, enabled, usage_role, created_at, updated_at) "
                 "VALUES (?, ?, ?, 'monitoring', ?, ?)",
                 (workspace_id, source.id, int(source.enabled), now, now),
+            )
+        if skipped:
+            log.warning(
+                "legacy source import: %d source(s) kept in the catalog but not "
+                "connected to workspace %s - plan slot limit reached",
+                skipped, workspace_id,
             )
 
     async def count_for_workspace(self, workspace_id: int) -> int:
@@ -314,6 +359,12 @@ class SourceCatalogRepository:
                     outcome: Literal[
                         "created", "already_enabled", "already_disabled"
                     ] = "created"
+                    # Only a genuinely NEW connection takes a slot; the check
+                    # shares this write transaction, so parallel adds cannot
+                    # both take the last free slot. A refusal rolls back the
+                    # private catalog row inserted above as well.
+                    if self.enforce_plan_slots:
+                        await ensure_free_slot(db, workspace_id, SLOT_SOURCES)
                     await db.execute(
                         "INSERT INTO workspace_source_subscriptions "
                         "(workspace_id, source_id, enabled, usage_role, created_at, updated_at) "
@@ -342,8 +393,13 @@ class SourceCatalogRepository:
         *,
         enabled: bool = True,
         seed_path: Path | None = None,
-    ) -> None:
-        """Idempotently subscribes ``workspace_id`` to a platform source
+    ) -> int:
+        """Returns how many pack sources were newly connected. When slot
+        enforcement is on, only as many as the workspace's plan still has
+        free (START 5, STANDARD 15, FULL 40 in total), chosen by source
+        priority; sources the workspace already has take no new slot.
+
+        Idempotently subscribes ``workspace_id`` to a platform source
         pack (defaults to the 9-source ORCHESTRAVEL default pack) - meant
         to run exactly once, right after a workspace's first successful
         payment (see app.services.billing_service.BillingService.
@@ -372,21 +428,51 @@ class SourceCatalogRepository:
         """
         ids = tuple(dict.fromkeys(source_ids))
         if not ids:
-            return
+            return 0
         registry = load_registry(seed_path or SEED_REGISTRY_PATH)
+        known = []
+        for source_id in ids:
+            source = registry.get(source_id)
+            if source is None:
+                log.warning(
+                    "assign_default_sources: unknown source id '%s' skipped",
+                    source_id,
+                )
+                continue
+            known.append(source)
+        # Deterministic selection by the existing source priority (lower
+        # number = higher priority, id as the tie-break) - the same order the
+        # catalog itself uses - so when the plan has fewer free slots than
+        # the pack, the SAME top-priority sources are connected every time.
+        known.sort(key=lambda s: (s.priority, s.id))
         now = _now()
+        connected = 0
+        skipped = 0
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("PRAGMA foreign_keys = ON")
             await db.execute("BEGIN IMMEDIATE")
             try:
-                for source_id in ids:
-                    source = registry.get(source_id)
-                    if source is None:
-                        log.warning(
-                            "assign_default_sources: unknown source id '%s' skipped",
-                            source_id,
-                        )
-                        continue
+                # None = unlimited (no enforcement, or explicit beta). A plan
+                # that cannot be determined raises SlotLimitReached here and
+                # nothing is connected.
+                free = (
+                    await free_slots(db, workspace_id, SLOT_SOURCES)
+                    if self.enforce_plan_slots else None
+                )
+                for source in known:
+                    source_id = source.id
+                    if free is not None:
+                        already = await (await db.execute(
+                            "SELECT 1 FROM workspace_source_subscriptions "
+                            "WHERE workspace_id = ? AND source_id = ?",
+                            (workspace_id, source_id),
+                        )).fetchone()
+                        if already is not None:
+                            continue  # existing state is kept, takes no slot
+                        if free <= 0:
+                            skipped += 1
+                            continue
+                        free -= 1
                     await db.execute(
                         "INSERT OR IGNORE INTO source_catalog "
                         "(id, identity_key, name, platform, url, username, source_type, "
@@ -402,17 +488,24 @@ class SourceCatalogRepository:
                             now, now,
                         ),
                     )
-                    await db.execute(
+                    inserted = await db.execute(
                         "INSERT OR IGNORE INTO workspace_source_subscriptions "
                         "(workspace_id, source_id, enabled, usage_role, created_at, updated_at) "
                         "VALUES (?, ?, ?, 'monitoring', ?, ?)",
                         (workspace_id, source_id, int(enabled), now, now),
                     )
+                    connected += max(inserted.rowcount, 0)
                 await db.commit()
             except BaseException:
                 await db.rollback()
                 raise
+        if skipped:
+            log.info(
+                "assign_default_sources: workspace %s - %d pack source(s) not "
+                "connected, plan slot limit reached", workspace_id, skipped,
+            )
         await self.export_projection()
+        return connected
 
     async def submit_source_request(
         self, workspace_id: int, telegram_user_id: int, address: str
@@ -553,6 +646,20 @@ class SourceCatalogRepository:
                     raise SourceRequestConflictError(
                         "Rejected request нужно сначала повторно отправить"
                     )
+                # Approval = actually connecting the source. A source the
+                # workspace already holds (enabled or disabled) is only
+                # re-enabled and takes no new slot; a genuinely new one needs
+                # a free slot. On refusal SlotLimitReached propagates, the
+                # transaction rolls back and the request stays exactly as it
+                # was (never marked approved without a connection).
+                if self.enforce_plan_slots:
+                    existing_subscription = await (await db.execute(
+                        "SELECT 1 FROM workspace_source_subscriptions "
+                        "WHERE workspace_id = ? AND source_id = ?",
+                        (expected_workspace_id, request["source_id"]),
+                    )).fetchone()
+                    if existing_subscription is None:
+                        await ensure_free_slot(db, expected_workspace_id, SLOT_SOURCES)
                 await db.execute(
                     "INSERT INTO workspace_source_subscriptions "
                     "(workspace_id, source_id, enabled, usage_role, created_at, updated_at) "

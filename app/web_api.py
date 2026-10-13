@@ -146,6 +146,7 @@ from app.services.partner_outreach import (
     rank_for_club_partner_fit,
 )
 from app.services.plan_limits import get_plan_limits, is_quota_counted_material, plan_display_name
+from app.repositories.slot_guard import SlotLimitReached
 from app.services.plan_quota_service import PlanQuotaService
 from app.services.plans import DEFAULT_PLAN_CODE, get_plan, list_plans
 from app.services.rate_limit import signup_rate_limiter
@@ -219,7 +220,9 @@ web_search_service = _build_web_search_service(settings)
 
 knowledge_repository = KnowledgeRepository()
 usage_ledger_repository = UsageLedgerRepository(settings.journal_db_path)
-competitor_repository = CompetitorRepository(settings.journal_db_path)
+competitor_repository = CompetitorRepository(
+    settings.journal_db_path, enforce_plan_slots=True,
+)
 partner_repository = PartnerRepository(settings.journal_db_path)
 contact_claim_repository = ContactClaimRepository(settings.journal_db_path)
 workspace_memory_repository = WorkspaceMemoryRepository(settings.journal_db_path)
@@ -259,7 +262,8 @@ telegram_bind_token_repository = TelegramBindTokenRepository(settings.journal_db
 # assign_default_sources() from the RoboKassa success flow without needing
 # the bot process to be the one handling that request.
 source_catalog_repository = SourceCatalogRepository(
-    settings.journal_db_path, settings.sources_registry_path
+    settings.journal_db_path, settings.sources_registry_path,
+    enforce_plan_slots=True,
 )
 robokassa_config = RoboKassaConfig(
     merchant_login=settings.robokassa_merchant_login,
@@ -1746,6 +1750,15 @@ async def add_competitor_endpoint(
             severity=EventSeverity.INFO, error_code="validation_rejected",
         )
         return {"error": str(exc), "competitor": None}
+    except SlotLimitReached as exc:
+        # The authoritative, race-free refusal from inside the insert
+        # transaction (the pre-check above is only the fast path).
+        await record_event(
+            operational_event_repository, module="competitors", event_type="add",
+            success=False, workspace_id=principal.workspace_id, web_user_id=principal.web_user_id,
+            severity=EventSeverity.INFO, error_code="slot_limit_reached",
+        )
+        return {"error": exc.message, "competitor": None}
     except Exception:
         await record_event(
             operational_event_repository, module="competitors", event_type="add",

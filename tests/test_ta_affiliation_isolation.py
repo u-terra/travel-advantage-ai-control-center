@@ -59,6 +59,9 @@ def api(tmp_path, monkeypatch):
         # is ever hardcoded for (see app.repositories.partner_repository) -
         # the same "workspace 1" referenced in the isolation audit.
         ta_ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(TA_OWNER_ID))
+        # plan enforcement is fail-closed: production gives every workspace a
+        # subscription row (startup backfill / first access)
+        _run(web_api.subscription_repository.ensure_beta(ta_ws.id))
         login_as(client, web_api, ta_ws.id, TA_OWNER_ID)
         yield client, web_api, ta_ws.id
 
@@ -66,12 +69,14 @@ def api(tmp_path, monkeypatch):
 
 
 def _provision_independent(web_api, telegram_user_id: int, slug: str):
-    return _run(web_api.partner_repository.provision_partner(
+    provisioned = _run(web_api.partner_repository.provision_partner(
         telegram_user_id, "Independent Agent", slug,
         business_name="Мария Турагент", business_type="independent_agent",
         short_description="Подбираю туры под запрос клиента.",
         context={"specializations": ["Пляжный отдых"]},
     ))
+    _run(web_api.subscription_repository.ensure_beta(provisioned.workspace.id))
+    return provisioned
 
 
 async def _delete_business_profile(web_api, workspace_id: int) -> None:

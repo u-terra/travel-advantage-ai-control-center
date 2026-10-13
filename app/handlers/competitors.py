@@ -63,6 +63,7 @@ from app.services.generation_request_builder import build_provider_generation_re
 from app.services.knowledge_service import KnowledgeService
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
+from app.repositories.slot_guard import SlotLimitReached
 from app.services.plan_quota_service import PlanQuotaService
 from app.services.user_style import UserStyleService
 
@@ -216,6 +217,12 @@ async def receive_competitor_url(
         )
     except CompetitorAddressError as exc:
         await message.answer(f"Не получилось: {exc}", reply_markup=v2_back_keyboard())
+        return
+    except SlotLimitReached as exc:
+        # Authoritative refusal from inside the insert transaction (a
+        # parallel add can have taken the last slot after the pre-check).
+        await state.clear()
+        await message.answer(exc.message, reply_markup=active_main_menu(True))
         return
 
     await state.clear()
@@ -759,9 +766,14 @@ async def add_competitor_candidate(
         if not decision.allowed:
             await callback.message.answer(decision.message)
             return
-    competitor = await competitor_repository.add_competitor(
-        workspace_context.workspace_id, candidate.discovered_url, label=candidate.name,
-    )
+    try:
+        competitor = await competitor_repository.add_competitor(
+            workspace_context.workspace_id, candidate.discovered_url, label=candidate.name,
+        )
+    except SlotLimitReached as exc:
+        # Candidate stays as it was (not marked ADDED) - nothing was added.
+        await callback.message.answer(exc.message)
+        return
     await competitor_repository.update_candidate_status(
         workspace_context.workspace_id, candidate.candidate_id, CandidateStatus.ADDED,
     )

@@ -9,6 +9,7 @@ import sys
 from typing import Any, Sequence
 
 from app.repositories.partner_repository import PartnerRepository
+from app.repositories.slot_guard import SlotLimitReached
 from app.repositories.source_catalog_repository import SourceCatalogRepository
 from app.services.source_registry import SEED_REGISTRY_PATH, runtime_registry_path
 
@@ -123,7 +124,7 @@ def _print_source_request(request, *, detailed: bool = False) -> None:
 
 async def _source_request_command(args: argparse.Namespace, db_path: Path) -> int:
     repository = SourceCatalogRepository(
-        db_path, Path(args.source_registry_path)
+        db_path, Path(args.source_registry_path), enforce_plan_slots=True,
     )
     await repository.init(None, legacy_path=SEED_REGISTRY_PATH)
     if args.command == "list-source-requests":
@@ -144,9 +145,16 @@ async def _source_request_command(args: argparse.Namespace, db_path: Path) -> in
         _print_source_request(request, detailed=True)
         return 0
     if args.command == "approve-source-request":
-        request = await repository.approve_source_request(
-            args.request_id, args.workspace_id
-        )
+        try:
+            request = await repository.approve_source_request(
+                args.request_id, args.workspace_id
+            )
+        except SlotLimitReached as exc:
+            # Nothing was changed: the request stays pending, no source was
+            # connected. Exit code 3 = refused by the plan, not a crash.
+            print(f"NOT APPROVED: {exc.message}", file=sys.stderr)
+            print("Request left unchanged (still pending).", file=sys.stderr)
+            return 3
         print("Source request approved.")
         _print_source_request(request, detailed=True)
         print(

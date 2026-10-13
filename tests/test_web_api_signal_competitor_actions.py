@@ -179,6 +179,9 @@ def api(tmp_path, monkeypatch):
 
     with TestClient(web_api.app, base_url="https://testserver") as client:
         ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(OWNER_ID))
+        # plan enforcement is fail-closed: production gives every workspace a
+        # subscription row (startup backfill / first access)
+        _run(web_api.subscription_repository.ensure_beta(ws.id))
         login_as(client, web_api, ws.id, OWNER_ID)
         with sqlite3.connect(db_path) as db:
             _ensure_source_catalog_schema(db)
@@ -723,6 +726,7 @@ def test_cannot_use_another_workspaces_competitor_opportunity(api, monkeypatch) 
         business_name="Other", business_type="independent_agent",
         short_description="x", context={},
     ))
+    _run(web_api.subscription_repository.ensure_beta(other.workspace.id))
     other_competitor = _run(web_api.competitor_repository.add_competitor(
         other.workspace.id, "https://rival-other.example.com",
     ))

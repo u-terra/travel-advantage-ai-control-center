@@ -29,6 +29,9 @@ def _run(coro):
 
 def _login(client, web_api):
     ws, _ = _run(web_api.partner_repository.ensure_owner_workspace(OWNER_ID))
+    # Plan enforcement is fail-closed: a workspace needs a subscription row
+    # (production creates it at startup / on first access).
+    _run(web_api.subscription_repository.ensure_beta(ws.id))
     login_as(client, web_api, ws.id, OWNER_ID)
     return ws.id
 
@@ -215,6 +218,7 @@ def test_intelligence_report_not_leaked_across_workspaces(api) -> None:
         short_description="Другое рабочее пространство.",
         context={},
     ))
+    _run(web_api.subscription_repository.ensure_beta(other.workspace.id))
     foreign_competitor = _run(web_api.competitor_repository.add_competitor(
         other.workspace.id, "https://not-mine.example.com", label="Not mine",
     ))
@@ -406,6 +410,7 @@ def test_only_current_web_workspace_competitors_are_returned(api) -> None:
         short_description="Другое рабочее пространство.",
         context={},
     ))
+    _run(web_api.subscription_repository.ensure_beta(other.workspace.id))
     _run(web_api.competitor_repository.add_competitor(
         other.workspace.id, "https://not-mine.example.com", label="Not mine",
     ))
@@ -530,6 +535,7 @@ def test_analyze_endpoint_is_workspace_isolated(api) -> None:
         short_description="Другое рабочее пространство.",
         context={},
     ))
+    _run(web_api.subscription_repository.ensure_beta(other.workspace.id))
     foreign_competitor = _run(web_api.competitor_repository.add_competitor(
         other.workspace.id, "https://not-mine.example.com", label="Not mine",
     ))

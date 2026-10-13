@@ -233,7 +233,8 @@ async def _async_main() -> None:
     await source_analysis_repository.initialize()
 
     source_catalog_repository = SourceCatalogRepository(
-        settings.journal_db_path, settings.sources_registry_path
+        settings.journal_db_path, settings.sources_registry_path,
+        enforce_plan_slots=True,
     )
     legacy_source_path = (
         settings.sources_registry_path
@@ -260,7 +261,9 @@ async def _async_main() -> None:
     web_signal_repository = WebSignalRepository(settings.journal_db_path)
     await web_signal_repository.init()
 
-    competitor_repository = CompetitorRepository(settings.journal_db_path)
+    competitor_repository = CompetitorRepository(
+        settings.journal_db_path, enforce_plan_slots=True,
+    )
     await competitor_repository.init()
 
     work_repository = WorkRepository(settings.journal_db_path)

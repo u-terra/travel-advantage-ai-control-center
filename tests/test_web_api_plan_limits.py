@@ -283,3 +283,53 @@ def test_competitor_analysis_allowed_under_quota_calls_provider_and_records(api)
         workspace_id, COMPETITOR_ANALYSIS_COMPLETED, since,
     ))
     assert count == 1
+
+
+# ── atomic slot guard behind the HTTP pre-check ────────────────────────────
+
+
+def test_web_add_competitor_is_refused_by_the_write_transaction_when_the_precheck_is_stale(
+    api,
+) -> None:
+    client, web_api, workspace_id = api
+    _set_plan(web_api, workspace_id, SubscriptionPlan.START)  # limit 3
+    for index in range(3):
+        _run(web_api.competitor_repository.add_competitor(workspace_id, f"https://s{index}.example.com"))
+
+    async def _stale_precheck(workspace_id, current_count):
+        from app.services.plan_quota_service import QuotaDecision
+        return QuotaDecision(allowed=True)  # a parallel request already took the slot
+
+    web_api.plan_quota_service.check_competitor_slot = _stale_precheck
+
+    body = client.post("/api/competitors", json={"url": "https://late.example.com"}).json()
+
+    assert body["competitor"] is None
+    assert "3 конкурентов" in body["error"]
+    assert len(_run(web_api.competitor_repository.list_for_workspace(workspace_id))) == 3
+
+
+def test_web_over_limit_workspace_keeps_viewing_but_cannot_add(api) -> None:
+    client, web_api, workspace_id = api
+    _set_plan(web_api, workspace_id, SubscriptionPlan.STANDARD)  # limit 10
+    import sqlite3
+    with sqlite3.connect(web_api.settings.journal_db_path) as db:
+        for index in range(11):
+            db.execute(
+                "INSERT INTO competitors (workspace_id, url, label, created_at) "
+                "VALUES (?, ?, ?, 'now')", (workspace_id, f"https://o{index}.example.com", f"o{index}"),
+            )
+
+    listed = client.get("/api/competitors").json()["competitors"]
+    blocked = client.post("/api/competitors", json={"url": "https://twelfth.example.com"}).json()
+    usage = client.get("/api/billing/status").json()["usage"]
+
+    assert len(listed) == 11
+    assert blocked["competitor"] is None and "10 конкурентов" in blocked["error"]
+    assert usage["competitors_used"] == 11 and usage["competitors_limit"] == 10
+
+
+def test_web_repositories_enforce_slots_in_production_wiring(api) -> None:
+    _client, web_api, _ = api
+    assert web_api.competitor_repository.enforce_plan_slots is True
+    assert web_api.source_catalog_repository.enforce_plan_slots is True

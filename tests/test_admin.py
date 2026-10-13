@@ -8,6 +8,7 @@ from pathlib import Path
 from app import admin
 from app.repositories.partner_repository import PartnerRepository, empty_business_context
 from app.repositories.source_catalog_repository import SourceCatalogRepository
+from app.repositories.subscription_repository import SubscriptionRepository
 
 
 USER_ID = 123456789
@@ -159,6 +160,7 @@ def test_cli_source_request_list_show_approve_reject(tmp_path: Path, capsys) -> 
     legacy.write_text('{"schema_version": 2, "sources": []}', encoding="utf-8")
     repository = SourceCatalogRepository(db_path, projection)
     run(repository.init(workspace.id, legacy_path=legacy))
+    run(SubscriptionRepository(db_path).init())  # backfill: the workspace is 'beta'
     first = run(repository.submit_source_request(
         workspace.id, USER_ID, "https://example.com/admin-first"
     )).request

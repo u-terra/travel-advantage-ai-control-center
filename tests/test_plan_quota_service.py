@@ -244,6 +244,33 @@ def test_beta_plan_has_no_competitor_slot_limit(stack: Stack) -> None:
     assert _run(stack.quota.check_competitor_slot(ws, 999)).allowed is True
 
 
-def test_no_subscription_row_is_fail_open(stack: Stack) -> None:
-    decision = _run(stack.quota.check_material_quota(999_999))
-    assert decision.allowed is True
+def test_no_subscription_row_is_blocked_with_a_clear_reason(stack: Stack) -> None:
+    """Fail-closed: a missing subscription is NOT unlimited any more."""
+    for decision in (
+        _run(stack.quota.check_material_quota(999_999)),
+        _run(stack.quota.check_competitor_analysis_quota(999_999)),
+        _run(stack.quota.check_competitor_slot(999_999, 0)),
+        _run(stack.quota.check_source_slot(999_999, 0)),
+    ):
+        assert decision.allowed is False
+        assert "подписка не найдена" in decision.message
+
+
+def test_unknown_plan_is_blocked_with_a_clear_reason() -> None:
+    class _Sub:
+        plan = "enterprise-2099"
+
+    class _Subs:
+        async def get_for_workspace(self, workspace_id):
+            return _Sub()
+
+    quota = PlanQuotaService(_Subs(), None)  # type: ignore[arg-type]
+    for decision in (
+        _run(quota.check_material_quota(1)),
+        _run(quota.check_competitor_analysis_quota(1)),
+        _run(quota.check_competitor_slot(1, 0)),
+        _run(quota.check_source_slot(1, 0)),
+    ):
+        assert decision.allowed is False
+        assert "не распознан" in decision.message
+        assert "enterprise" not in decision.message  # stored value is never echoed

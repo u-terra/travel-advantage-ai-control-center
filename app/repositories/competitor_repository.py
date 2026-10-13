@@ -27,6 +27,7 @@ from app.domain.competitor_intelligence import (
     CompetitorSourceEvidence,
     ContentOpportunity,
 )
+from app.repositories.slot_guard import SLOT_COMPETITORS, ensure_free_slot
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS competitors (
@@ -95,8 +96,14 @@ class CompetitorLabelError(ValueError):
 
 
 class CompetitorRepository:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, enforce_plan_slots: bool = False) -> None:
         self.db_path = db_path
+        # Production wiring (web, bot) turns this on: add_competitor then
+        # checks the plan's slot limit and inserts in ONE write transaction
+        # (app.repositories.slot_guard) and raises SlotLimitReached when the
+        # workspace has no free slot. Off by default only so repository-level
+        # tests/tools without a subscription table keep working.
+        self.enforce_plan_slots = enforce_plan_slots
 
     async def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,12 +125,20 @@ class CompetitorRepository:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             await db.execute("PRAGMA foreign_keys = ON")
-            cursor = await db.execute(
-                "INSERT INTO competitors (workspace_id, url, label, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (workspace_id, address, resolved_label, now),
-            )
-            await db.commit()
+            if self.enforce_plan_slots:
+                await db.execute("BEGIN IMMEDIATE")
+            try:
+                if self.enforce_plan_slots:
+                    await ensure_free_slot(db, workspace_id, SLOT_COMPETITORS)
+                cursor = await db.execute(
+                    "INSERT INTO competitors (workspace_id, url, label, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (workspace_id, address, resolved_label, now),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
             row = await self._row(db, workspace_id, cursor.lastrowid or 0)
         if row is None:
             raise RuntimeError("Не удалось сохранить конкурента")

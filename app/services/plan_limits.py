@@ -11,10 +11,10 @@ allow/deny decision. No limit number is hardcoded anywhere else.
 
 Only SubscriptionPlan.START/STANDARD/FULL are enforced tariffs here.
 SubscriptionPlan.BETA (every legacy/grandfathered/CLI-provisioned workspace,
-see app.domain.subscription) deliberately has NO entry - get_plan_limits()
-returns None for it, and every caller in app.services.plan_quota_service
-treats None as "no limit enforced" (fail-open), so no existing legacy/beta
-workspace is newly blocked by this feature.
+see app.domain.subscription) deliberately has NO entry and is the ONLY plan
+that runs unlimited, by explicit decision (see resolve_plan below). A missing
+subscription or an unrecognized plan code is NOT unlimited: resolve_plan
+blocks the action with a clear reason (fail-closed).
 """
 
 from __future__ import annotations
@@ -120,9 +120,9 @@ PLAN_LIMITS: dict[str, PlanLimits] = {
 
 
 def get_plan_limits(plan: SubscriptionPlan | str | None) -> PlanLimits | None:
-    """None means "no enforced limit for this plan" - the plan is
-    beta/legacy, or unrecognized. Callers must treat None as fail-open, not
-    as a zero limit."""
+    """Raw table lookup: None means "no START/STANDARD/FULL entry" (beta or
+    unrecognized). Enforcement code must use resolve_plan(), which tells
+    explicit beta (unlimited) apart from unknown (blocked)."""
     if plan is None:
         return None
     code = plan.value if isinstance(plan, SubscriptionPlan) else str(plan)
@@ -131,3 +131,70 @@ def get_plan_limits(plan: SubscriptionPlan | str | None) -> PlanLimits | None:
 
 def plan_display_name(plan_code: str) -> str:
     return PLAN_DISPLAY_NAMES.get(plan_code, plan_code.upper())
+
+
+# ── what a workspace's plan means for enforcement ───────────────────────────
+#
+# Fail-CLOSED for anything that is not an explicit decision:
+#   - explicit 'beta'               -> unlimited (the intended legacy mode);
+#   - START / STANDARD / FULL       -> enforced limits;
+#   - no subscription row, or any plan code this module does not know
+#                                   -> the action is BLOCKED with a reason.
+# The message never echoes the stored plan code.
+
+NO_SUBSCRIPTION_MESSAGE = (
+    "Не удалось определить тариф рабочего пространства: подписка не найдена. "
+    "Действие временно недоступно - обратитесь в поддержку."
+)
+UNKNOWN_PLAN_MESSAGE = (
+    "Тариф рабочего пространства не распознан. "
+    "Действие временно недоступно - обратитесь в поддержку."
+)
+
+
+@dataclass(frozen=True)
+class PlanResolution:
+    limits: PlanLimits | None = None
+    unlimited: bool = False
+    block_message: str | None = None
+
+
+def resolve_plan(plan: SubscriptionPlan | str | None) -> PlanResolution:
+    """THE single place a plan code becomes an enforcement mode - used by
+    app.services.plan_quota_service and by the atomic slot guard in
+    app.repositories.slot_guard, so every channel and every write path
+    interprets a plan identically."""
+    if plan is None:
+        return PlanResolution(block_message=NO_SUBSCRIPTION_MESSAGE)
+    code = plan.value if isinstance(plan, SubscriptionPlan) else str(plan)
+    if code == SubscriptionPlan.BETA.value:
+        return PlanResolution(unlimited=True)
+    limits = PLAN_LIMITS.get(code)
+    if limits is None:
+        return PlanResolution(block_message=UNKNOWN_PLAN_MESSAGE)
+    return PlanResolution(limits=limits)
+
+
+def _free_slot_hint(plan_code: str) -> str:
+    next_code = NEXT_TIER.get(plan_code)
+    if next_code is None:
+        return " Освободите место, чтобы добавить новый."
+    return (
+        " Освободите место или перейдите на "
+        f"{plan_display_name(next_code)}."
+    )
+
+
+def competitor_slot_message(limits: PlanLimits) -> str:
+    return (
+        f"В тарифе {plan_display_name(limits.plan_code)} можно подключить до "
+        f"{limits.competitor_slot_limit} конкурентов.{_free_slot_hint(limits.plan_code)}"
+    )
+
+
+def source_slot_message(limits: PlanLimits) -> str:
+    return (
+        f"В тарифе {plan_display_name(limits.plan_code)} можно подключить до "
+        f"{limits.source_slot_limit} источников мониторинга."
+        f"{_free_slot_hint(limits.plan_code)}"
+    )
