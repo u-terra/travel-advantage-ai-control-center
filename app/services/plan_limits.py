@@ -185,12 +185,14 @@ def resolve_plan(plan: SubscriptionPlan | str | None) -> PlanResolution:
 # workspace exception - NOT a global switch: every other workspace keeps
 # resolving its own plan through resolve_plan().
 #
-# It lifts QUOTAS only. Subscription status/expiry (access_state), workspace
-# isolation, billing, prices and external-API limits are untouched: the
-# access gate still decides whether the workspace may use the product at all.
+# It lifts QUOTAS and the subscription TERM (paid_until/trial_until no longer
+# close access - see SubscriptionRepository.resolve_access_state). Everything
+# else is untouched: login + active membership, workspace isolation, the
+# 'suspended'/'past_due'/'expired'/'pending' STATUS blocks, billing, prices,
+# stored dates and payment records, external-API limits.
 _PRODUCTION_OWNER_WORKSPACE_IDS: frozenset[int] = frozenset({1})
 OWNER_UNLIMITED_WORKSPACE_IDS: frozenset[int] = _PRODUCTION_OWNER_WORKSPACE_IDS
-OWNER_ACCESS_LABEL = "Доступ владельца — без тарифных ограничений"
+OWNER_ACCESS_LABEL = "Доступ владельца — бессрочно, без тарифных ограничений"
 
 
 def is_owner_unlimited_workspace(workspace_id: int | None) -> bool:

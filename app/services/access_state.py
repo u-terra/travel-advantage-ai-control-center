@@ -48,8 +48,16 @@ def compute_access_state(
     paid_until: str | None,
     *,
     now: datetime | None = None,
+    ignore_term: bool = False,
 ) -> str:
     """workspace_subscriptions row -> фактический access_state.
+
+    ignore_term=True - персональное исключение срока для проверенного
+    пространства владельца (см. app.services.plan_limits.
+    OWNER_UNLIMITED_WORKSPACE_IDS): дата окончания trial/paid больше не
+    закрывает доступ. Это ТОЛЬКО про срок: статусы suspended, past_due,
+    expired, pending и неизвестный статус блокируют как раньше. Вызывает его
+    единственный вход - SubscriptionRepository.resolve_access_state().
 
     suspended и past_due всегда блокируют, независимо от дат: suspended —
     административная причина (не платёжная), past_due — платёж не прошёл,
@@ -80,8 +88,12 @@ def compute_access_state(
     if status == SubscriptionStatus.PENDING:
         return PENDING
     if status == SubscriptionStatus.TRIAL:
+        if ignore_term:
+            return TRIAL_ACTIVE
         return EXPIRED if _is_expired(trial_until, now) else TRIAL_ACTIVE
     if status in (SubscriptionStatus.BETA, SubscriptionStatus.ACTIVE):
+        if ignore_term:
+            return ACTIVE
         return EXPIRED if _is_expired(paid_until, now) else ACTIVE
     # Fail-closed hardening (production incident: an out-of-date deploy of
     # this file - missing the PENDING branch above - let a self-service

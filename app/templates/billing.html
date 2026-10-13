@@ -410,7 +410,7 @@ function renderUsage(usage, ownerAccess, ownerLabel) {
         const note = document.createElement("div");
         note.className = "usage-row";
         note.style.fontWeight = "600";
-        note.textContent = ownerLabel || "Доступ владельца — без тарифных ограничений";
+        note.textContent = ownerLabel || "Доступ владельца — бессрочно, без тарифных ограничений";
         panel.appendChild(note);
         return;
     }
@@ -441,7 +441,9 @@ async function loadStatus() {
         document.getElementById("statusValue").innerHTML =
             `<span class="badge ${badgeClass}">${STATUS_LABELS[data.status] || data.status || "—"}</span>`;
         document.getElementById("planValue").textContent = data.plan || "—";
-        document.getElementById("paidUntilValue").textContent = fmtDate(data.paid_until);
+        document.getElementById("paidUntilValue").textContent = data.owner_access === true
+            ? fmtDate(data.paid_until) + " (не ограничивает доступ владельца)"
+            : fmtDate(data.paid_until);
         document.getElementById("trialUntilValue").textContent = fmtDate(data.trial_until);
 
         if (data.is_test) {

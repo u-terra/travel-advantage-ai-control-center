@@ -138,16 +138,120 @@ def test_telegram_competitor_add_is_open_for_the_owner_and_limited_for_others(
     assert "10 конкурентов" in blocked.answer.await_args.args[0]
 
 
-def test_owner_exception_does_not_touch_the_access_gate(env: Env, owner_and_other) -> None:
-    """Quotas are lifted, access protection is not: an expired owner
-    subscription is still 'expired'."""
-    owner, _ = owner_and_other
-    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+def _set_paid_until(env: Env, ws: int, value: str) -> None:
     with sqlite3.connect(env.db) as db:
-        db.execute("UPDATE workspace_subscriptions SET paid_until=? WHERE workspace_id=?", (past, owner))
+        db.execute("UPDATE workspace_subscriptions SET paid_until=? WHERE workspace_id=?", (value, ws))
 
-    assert run(env.subs.resolve_access_state(owner)) == "expired"
-    assert plan_limits.is_owner_unlimited_workspace(owner) is True
+
+def _past() -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+
+
+def test_owner_keeps_access_after_paid_until_but_a_regular_expired_workspace_loses_it(
+    env: Env, owner_and_other,
+) -> None:
+    owner, other = owner_and_other
+    _set_paid_until(env, owner, _past())
+    _set_paid_until(env, other, _past())
+
+    assert run(env.subs.resolve_access_state(owner)) == "active"
+    assert run(env.subs.resolve_access_state(other)) == "expired"
+
+
+def test_owner_access_survives_an_unparseable_or_missing_term(env: Env, owner_and_other) -> None:
+    owner, _ = owner_and_other
+    _set_paid_until(env, owner, "not-a-date")
+    assert run(env.subs.resolve_access_state(owner)) == "active"
+    with sqlite3.connect(env.db) as db:
+        db.execute("UPDATE workspace_subscriptions SET paid_until=NULL WHERE workspace_id=?", (owner,))
+    assert run(env.subs.resolve_access_state(owner)) == "active"
+
+
+def test_suspended_owner_is_still_blocked_and_restore_brings_access_back(
+    env: Env, owner_and_other,
+) -> None:
+    owner, _ = owner_and_other
+    _set_paid_until(env, owner, _past())
+
+    run(env.subs.mark_suspended(owner))
+    assert run(env.subs.resolve_access_state(owner)) == "suspended"
+    run(env.subs.mark_active(owner))
+    assert run(env.subs.resolve_access_state(owner)) == "active"
+
+
+@pytest.mark.parametrize("blocker", ["past_due", "expired", "pending"])
+def test_status_based_blocks_still_apply_to_the_owner(env: Env, owner_and_other, blocker) -> None:
+    owner, _ = owner_and_other
+    with sqlite3.connect(env.db) as db:
+        db.execute("UPDATE workspace_subscriptions SET status=? WHERE workspace_id=?", (blocker, owner))
+
+    assert run(env.subs.resolve_access_state(owner)) == blocker
+
+
+def test_an_expired_trial_of_the_owner_does_not_close_access(env: Env, owner_and_other) -> None:
+    owner, _ = owner_and_other
+    run(env.subs.start_trial(owner, _past()))
+
+    assert run(env.subs.resolve_access_state(owner)) == "trial_active"
+
+
+def test_access_exception_is_per_workspace_not_global(env: Env, owner_and_other) -> None:
+    owner, other = owner_and_other
+    third = env.workspace(SubscriptionPlan.START, "third", 302)
+    for ws in (owner, other, third):
+        _set_paid_until(env, ws, _past())
+
+    states = {ws: run(env.subs.resolve_access_state(ws)) for ws in (owner, other, third)}
+
+    assert states == {owner: "active", other: "expired", third: "expired"}
+
+
+def test_owner_term_exception_does_not_modify_payment_data(env: Env, owner_and_other) -> None:
+    owner, _ = owner_and_other
+    past = _past()
+    _set_paid_until(env, owner, past)
+    before = run(env.subs.get_for_workspace(owner))
+
+    run(env.subs.resolve_access_state(owner))
+    run(env.subs.resolve_access_state(owner))
+    after = run(env.subs.get_for_workspace(owner))
+
+    assert after == before
+    assert after.paid_until == past and after.plan is SubscriptionPlan.STANDARD
+    assert after.payment_provider == "robokassa" and after.external_payment_id
+
+
+def test_telegram_access_gate_uses_the_same_owner_exception(env: Env, owner_and_other) -> None:
+    from app.access_state_gate import AccessStateMiddleware
+
+    owner, other = owner_and_other
+    _set_paid_until(env, owner, _past())
+    _set_paid_until(env, other, _past())
+    gate = AccessStateMiddleware(env.subs)
+
+    async def _state(ws: int) -> str:
+        seen: dict = {}
+
+        async def _handler(event, data):
+            seen.update(data)
+
+        await gate(_handler, object(), {"workspace_context": SimpleNamespace(workspace_id=ws)})
+        return seen["access_state"]
+
+    assert run(_state(owner)) == "active"
+    assert run(_state(other)) == "expired"
+
+
+def test_no_workspace_context_is_still_no_workspace(env: Env) -> None:
+    from app.access_state_gate import AccessStateMiddleware
+
+    seen: dict = {}
+
+    async def _handler(event, data):
+        seen.update(data)
+
+    run(AccessStateMiddleware(env.subs)(_handler, object(), {}))
+    assert seen["access_state"] == "no_workspace"
 
 
 def test_owner_subscription_row_is_not_modified_by_the_exception(env: Env, owner_and_other) -> None:
@@ -201,7 +305,7 @@ def test_cabinet_shows_owner_access_and_no_quota_panel_for_the_owner(api, monkey
     body = client.get("/api/billing/status").json()
 
     assert body["owner_access"] is True
-    assert body["owner_access_label"] == "Доступ владельца — без тарифных ограничений"
+    assert body["owner_access_label"] == "Доступ владельца — бессрочно, без тарифных ограничений"
     assert body["usage"] is None
     assert body["plan"] == "standard" and body["paid_until"]  # subscription data unchanged
 
@@ -233,8 +337,53 @@ def test_owner_can_add_a_twelfth_competitor_over_http_but_a_regular_workspace_ca
     assert allowed["competitor"] is not None
 
 
+def _expire(web_api, ws: int) -> None:
+    run(web_api.subscription_repository.mark_paid(
+        ws, external_payment_id="old", payment_provider="robokassa",
+        paid_until=(datetime.now(timezone.utc) - timedelta(days=90)).isoformat(),
+        plan=SubscriptionPlan.STANDARD,
+    ))
+
+
+def test_web_owner_passes_the_gate_after_paid_until_regular_workspace_gets_402(
+    api, monkeypatch,
+) -> None:
+    client, web_api, ws = api
+    _expire(web_api, ws)
+
+    assert client.get("/api/competitors").status_code == 402          # regular: expired
+    monkeypatch.setattr(plan_limits, "OWNER_UNLIMITED_WORKSPACE_IDS", frozenset({ws}))
+    assert client.get("/api/competitors").status_code == 200          # owner: term ignored
+    status = client.get("/api/billing/status").json()
+    assert status["access_granted"] is True and status["access_state"] == "active"
+    assert status["paid_until"] and status["plan"] == "standard"      # data not rewritten
+
+
+def test_web_suspended_owner_is_blocked(api, monkeypatch) -> None:
+    client, web_api, ws = api
+    monkeypatch.setattr(plan_limits, "OWNER_UNLIMITED_WORKSPACE_IDS", frozenset({ws}))
+    _expire(web_api, ws)
+    assert client.get("/api/competitors").status_code == 200
+
+    run(web_api.subscription_repository.mark_suspended(ws))
+
+    response = client.get("/api/competitors")
+    assert response.status_code == 402
+    assert response.json()["detail"]["access_state"] == "suspended"
+
+
+def test_web_authentication_is_still_required_for_the_owner(api, monkeypatch) -> None:
+    client, web_api, ws = api
+    monkeypatch.setattr(plan_limits, "OWNER_UNLIMITED_WORKSPACE_IDS", frozenset({ws}))
+    _expire(web_api, ws)
+
+    with TestClient(web_api.app, base_url="https://testserver") as anonymous:
+        assert anonymous.get("/api/competitors").status_code == 401
+
+
 def test_billing_page_renders_the_owner_label() -> None:
     html = (Path(__file__).resolve().parents[1] / "app" / "templates" / "billing.html").read_text(
         encoding="utf-8")
-    assert "Доступ владельца — без тарифных ограничений" in html
+    assert "Доступ владельца — бессрочно, без тарифных ограничений" in html
+    assert "не ограничивает доступ владельца" in html
     assert "data.owner_access === true" in html

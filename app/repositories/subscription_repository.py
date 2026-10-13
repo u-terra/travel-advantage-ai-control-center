@@ -25,6 +25,7 @@ import aiosqlite
 
 from app.domain.subscription import Subscription, SubscriptionPlan, SubscriptionStatus
 from app.services.access_state import EXPIRED, compute_access_state
+from app.services.plan_limits import is_owner_unlimited_workspace
 
 _TABLE_COLUMNS_SQL = """(
     workspace_id INTEGER PRIMARY KEY,
@@ -233,6 +234,11 @@ class SubscriptionRepository:
             return EXPIRED
         return compute_access_state(
             subscription.status, subscription.trial_until, subscription.paid_until,
+            # Verified owner workspace: the subscription TERM (paid_until /
+            # trial_until) never closes access; status-based blocks
+            # (suspended, past_due, ...) still apply. The stored dates and
+            # payment records are not modified.
+            ignore_term=is_owner_unlimited_workspace(workspace_id),
         )
 
     async def mark_paid(
