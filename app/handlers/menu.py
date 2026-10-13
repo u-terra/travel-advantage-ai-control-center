@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
@@ -72,9 +73,10 @@ from app.repositories.web_signal_repository import WebSignalRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.conversation_state_service import ConversationStateService
 from app.services.draft_sanitizer import sanitize_draft_text
+from app.services.article_pages import url_looks_like_catalog
 from app.services.generation_request_builder import (
     build_budgeted_provider_request,
-    source_content_is_sufficient,
+    signal_material_is_sufficient,
 )
 from app.services.llm.base import LLMProvider
 from app.services.material_orchestration import MaterialOrchestrationService
@@ -236,20 +238,42 @@ def _short_title(text: str, max_len: int = 42) -> str:
     return value[: max_len - 1].rstrip() + "…"
 
 
+_WEB_POST_PREFIX = "webpost:"
+_NO_POST_IDEAS = "Создать пост из найденного сейчас нельзя."
+_NOT_ENOUGH_REASON = "в материале мало конкретики для хорошего поста"
+
+
+def _blocked_lines(blocked: list[dict]) -> str:
+    return "".join(
+        f"\n- {_short_title(i['title'])}: {_NOT_ENOUGH_REASON}" for i in blocked
+    )
+
+
+def _post_actions_keyboard(
+    ideas: list[dict[str, str]], web_ideas: list[dict],
+) -> InlineKeyboardMarkup:
+    """One "📝 Создать пост" button per usable material; the callback carries
+    the concrete signal id (Radar: interpretation id, web: web signal id)."""
+    rows = [
+        [InlineKeyboardButton(
+            text=f"📝 Создать пост: {_short_title(idea['title'])}",
+            callback_data=f"{_RADAR_CONTENT_PREFIX}{idea['interpretation_id']}",
+        )]
+        for idea in ideas
+    ] + [
+        [InlineKeyboardButton(
+            text=f"📝 Создать пост: {_short_title(idea['title'])}",
+            callback_data=f"{_WEB_POST_PREFIX}{idea['id']}",
+        )]
+        for idea in web_ideas
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _radar_content_keyboard(
     ideas: list[dict[str, str]],
 ) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"📝 {index}. {_short_title(idea['title'])}",
-                    callback_data=f"{_RADAR_CONTENT_PREFIX}{idea['interpretation_id']}",
-                )
-            ]
-            for index, idea in enumerate(ideas, start=1)
-        ]
-    )
+    return _post_actions_keyboard(ideas, [])
 
 
 def _radar_content_ideas(signals) -> list[dict[str, str]]:
@@ -259,6 +283,7 @@ def _radar_content_ideas(signals) -> list[dict[str, str]]:
             "title": signal.title,
             "reason": signal.action_reason,
             "url": signal.url,
+            "usable": signal_material_is_sufficient(signal.title, signal.summary, "", ""),
         }
         for signal in signals
         if signal.recommended_action == "content"
@@ -645,6 +670,10 @@ async def on_find_signals(
         except Exception:
             log.warning("on_find_signals: web signal listing failed", exc_info=True)
             web_records = []
+        web_records = [
+            r for r in web_records
+            if not (r.item_url and url_looks_like_catalog(r.item_url))
+        ]
         web_block = format_web_signals_block(web_records)
         if web_block:
             await message.answer(web_block, disable_web_page_preview=True)
@@ -653,20 +682,86 @@ async def on_find_signals(
     if not sent_any_block:
         await message.answer(_NO_SIGNALS_ANYWHERE)
 
-    ideas = _radar_content_ideas(signals or [])
-    if not ideas:
+    all_ideas = _radar_content_ideas(signals or [])
+    ideas = [i for i in all_ideas if i["usable"]]
+    web_ideas = [
+        {
+            "id": str(r.id), "title": r.title, "usable": signal_material_is_sufficient(
+                r.title, r.summary, r.body, r.source_name,
+            ),
+        }
+        for r in web_records if r.id is not None
+    ][:_RADAR_CONTENT_LIMIT]
+    usable_web = [i for i in web_ideas if i["usable"]]
+    blocked = [i for i in all_ideas + web_ideas if not i["usable"]]
+
+    if ideas:
+        await _record_radar_content_offer(
+            conversation_state_repository, workspace_context.workspace_id,
+            workspace_context.telegram_user_id, ideas,
+        )
+
+    if not ideas and not usable_web:
+        if sent_any_block:
+            await message.answer(_NO_POST_IDEAS + _blocked_lines(blocked))
         return
 
-    await _record_radar_content_offer(
-        conversation_state_repository, workspace_context.workspace_id,
-        workspace_context.telegram_user_id, ideas,
+    text = (
+        "💡 Выберите материал и нажмите кнопку - подготовлю черновик "
+        "Telegram-поста. Ничего не публикуется автоматически."
+    )
+    if blocked:
+        text += "\n\nПост недоступен:" + _blocked_lines(blocked)
+    await message.answer(
+        text,
+        reply_markup=_post_actions_keyboard(ideas, usable_web),
+        disable_web_page_preview=True,
     )
 
-    await message.answer(
-        "💡 Выберите идею, чтобы подготовить черновик Telegram-поста. "
-        "Ничего не публикуется автоматически.",
-        reply_markup=_radar_content_keyboard(ideas),
-        disable_web_page_preview=True,
+
+@router.callback_query(F.data.startswith(_WEB_POST_PREFIX))
+async def on_web_post_selected(
+    callback: CallbackQuery,
+    state: FSMContext,
+    journal: Journal,
+    llm_provider: LLMProvider,
+    workspace_context: WorkspaceContext | None,
+    partner_repository: PartnerRepository,
+    artifact_repository: ArtifactRepository,
+    web_signal_repository: WebSignalRepository | None = None,
+    conversation_state_repository: ConversationStateRepository | None = None,
+    plan_quota_service: PlanQuotaService | None = None,
+) -> None:
+    """"📝 Создать пост" for a material collected from the workspace's own web
+    sources. Same generation/saving path as the Radar button
+    (``_generate_radar_post``); the material is looked up in THIS workspace
+    only."""
+    raw_id = (callback.data or "").removeprefix(_WEB_POST_PREFIX)
+    if not raw_id.isdigit() or int(raw_id) <= 0:
+        await callback.answer("Не удалось определить выбранный материал.", show_alert=True)
+        return
+    if workspace_context is None or web_signal_repository is None:
+        await callback.answer("Рабочее пространство недоступно.", show_alert=True)
+        return
+    web_record = await web_signal_repository.get_for_workspace(
+        workspace_context.workspace_id, int(raw_id),
+    )
+    if web_record is None:
+        await callback.answer("Материал недоступен.", show_alert=True)
+        return
+    record = SimpleNamespace(
+        item_title=web_record.title, item_summary=web_record.summary,
+        item_url=web_record.item_url, source_type="web", origin_type="web_source",
+        ai_category="", ai_reason=f"Материал с сайта-источника: {web_record.source_name}",
+        source_name=web_record.source_name, body=web_record.body,
+    )
+    signal = SimpleNamespace(title=web_record.title, action_reason=record.ai_reason)
+    await _generate_radar_post(
+        callback, state, journal=journal, llm_provider=llm_provider,
+        workspace_context=workspace_context, partner_repository=partner_repository,
+        artifact_repository=artifact_repository,
+        conversation_state_repository=conversation_state_repository,
+        plan_quota_service=plan_quota_service, record=record, signal=signal,
     )
 
 
@@ -726,6 +821,35 @@ async def on_radar_content_selected(
         return
     signal = authorized[0]
 
+    await _generate_radar_post(
+        callback, state, journal=journal, llm_provider=llm_provider,
+        workspace_context=workspace_context, partner_repository=partner_repository,
+        artifact_repository=artifact_repository,
+        conversation_state_repository=conversation_state_repository,
+        plan_quota_service=plan_quota_service, record=record, signal=signal,
+    )
+
+
+async def _generate_radar_post(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    journal: Journal,
+    llm_provider: LLMProvider,
+    workspace_context: WorkspaceContext,
+    partner_repository: PartnerRepository,
+    artifact_repository: ArtifactRepository,
+    conversation_state_repository: ConversationStateRepository | None,
+    plan_quota_service: PlanQuotaService | None,
+    record,
+    signal,
+) -> None:
+    """Shared "signal -> post" generation: sufficiency gate, source analysis,
+    quota, generation, sanitising, saving the material in the CURRENT
+    workspace. ``record`` needs item_title/item_summary/item_url/source_type/
+    origin_type/ai_category/ai_reason (+ optional source_name/body);
+    ``signal`` needs title/action_reason. Used by the Radar button and the
+    web-source button, so there is one generation path."""
     profile = await partner_repository.get_business_profile(
         workspace_context.workspace_id
     )
@@ -736,8 +860,8 @@ async def on_radar_content_selected(
     # Достаточность материала проверяется ДО анализа и генерации (тот же
     # критерий, что в вебе): если в записи нет конкретики, общий пересказ
     # не создаётся.
-    if not source_content_is_sufficient(
-        record.item_title, record.item_summary,
+    if not signal_material_is_sufficient(
+        record.item_title, record.item_summary, getattr(record, "body", "") or "",
         getattr(record, "source_name", "") or "",
     ):
         await callback.answer("Готовлю черновик…")
@@ -751,8 +875,10 @@ async def on_radar_content_selected(
     # Content Factory flow) до генерации черновика, а не отдельный
     # параллельный механизм.
     radar_source_text = "\n".join(
-        value for value in (record.item_title, record.item_summary) if value
-    )
+        value for value in (
+            record.item_title, record.item_summary, getattr(record, "body", ""),
+        ) if value
+    )[:6000]
     analysis = await asyncio.to_thread(
         llm_provider.analyze_source, source_text=radar_source_text
     )
@@ -778,6 +904,7 @@ async def on_radar_content_selected(
         reason=record.ai_reason or signal.action_reason,
         analysis=analysis,
         user_preferences=user_preferences,
+        body=getattr(record, "body", "") or "",
     )
     if plan_quota_service is not None:
         decision = await plan_quota_service.check_material_quota(

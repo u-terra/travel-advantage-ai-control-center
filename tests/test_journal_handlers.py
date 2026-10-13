@@ -10,7 +10,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from app.domain.business_profiles import BusinessClaim, BusinessContext, BusinessProfile
 from app.domain.partners import WorkspaceContext, WorkspaceUserPreferences
-from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected
+from app.handlers.menu import on_find_signals, on_last_task, on_radar_content_selected, on_web_post_selected
 from app.handlers.tasks import (
     _DRAFT_FAILURE_MESSAGE,
     _DRAFT_SEND_FAILURE_MESSAGE,
@@ -919,7 +919,7 @@ def test_find_signals_without_conversation_repository_is_unaffected() -> None:
     message = Message()
     with _recommender_patch():
         run(on_find_signals(message, State(), radar_config(), signal_repo, context(42, 100)))
-    assert any("Выберите идею" in text for text, _ in message.answers)
+    assert any("Выберите материал" in text for text, _ in message.answers)
 
 
 def web_signal(
@@ -927,7 +927,7 @@ def web_signal(
     url="https://example.com/article", source_name="Trip.com Travel Guide",
 ):
     return SimpleNamespace(
-        title=title, summary=summary, item_url=url, source_url=url,
+        id=1, body="", title=title, summary=summary, item_url=url, source_url=url,
         source_name=source_name,
     )
 
@@ -970,7 +970,7 @@ def test_find_signals_without_web_deps_is_unaffected() -> None:
     with _recommender_patch(), patch("app.services.signal_service.WebSignalCollector") as collector_cls:
         run(on_find_signals(message, State(), radar_config(), signal_repo, context(42, 100)))
     collector_cls.assert_not_called()
-    assert any("Выберите идею" in text for text, _ in message.answers)
+    assert any("Выберите материал" in text for text, _ in message.answers)
 
 
 def test_find_signals_web_collection_failure_does_not_break_radar_block() -> None:
@@ -2757,3 +2757,146 @@ def test_radar_thin_material_gets_clear_refusal_instead_of_generic_post():
     shown = callback.message.answers[-1][0]
     assert "мало конкретики" in shown
     assert "Не удалось получить черновик" not in shown
+
+
+# --- "📝 Создать пост": keyboard -> callback -> signal -> saved material -----
+# Stubs: LLM provider (FakeLLMProvider), repositories (mocks), recommender.
+# Real: on_find_signals, the generated keyboard, on_radar_content_selected /
+# on_web_post_selected, the shared generation function, aiogram routing table.
+
+def _buttons(message):
+    markup = next(
+        kw["reply_markup"] for _t, kw in reversed(message.answers) if kw.get("reply_markup")
+        and getattr(kw["reply_markup"], "inline_keyboard", None) is not None
+    )
+    return [b for row in markup.inline_keyboard for b in row]
+
+
+def _find(signal_repo, web_repo=None):
+    message = Message()
+    kwargs = {}
+    if web_repo is not None:
+        kwargs = dict(
+            source_catalog_repository=SimpleNamespace(), web_signal_repository=web_repo,
+            llm_provider=SimpleNamespace(),
+        )
+    with _recommender_patch(), patch("app.services.signal_service.WebSignalCollector") as cls:
+        cls.return_value.collect_for_workspace = AsyncMock()
+        run(on_find_signals(message, State(), radar_config(), signal_repo, context(42, 100), **kwargs))
+    return message
+
+
+def test_usable_radar_idea_gets_create_post_button_that_saves_the_material():
+    record = radar_record()
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(), list_for_workspace=AsyncMock(return_value=[record]),
+        get_for_workspace=AsyncMock(return_value=record),
+    )
+    message = _find(signal_repo)
+    buttons = _buttons(message)
+    assert [b.text for b in buttons] == ["📝 Создать пост: Тема"]
+    assert buttons[0].callback_data == "radar_content:7"
+
+    # press exactly that button
+    callback = Callback()
+    callback.data = buttons[0].callback_data
+    artifacts = artifact_repository(artifact_id=909)
+    provider = FakeLLMProvider(draft=ContentDraft("Радар-пост", ()), analysis=analysis_payload())
+    with _recommender_patch():
+        run(on_radar_content_selected(
+            callback, State(), journal(), provider, context(42), signal_repo,
+            radar_config(), profile_repository(), artifacts,
+        ))
+    signal_repo.get_for_workspace.assert_awaited_with(42, 7)          # the selected signal, this workspace
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    assert artifacts.create_artifact_with_initial_version.call_args.args[0] == 42
+    assert "Радар-пост" in callback.message.answers[-1][0]
+
+
+def test_thin_radar_idea_has_no_button_and_a_reason():
+    record = radar_record(summary="Подборка статей.")
+    signal_repo = SimpleNamespace(
+        sync_eligible=AsyncMock(), list_for_workspace=AsyncMock(return_value=[record]),
+    )
+    message = _find(signal_repo)
+    texts = [t for t, _ in message.answers]
+    assert not any(
+        kw.get("reply_markup") is not None and getattr(kw["reply_markup"], "inline_keyboard", None)
+        for _t, kw in message.answers[1:]
+    )
+    assert any("Создать пост из найденного сейчас нельзя" in t and "мало конкретики" in t for t in texts)
+
+
+def _web_record(rid=5, *, body=None, summary="Короткое резюме."):
+    return SimpleNamespace(
+        id=rid, title="Как поехать в Грузию осенью", summary=summary,
+        body=RADAR_SUMMARY * 4 if body is None else body,
+        item_url="https://t-j.ru/kak-poehat-v-gruziyu-osenyu/", source_url="https://t-j.ru/",
+        source_name="Т—Ж",
+    )
+
+
+def test_web_material_gets_create_post_button_that_saves_in_the_current_workspace():
+    web_repo = SimpleNamespace(
+        list_for_workspace=AsyncMock(return_value=[_web_record()]),
+        get_for_workspace=AsyncMock(return_value=_web_record()),
+    )
+    signal_repo = SimpleNamespace(sync_eligible=AsyncMock(), list_for_workspace=AsyncMock(return_value=[]))
+    message = _find(signal_repo, web_repo)
+    buttons = _buttons(message)
+    assert [b.text for b in buttons] == ["📝 Создать пост: Как поехать в Грузию осенью"]
+    assert buttons[0].callback_data == "webpost:5"
+
+    callback = Callback()
+    callback.data = buttons[0].callback_data
+    artifacts = artifact_repository(artifact_id=910)
+    provider = FakeLLMProvider(draft=ContentDraft("Пост про Грузию", ()), analysis=analysis_payload())
+    run(on_web_post_selected(
+        callback, State(), journal(), provider, context(42), profile_repository(), artifacts,
+        web_signal_repository=web_repo,
+    ))
+    web_repo.get_for_workspace.assert_awaited_with(42, 5)
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    assert artifacts.create_artifact_with_initial_version.call_args.args[0] == 42
+    assert "Пост про Грузию" in callback.message.answers[-1][0]
+
+
+def test_web_material_of_another_workspace_is_not_generated():
+    web_repo = SimpleNamespace(get_for_workspace=AsyncMock(return_value=None))
+    callback = Callback()
+    callback.data = "webpost:5"
+    artifacts = artifact_repository()
+    provider = FakeLLMProvider(draft=ContentDraft("x", ()), analysis=analysis_payload())
+    run(on_web_post_selected(
+        callback, State(), journal(), provider, context(42), profile_repository(), artifacts,
+        web_signal_repository=web_repo,
+    ))
+    provider.generate_draft.assert_not_called()
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+    assert callback.answers[-1][1].get("show_alert") is True
+
+
+def test_thin_web_material_has_no_button_and_gets_a_reason():
+    thin = _web_record(body="", summary="Список статей.")
+    web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[thin]))
+    signal_repo = SimpleNamespace(sync_eligible=AsyncMock(), list_for_workspace=AsyncMock(return_value=[]))
+    message = _find(signal_repo, web_repo)
+    assert any("мало конкретики" in t for t, _ in message.answers)
+    assert not any(
+        getattr(kw.get("reply_markup"), "inline_keyboard", None) for _t, kw in message.answers[1:]
+    )
+
+
+def test_catalog_rows_saved_earlier_are_not_offered_in_telegram():
+    old = _web_record(rid=6)
+    old.item_url = "https://t-j.ru/flows/world-travel/"
+    web_repo = SimpleNamespace(list_for_workspace=AsyncMock(return_value=[old]))
+    signal_repo = SimpleNamespace(sync_eligible=AsyncMock(), list_for_workspace=AsyncMock(return_value=[]))
+    message = _find(signal_repo, web_repo)
+    assert not any("flows/world-travel" in t for t, _ in message.answers)
+
+
+def test_both_create_post_callbacks_are_wired_to_handlers_in_the_router():
+    from app.handlers.menu import router
+    names = {h.callback.__name__ for h in router.callback_query.handlers}
+    assert {"on_radar_content_selected", "on_web_post_selected"} <= names
