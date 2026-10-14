@@ -702,6 +702,10 @@ async def on_find_signals(
         )
 
     if not ideas and not usable_web:
+        log.info(
+            "signal->post: no post buttons workspace=%s blocked=%s",
+            workspace_context.workspace_id, len(blocked),
+        )
         if sent_any_block:
             await message.answer(_NO_POST_IDEAS + _blocked_lines(blocked))
         return
@@ -712,11 +716,14 @@ async def on_find_signals(
     )
     if blocked:
         text += "\n\nПост недоступен:" + _blocked_lines(blocked)
-    await message.answer(
-        text,
-        reply_markup=_post_actions_keyboard(ideas, usable_web),
-        disable_web_page_preview=True,
+    keyboard = _post_actions_keyboard(ideas, usable_web)
+    log.info(
+        "signal->post: keyboard sent workspace=%s buttons=%s blocked=%s",
+        workspace_context.workspace_id,
+        [b.callback_data for row in keyboard.inline_keyboard for b in row],
+        len(blocked),
     )
+    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data.startswith(_WEB_POST_PREFIX))
@@ -736,6 +743,7 @@ async def on_web_post_selected(
     sources. Same generation/saving path as the Radar button
     (``_generate_radar_post``); the material is looked up in THIS workspace
     only."""
+    log.info("signal->post: callback received data=%r handler=web_post", callback.data)
     raw_id = (callback.data or "").removeprefix(_WEB_POST_PREFIX)
     if not raw_id.isdigit() or int(raw_id) <= 0:
         await callback.answer("Не удалось определить выбранный материал.", show_alert=True)
@@ -786,6 +794,7 @@ async def on_radar_content_selected(
     # the exact same existing business logic as before (same repository
     # calls, same draft generation, same Artifact persistence). No second
     # executor/business path is introduced - see _radar_content_action_contract.
+    log.info("signal->post: callback received data=%r handler=radar_content", callback.data)
     contract = _radar_content_action_contract(callback.data or "")
     if contract is None:
         await callback.answer(
@@ -850,6 +859,10 @@ async def _generate_radar_post(
     origin_type/ai_category/ai_reason (+ optional source_name/body);
     ``signal`` needs title/action_reason. Used by the Radar button and the
     web-source button, so there is one generation path."""
+    log.info(
+        "signal->post: generation started workspace=%s title=%r",
+        workspace_context.workspace_id, getattr(signal, "title", ""),
+    )
     profile = await partner_repository.get_business_profile(
         workspace_context.workspace_id
     )
@@ -1013,6 +1026,10 @@ async def _generate_radar_post(
         last_action="radar_content_draft_created",
     )
 
+    log.info(
+        "signal->post: draft saved workspace=%s artifact=%s",
+        workspace_context.workspace_id, artifact.id,
+    )
     await callback.message.answer(
         draft_text, reply_markup=material_result_keyboard(artifact.id)
     )
