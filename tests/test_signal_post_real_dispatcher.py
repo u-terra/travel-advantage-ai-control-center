@@ -82,7 +82,7 @@ def _detach_module_routers() -> None:
             module_router._parent_router = None
 
 
-def _fixture():
+def _fixture(web_records=()):
     """(dispatcher, bot, session, artifact_repo, llm) c реальным router-деревом."""
     workspace = PartnerWorkspace(42, "Acme Travel Club", "acme", "active", "now", "now")
     partner_repository = SimpleNamespace(
@@ -120,6 +120,11 @@ def _fixture():
         artifact_repository=artifact_repository,
         workspace_signal_repository=signal_repository,
         subscription_repository=subscription_repository,
+        source_catalog_repository=SimpleNamespace(),
+        web_signal_repository=SimpleNamespace(
+            list_for_workspace=AsyncMock(return_value=list(web_records)),
+            get_for_workspace=AsyncMock(return_value=web_records[0] if web_records else None),
+        ),
     )
     session = RecordingSession()
     bot = Bot(token="123456:TEST", session=session)
@@ -235,3 +240,85 @@ def test_web_post_button_goes_through_real_dispatcher() -> None:
     llm.generate_draft.assert_called_once()
     artifacts.create_artifact_with_initial_version.assert_awaited_once()
     assert any("Готовый пост про тропу Петяярви" in t for t in session.sent_texts())
+
+
+def _web_record():
+    return SimpleNamespace(
+        id=9, workspace_id=42, source_id="s", source_name="Блог", source_url="https://example.org/",
+        item_url="https://example.org/trail-petyayarvi-guide", title="Тропа Петяярви",
+        summary=RADAR_SUMMARY, body="", fetched_at="now",
+    )
+
+
+def _post_button_ids(session: RecordingSession) -> list[str]:
+    return [b.callback_data for b in _create_post_buttons(session) if b.text.startswith("📝")]
+
+
+def test_slow_web_collection_does_not_delay_or_block_radar_post_button() -> None:
+    """Web-сбор ещё идёт: Radar-кнопка уже отправлена, нажатие даёт черновик
+    (а не ждёт сбор), web-материалы и их кнопка приходят отдельно по готовности."""
+    from app.handlers import menu as menu_handlers
+
+    async def scenario():
+        dispatcher, bot, session, artifacts, llm, record = _fixture([_web_record()])
+        release = asyncio.Event()
+        started = asyncio.Event()
+
+        async def slow_collect(*args, **kwargs):
+            started.set()
+            await release.wait()
+
+        with patch("app.services.lead_radar._load_recommender", return_value=_recommender()),                 patch("app.handlers.menu.collect_web_signals", slow_collect):
+            # Обработчик «Найти сигналы» возвращается, не дожидаясь web-сбора.
+            await asyncio.wait_for(_press_find_signals(dispatcher, bot), timeout=5)
+            await asyncio.wait_for(started.wait(), timeout=5)
+            before_ids = _post_button_ids(session)
+            before_texts = list(session.sent_texts())
+            button = next(
+                b for b in _create_post_buttons(session) if b.text.startswith("📝")
+            )
+            session.requests.clear()
+            # Сбор всё ещё заблокирован - создание поста обязано пройти.
+            await asyncio.wait_for(_press(dispatcher, bot, button), timeout=5)
+            draft_texts = list(session.sent_texts())
+            session.requests.clear()
+            release.set()
+            await asyncio.wait_for(
+                asyncio.gather(*list(menu_handlers._BACKGROUND_TASKS)), timeout=5
+            )
+        return before_ids, before_texts, draft_texts, session, artifacts, record
+
+    before_ids, before_texts, draft_texts, session, artifacts, record = asyncio.run(scenario())
+    assert before_ids == [f"radar_content:{record.interpretation_id}"]
+    assert not any("Материалы с сайтов" in t or "Источник: Блог" in t for t in before_texts)
+    assert any("Готовый пост про тропу Петяярви" in t for t in draft_texts)
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+    # После готовности сбора web-материал пришёл отдельным сообщением со своей кнопкой.
+    assert any("Источник: Блог" in t for t in session.sent_texts())
+    assert _post_button_ids(session) == ["webpost:9"]
+
+
+def test_failed_web_collection_does_not_break_radar_post_button() -> None:
+    from app.handlers import menu as menu_handlers
+
+    async def scenario():
+        dispatcher, bot, session, artifacts, llm, record = _fixture()
+
+        async def broken_collect(*args, **kwargs):
+            raise RuntimeError("web sources are down")
+
+        with patch("app.services.lead_radar._load_recommender", return_value=_recommender()),                 patch("app.handlers.menu.collect_web_signals", broken_collect):
+            await asyncio.wait_for(_press_find_signals(dispatcher, bot), timeout=5)
+            await asyncio.wait_for(
+                asyncio.gather(*list(menu_handlers._BACKGROUND_TASKS)), timeout=5
+            )
+            button = next(
+                b for b in _create_post_buttons(session) if b.text.startswith("📝")
+            )
+            session.requests.clear()
+            await _press(dispatcher, bot, button)
+        return session, artifacts, record
+
+    session, artifacts, record = asyncio.run(scenario())
+    assert any("Готовый пост про тропу Петяярви" in t for t in session.sent_texts())
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()

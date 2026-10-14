@@ -638,6 +638,73 @@ async def on_find_signals(
         await message.answer(build_summary(signals), disable_web_page_preview=True)
         sent_any_block = True
 
+    # Radar's "📝 Создать пост" buttons go out RIGHT AFTER the Radar list,
+    # before the (slow, network-bound) web collection below: a delay or a
+    # failure of the web sources must never hold back or block creating a
+    # post from a signal that is already on screen.
+    all_ideas = _radar_content_ideas(signals or [])
+    ideas = [i for i in all_ideas if i["usable"]]
+    blocked = [i for i in all_ideas if not i["usable"]]
+    sent_buttons = False
+    if ideas:
+        await _record_radar_content_offer(
+            conversation_state_repository, workspace_context.workspace_id,
+            workspace_context.telegram_user_id, ideas,
+        )
+        await _send_post_keyboard(message, workspace_context, ideas, [], blocked)
+        sent_buttons = True
+        blocked = []
+
+    web_args = dict(
+        message=message, workspace_context=workspace_context,
+        source_catalog_repository=source_catalog_repository,
+        web_signal_repository=web_signal_repository, llm_provider=llm_provider,
+        usage_ledger_repository=usage_ledger_repository,
+        web_search_service=web_search_service,
+        sent_any_block=sent_any_block, sent_buttons=sent_buttons, blocked=blocked,
+    )
+    if sent_buttons:
+        # The Radar buttons are already on screen. Web collection can take
+        # minutes; running it inside this handler would hold the per-user
+        # update lock (ChatSerializationMiddleware) and the button press
+        # would wait for it. So it continues in the background and reports
+        # by itself, as separate messages.
+        task = asyncio.create_task(_deliver_web_signals(**web_args))
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+        return
+    await _deliver_web_signals(**web_args)
+
+
+_BACKGROUND_TASKS: set = set()
+
+
+async def _deliver_web_signals(
+    *, message, workspace_context, source_catalog_repository, web_signal_repository,
+    llm_provider, usage_ledger_repository, web_search_service,
+    sent_any_block: bool, sent_buttons: bool, blocked: list[dict],
+) -> None:
+    """Web-source part of "Найти сигналы": collect, show the list, send the
+    web "📝 Создать пост" buttons as their own message. Never raises (it may
+    run as a background task) and never touches the Radar buttons."""
+    try:
+        await _deliver_web_signals_inner(
+            message=message, workspace_context=workspace_context,
+            source_catalog_repository=source_catalog_repository,
+            web_signal_repository=web_signal_repository, llm_provider=llm_provider,
+            usage_ledger_repository=usage_ledger_repository,
+            web_search_service=web_search_service,
+            sent_any_block=sent_any_block, sent_buttons=sent_buttons, blocked=blocked,
+        )
+    except Exception:
+        log.warning("on_find_signals: web part failed", exc_info=True)
+
+
+async def _deliver_web_signals_inner(
+    *, message, workspace_context, source_catalog_repository, web_signal_repository,
+    llm_provider, usage_ledger_repository, web_search_service,
+    sent_any_block: bool, sent_buttons: bool, blocked: list[dict],
+) -> None:
     # ORCHESTRAVEL Stage 2: workspace's own enabled platform="web"
     # source_catalog subscriptions, collected on-demand right here (same
     # user action, no scheduler yet - see app.services.web_signal_collector).
@@ -649,20 +716,28 @@ async def on_find_signals(
         and web_signal_repository is not None
         and llm_provider is not None
     ):
+        if sent_any_block:
+            await message.answer(
+                "🔎 Проверяю сайты-источники - материалы придут отдельным сообщением. "
+                "Кнопки выше уже работают."
+            )
         # Shared with Web's GET /api/signals - see
         # app.services.signal_service.collect_web_signals - so both
         # interfaces trigger the exact same WebSignalCollector instead of
         # each constructing/wrapping their own copy.
-        await collect_web_signals(
-            workspace_context.workspace_id,
-            source_catalog_repository=source_catalog_repository,
-            web_signal_repository=web_signal_repository,
-            llm_provider=llm_provider,
-            usage_ledger_repository=usage_ledger_repository,
-            web_search_provider=(
-                web_search_service.provider if web_search_service is not None else None
-            ),
-        )
+        try:
+            await collect_web_signals(
+                workspace_context.workspace_id,
+                source_catalog_repository=source_catalog_repository,
+                web_signal_repository=web_signal_repository,
+                llm_provider=llm_provider,
+                usage_ledger_repository=usage_ledger_repository,
+                web_search_provider=(
+                    web_search_service.provider if web_search_service is not None else None
+                ),
+            )
+        except Exception:
+            log.warning("on_find_signals: web collection failed", exc_info=True)
         try:
             web_records = await web_signal_repository.list_for_workspace(
                 workspace_context.workspace_id, limit=DISPLAY_LIMIT,
@@ -682,8 +757,6 @@ async def on_find_signals(
     if not sent_any_block:
         await message.answer(_NO_SIGNALS_ANYWHERE)
 
-    all_ideas = _radar_content_ideas(signals or [])
-    ideas = [i for i in all_ideas if i["usable"]]
     web_ideas = [
         {
             "id": str(r.id), "title": r.title, "usable": signal_material_is_sufficient(
@@ -693,23 +766,28 @@ async def on_find_signals(
         for r in web_records if r.id is not None
     ][:_RADAR_CONTENT_LIMIT]
     usable_web = [i for i in web_ideas if i["usable"]]
-    blocked = [i for i in all_ideas + web_ideas if not i["usable"]]
+    blocked += [i for i in web_ideas if not i["usable"]]
 
-    if ideas:
-        await _record_radar_content_offer(
-            conversation_state_repository, workspace_context.workspace_id,
-            workspace_context.telegram_user_id, ideas,
-        )
-
-    if not ideas and not usable_web:
+    if usable_web:
+        await _send_post_keyboard(message, workspace_context, [], usable_web, blocked)
+        return
+    if not sent_buttons:
         log.info(
             "signal->post: no post buttons workspace=%s blocked=%s",
             workspace_context.workspace_id, len(blocked),
         )
         if sent_any_block:
             await message.answer(_NO_POST_IDEAS + _blocked_lines(blocked))
-        return
+    elif blocked:
+        await message.answer("Пост недоступен:" + _blocked_lines(blocked))
 
+
+
+
+async def _send_post_keyboard(
+    message: Message, workspace_context: WorkspaceContext,
+    ideas: list[dict], usable_web: list[dict], blocked: list[dict],
+) -> None:
     text = (
         "💡 Выберите материал и нажмите кнопку - подготовлю черновик "
         "Telegram-поста. Ничего не публикуется автоматически."
