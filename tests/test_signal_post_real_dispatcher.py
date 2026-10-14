@@ -43,6 +43,10 @@ class RecordingSession(BaseSession):
         super().__init__()
         self.requests: list = []
         self._message_id = 5000
+        # Сбой/зависание answerCallbackQuery (как в бою: сетевой таймаут).
+        self.answer_error: Exception | None = None
+        self.answer_delay: float = 0.0
+        self.events: list[str] = []
 
     async def close(self) -> None:  # pragma: no cover - nothing to close
         return None
@@ -52,6 +56,12 @@ class RecordingSession(BaseSession):
 
     async def make_request(self, bot, method, timeout=None):
         self.requests.append(method)
+        if isinstance(method, AnswerCallbackQuery):
+            self.events.append("answer")
+            if self.answer_delay:
+                await asyncio.sleep(self.answer_delay)
+            if self.answer_error is not None:
+                raise self.answer_error
         if isinstance(method, SendMessage):
             self._message_id += 1
             return Message(
@@ -320,5 +330,72 @@ def test_failed_web_collection_does_not_break_radar_post_button() -> None:
         return session, artifacts, record
 
     session, artifacts, record = asyncio.run(scenario())
+    assert any("Готовый пост про тропу Петяярви" in t for t in session.sent_texts())
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+
+
+def test_slow_analysis_and_failing_answer_do_not_lose_the_draft_or_the_error() -> None:
+    """Боевой сбой 14.10: анализ источника шёл ~30 с (синхронный вызов в
+    потоке), ``callback.answer`` вызывался только ПОСЛЕ него и падал по
+    сетевому таймауту - пользователь не получал ни подтверждения, ни ошибки,
+    ни поста. Теперь нажатие подтверждается сразу (до анализа), а сбой самого
+    подтверждения не прерывает обработчик."""
+    import time
+
+    from aiogram.exceptions import TelegramNetworkError
+
+    async def scenario(analysis_result):
+        dispatcher, bot, session, artifacts, llm, _record = _fixture()
+        session.answer_error = TelegramNetworkError(
+            method=AnswerCallbackQuery(callback_query_id="cb1"), message="Request timeout error",
+        )
+
+        def slow_sync_analysis(*, source_text):
+            session.events.append("analysis_started")
+            time.sleep(0.3)  # настоящая блокировка потока, как у urllib в проде
+            return analysis_result
+
+        llm.analyze_source.side_effect = slow_sync_analysis
+        with patch("app.services.lead_radar._load_recommender", return_value=_recommender()):
+            await _press_find_signals(dispatcher, bot)
+            button = next(
+                b for b in _create_post_buttons(session) if b.text.startswith("📝")
+            )
+            session.requests.clear()
+            session.events.clear()
+            await asyncio.wait_for(_press(dispatcher, bot, button), timeout=10)
+        return session, artifacts
+
+    # анализ успешен: черновик приходит, хотя answer упал
+    session, artifacts = asyncio.run(scenario(analysis_payload()))
+    assert session.events[:2] == ["answer", "analysis_started"]
+    assert any("Готовый пост про тропу Петяярви" in t for t in session.sent_texts())
+    artifacts.create_artifact_with_initial_version.assert_awaited_once()
+
+    # анализ не удался: пользователь получает объяснение, а не тишину
+    session, artifacts = asyncio.run(scenario(None))
+    assert session.events[:2] == ["answer", "analysis_started"]
+    assert any("не удалось проверить исходный материал" in t for t in session.sent_texts())
+    artifacts.create_artifact_with_initial_version.assert_not_awaited()
+
+
+def test_hanging_answer_does_not_hold_the_handler_for_a_minute(monkeypatch) -> None:
+    from app.handlers import menu as menu_handlers
+
+    monkeypatch.setattr(menu_handlers, "_ACK_TIMEOUT_SECONDS", 0.2)
+
+    async def scenario():
+        dispatcher, bot, session, artifacts, llm, _record = _fixture()
+        session.answer_delay = 30.0  # answerCallbackQuery «висит»
+        with patch("app.services.lead_radar._load_recommender", return_value=_recommender()):
+            await _press_find_signals(dispatcher, bot)
+            button = next(
+                b for b in _create_post_buttons(session) if b.text.startswith("📝")
+            )
+            session.requests.clear()
+            await asyncio.wait_for(_press(dispatcher, bot, button), timeout=5)
+        return session, artifacts
+
+    session, artifacts = asyncio.run(scenario())
     assert any("Готовый пост про тропу Петяярви" in t for t in session.sent_texts())
     artifacts.create_artifact_with_initial_version.assert_awaited_once()

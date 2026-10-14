@@ -917,6 +917,20 @@ async def on_radar_content_selected(
     )
 
 
+_ACK_TIMEOUT_SECONDS = 5.0
+
+
+async def _acknowledge(callback: CallbackQuery, text: str) -> None:
+    """Answer the button press FIRST, before any slow work (source analysis,
+    generation), and never let the answer itself abort the handler: a slow or
+    failed ``answerCallbackQuery`` (network timeout, "query is too old") used
+    to kill the whole handler, so the user got neither a draft nor an error."""
+    try:
+        await asyncio.wait_for(callback.answer(text), timeout=_ACK_TIMEOUT_SECONDS)
+    except Exception:
+        log.warning("signal->post: callback.answer failed or timed out", exc_info=True)
+
+
 async def _generate_radar_post(
     callback: CallbackQuery,
     state: FSMContext,
@@ -941,6 +955,7 @@ async def _generate_radar_post(
         "signal->post: generation started workspace=%s title=%r",
         workspace_context.workspace_id, getattr(signal, "title", ""),
     )
+    await _acknowledge(callback, "Готовлю черновик…")
     profile = await partner_repository.get_business_profile(
         workspace_context.workspace_id
     )
@@ -955,7 +970,6 @@ async def _generate_radar_post(
         record.item_title, record.item_summary, getattr(record, "body", "") or "",
         getattr(record, "source_name", "") or "",
     ):
-        await callback.answer("Готовлю черновик…")
         if callback.message is not None:
             await callback.message.edit_reply_markup(reply_markup=None)
             await callback.message.answer(_RADAR_NOT_ENOUGH_MATERIAL)
@@ -977,7 +991,6 @@ async def _generate_radar_post(
         # Fail-closed: сеть/таймаут/ошибка анализа — генерация не запускается
         # вообще (generate_draft() ниже не вызывается), Artifact не создаётся.
         # Пользователю — короткое сообщение без технических деталей.
-        await callback.answer("Готовлю черновик…")
         if callback.message is not None:
             await callback.message.edit_reply_markup(reply_markup=None)
             await callback.message.answer(_RADAR_ANALYSIS_UNAVAILABLE)
@@ -1002,7 +1015,6 @@ async def _generate_radar_post(
             workspace_context.workspace_id
         )
         if not decision.allowed:
-            await callback.answer("Готовлю черновик…")
             if callback.message is not None:
                 await callback.message.edit_reply_markup(reply_markup=None)
                 await callback.message.answer(decision.message)
@@ -1012,7 +1024,6 @@ async def _generate_radar_post(
     request = build_budgeted_provider_request(spec, limit=6000)
     task_text = f"Radar draft: {signal.title}"
 
-    await callback.answer("Готовлю черновик…")
     if callback.message is not None:
         await callback.message.edit_reply_markup(reply_markup=None)
 
