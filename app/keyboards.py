@@ -475,6 +475,21 @@ def source_material_formats_keyboard(source_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def material_after_status_keyboard(artifact_id: int) -> InlineKeyboardMarkup:
+    """What stays under a material once its status was set ("✅ Опубликовал"):
+    the status buttons are gone, but checking THIS material stays possible, so
+    the message never ends up with no way to review the text it shows."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🛡 Проверить текст",
+            callback_data=f"{ARTIFACT_CHECK_PREFIX}{artifact_id}",
+        )],
+        [InlineKeyboardButton(
+            text=BTN_V2_MAIN_MENU, callback_data=SOURCE_ACTION_MAIN_MENU
+        )]
+    ])
+
+
 def material_result_keyboard(artifact_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(

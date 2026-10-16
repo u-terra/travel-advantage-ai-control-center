@@ -21,7 +21,11 @@ from aiogram.filters import MagicData
 from aiogram.types import CallbackQuery
 
 from app.domain.partners import WorkspaceContext
-from app.keyboards import ARTIFACT_KEEP_LATER_PREFIX, ARTIFACT_MARK_USED_PREFIX
+from app.keyboards import (
+    ARTIFACT_KEEP_LATER_PREFIX,
+    ARTIFACT_MARK_USED_PREFIX,
+    material_after_status_keyboard,
+)
 from app.repositories.artifact_repository import ArtifactRepository
 from app.repositories.work_repository import WorkRepository
 from app.services.content_usage import ContentUsageService
@@ -69,7 +73,13 @@ async def on_artifact_mark_used(
 
     await callback.answer(_MARKED_USED)
     if callback.message is not None:
-        await callback.message.edit_reply_markup(reply_markup=None)
+        # Only the status buttons go. Removing the whole keyboard (as before)
+        # left this message without "🛡 Проверить текст", and the user then
+        # reached for the same button under an OLDER draft's message and
+        # checked that draft instead (production 16.10: #68 -> #67).
+        await callback.message.edit_reply_markup(
+            reply_markup=material_after_status_keyboard(artifact_id)
+        )
 
 
 @router.callback_query(

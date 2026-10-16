@@ -20,6 +20,7 @@ from app.keyboards import (
     ARTIFACT_CHECK_PREFIX,
     ARTIFACT_KEEP_LATER_PREFIX,
     ARTIFACT_MARK_USED_PREFIX,
+    SOURCE_ACTION_MAIN_MENU,
     material_result_keyboard,
 )
 from app.repositories.artifact_repository import ArtifactRepository
@@ -276,7 +277,14 @@ def test_handler_mark_used_success_sends_confirmation_and_clears_keyboard(
     _run(on_artifact_mark_used(callback, _ctx(workspace_id), artifacts, work))
 
     assert callback.answers[-1][0] == "✅ Отмечено как опубликованное."
-    assert callback.message.reply_markup_edits == [None]
+    # Only the status buttons are removed; checking THIS material stays possible.
+    assert len(callback.message.reply_markup_edits) == 1
+    remaining = [
+        button.callback_data
+        for row in callback.message.reply_markup_edits[0].inline_keyboard
+        for button in row
+    ]
+    assert remaining == [f"{ARTIFACT_CHECK_PREFIX}{artifact.id}", SOURCE_ACTION_MAIN_MENU]
     updated = _run(artifacts.get_artifact(workspace_id, artifact.id))
     assert updated.status == "used"
 

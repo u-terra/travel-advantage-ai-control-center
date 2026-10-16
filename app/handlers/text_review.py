@@ -48,8 +48,29 @@ def _positive_id(data: str, prefix: str) -> int | None:
     return int(raw) if raw.isdigit() and int(raw) > 0 else None
 
 
-def _card(result: TextCheckResult) -> str:
-    lines = ["🛡 Проверка текста", "", "Что можно улучшить:"]
+_TITLE_MAX = 60
+# Generic prefix added to every Radar/web draft title; noise in a short label.
+_TITLE_NOISE_PREFIX = "Telegram: "
+
+
+def _short_title(title: str | None) -> str:
+    text = (title or "").strip().removeprefix(_TITLE_NOISE_PREFIX).strip()
+    return text if len(text) <= _TITLE_MAX else text[: _TITLE_MAX - 1].rstrip() + "…"
+
+
+def _material_label(artifact_id: int, title: str | None) -> str:
+    short = _short_title(title)
+    return f"№{artifact_id} «{short}»" if short else f"№{artifact_id}"
+
+
+def _card(result: TextCheckResult, material: str | None = None) -> str:
+    # ``material`` names WHICH saved material is being checked (id, title,
+    # version). Inline buttons of older messages stay clickable, so the card
+    # must say what it is about: the text on screen is not proof of it.
+    lines = ["🛡 Проверка текста", ""]
+    if material:
+        lines.extend([f"Материал {material}", ""])
+    lines.append("Что можно улучшить:")
     findings = (*result.warnings, *result.rewrite_warnings)
     if findings:
         lines.extend(f"— {item.warning}" for item in findings)
@@ -124,21 +145,29 @@ async def review_artifact(
     result = await asyncio.to_thread(
         llm_provider.check_text, source_text=version.content
     )
+    # Display-only label: never a reason to fail the check itself.
+    material = _material_label(artifact.id, getattr(artifact, "title", ""))
+    version_number = getattr(version, "version_number", None)
+    if version_number is not None:
+        material += f" · версия {version_number}"
     if result is None:
-        await callback.message.answer(_ARTIFACT_FAILURE)
+        await callback.message.answer(f"Материал {material}\n\n{_ARTIFACT_FAILURE}")
         return
     if not result.rewritten_text:
         await state.clear()
         await callback.message.answer(
-            _card(result), reply_markup=artifact_review_complete_keyboard()
+            _card(result, material), reply_markup=artifact_review_complete_keyboard()
         )
         return
     await state.set_state(TextReview.artifact_result)
     await state.update_data(
         review_artifact_id=artifact.id, review_version_id=version.id,
+        review_artifact_title=_short_title(getattr(artifact, "title", "")),
         reviewed_text=result.rewritten_text,
     )
-    await callback.message.answer(_card(result), reply_markup=artifact_review_keyboard(artifact.id))
+    await callback.message.answer(
+        _card(result, material), reply_markup=artifact_review_keyboard(artifact.id)
+    )
 
 
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data.startswith(ARTIFACT_REVIEW_SAVE_PREFIX))
@@ -176,17 +205,54 @@ async def save_artifact_review(
         await callback.answer("Не удалось сохранить: версия изменилась или материал недоступен.", show_alert=True)
         return
     await state.clear()
-    # F2A: current_artifact_id stays the same artifact - only a new version
-    # was appended. ArtifactRepository remains the sole source of truth for
-    # *which* version is current (see app.domain.conversation_state).
-    await ConversationStateService(conversation_state_repository).record_artifact(
-        workspace_context.workspace_id, workspace_context.telegram_user_id, artifact_id,
-        active_module="text_review", current_task="improve_artifact",
-        last_action="text_review_save_version",
-    )
+    # F2A: ArtifactRepository remains the sole source of truth for *which*
+    # version is current (see app.domain.conversation_state). The user's
+    # "current material" pointer is moved here only if it does not already
+    # point at a NEWER, still-active material: improving an older draft must
+    # not silently switch the user back to it (production 16.10: checking #67
+    # after #68 was created made #67 the current material again).
+    if not await _newer_active_artifact_is_current(
+        conversation_state_repository, artifact_repository, workspace_context, artifact_id,
+    ):
+        await ConversationStateService(conversation_state_repository).record_artifact(
+            workspace_context.workspace_id, workspace_context.telegram_user_id, artifact_id,
+            active_module="text_review", current_task="improve_artifact",
+            last_action="text_review_save_version",
+        )
     await callback.answer("Версия сохранена.")
     if callback.message is not None:
-        await callback.message.answer(f"✅ Сохранена версия №{version.version_number}.")
+        label = _material_label(artifact_id, data.get("review_artifact_title"))
+        await callback.message.answer(
+            f"✅ Сохранена версия №{version.version_number} материала {label}."
+        )
+
+
+async def _newer_active_artifact_is_current(
+    conversation_state_repository: ConversationStateRepository | None,
+    artifact_repository: ArtifactRepository,
+    workspace_context: WorkspaceContext,
+    artifact_id: int,
+) -> bool:
+    """True when the user's current material is a newer artifact than the one
+    whose version was just saved and that artifact still exists and is not
+    archived. Any read failure means "do not know": fall back to the previous
+    behaviour (record the saved artifact)."""
+    if conversation_state_repository is None:
+        return False
+    try:
+        state = await conversation_state_repository.get_state(
+            workspace_context.workspace_id, workspace_context.telegram_user_id,
+        )
+        current_id = getattr(state, "current_artifact_id", None)
+        if type(current_id) is not int or current_id <= artifact_id:
+            return False
+        current = await artifact_repository.get_artifact(
+            workspace_context.workspace_id, current_id,
+        )
+    except Exception:
+        log.warning("text_review: current artifact lookup failed", exc_info=True)
+        return False
+    return current is not None and current.status != "archived"
 
 
 @router.callback_query(MagicData(F.v2_menu_enabled), F.data == ARTIFACT_REVIEW_KEEP)
