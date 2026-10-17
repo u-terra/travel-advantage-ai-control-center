@@ -41,6 +41,7 @@ def test_toc_covers_the_expected_new_structure() -> None:
         "voice-style",
         "files",
         "signals",
+        "partners",
         "materials",
         "web-telegram",
         "why",
