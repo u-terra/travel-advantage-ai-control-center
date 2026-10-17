@@ -1,0 +1,452 @@
+{
+  "dataset_version": 1,
+  "sources": [
+    {
+      "stable_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "title": "MWR Life HUB Academy — \"Mastering Travel Advantage EN\" (видео-транскрипты, получено 2026-10-07)",
+      "source_type": "official_training_video_transcript",
+      "source_name": "MWR Life HUB Academy, курс 'Mastering Travel Advantage EN' (courseId ac737b8f-0c84-4e91-9916-771df8aaa1d0), английские auto-captions Wistia, получено через авторизованную сессию владельца + публичный read-only Wistia media endpoint",
+      "source_reference": "knowledge/travel_advantage/sources/mwr-hub-academy-mastering-travel-advantage-en-2026-10-07.md",
+      "version": null,
+      "effective_date": "2026-10-07",
+      "verification_status": "verified_official",
+      "content_hash": "814280f31010b807ef94a253f414d940b1504076dea0cf9bde2f1835398c53b1"
+    }
+  ],
+  "items": [
+    {
+      "stable_key": "ta.hotels.booking_mechanics",
+      "category": "booking",
+      "title": "Hotels — механика поиска и бронирования",
+      "content": "Официальное обучающее видео рекомендует искать по городу/району, а не по конкретному отелю, для более широкого и выгодного набора результатов. Карточка отеля показывает среднюю цену на публичных площадках рядом с ценой для участника и процент экономии. Есть wish list, 3D-просмотр отеля (карта + перетаскиваемая фигурка), отображение расстояний до ключевых точек интереса (торговые центры, достопримечательности, ближайший аэропорт) и условия отмены/штрафы по конкретному тарифу на странице номера. Местные/курортные налоги взимаются при заселении, а не при бронировании, и одинаковы для всех уровней membership.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 1 - Hotels",
+      "tags": [
+        "hotels",
+        "booking",
+        "wish list",
+        "travel credits",
+        "loyalty points"
+      ]
+    },
+    {
+      "stable_key": "ta.flights.booking_mechanics",
+      "category": "booking",
+      "title": "Flights — механика поиска, пассажиры и check-in",
+      "content": "Опция \"All Airports\" для города ищет и сравнивает цены сразу по всем ближайшим аэропортам, а не по одному конкретному. Поиск платформы ограничен максимальным layover 24 часа и максимальной длительностью поездки 72 часа (явные фильтры). В одном бронировании хотя бы один пассажир должен быть владельцем аккаунта или одним из зарегистрированных additional travelers; остальные пассажиры того же бронирования могут быть неограниченным числом one-time guests, добавляемых прямо в бронирование. Check-in на рейс делается на сайте/в приложении авиакомпании по коду бронирования из письма-подтверждения, а не на Travel Advantage; для части (особенно low-cost) авиакомпаний Travel Advantage присылает отдельное письмо с инструкцией по check-in; онлайн check-in у авиакомпаний часто открывается только за 24-48 часов до вылета.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 2 - Flights",
+      "tags": [
+        "flights",
+        "booking",
+        "check-in",
+        "additional travelers",
+        "guest"
+      ]
+    },
+    {
+      "stable_key": "ta.car_rentals.booking_mechanics",
+      "category": "booking",
+      "title": "Car Rentals — механика оплаты и допусловий",
+      "content": "Страна гражданства водителя влияет на условия страховки и цену; возраст водителя (порог обычно около 25 лет) тоже влияет на цену/допуск. Оплата по бронированию car rental взимается ПРИ ПОЛУЧЕНИИ автомобиля у поставщика на месте, а не в момент онлайн-бронирования. Дополнительные опции (навигатор, детское кресло, доп. страховка) выбираются и оплачиваются на месте при получении машины, не включаются в онлайн-бронирование. Часть автомобилей предлагается с неограниченным пробегом — это указано по конкретному предложению, не гарантировано для всех. Бронирование заранее онлайн называется дешевле, чем аренда на месте без предварительной брони.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 3 - Car Rentals",
+      "tags": [
+        "car rentals",
+        "booking",
+        "pay at pickup"
+      ]
+    },
+    {
+      "stable_key": "ta.transfers.booking_mechanics",
+      "category": "booking",
+      "title": "Transfers — область применения и оплата баллами",
+      "content": "Трансферы точка-точка не ограничены маршрутом аэропорт-отель — применимы для любого перемещения A в B, включая поездки внутри одного города на ежедневной основе. Loyalty Points и/или Travel Credits можно применить при оформлении трансфера, и в благоприятном случае они могут снизить цену трансфера вплоть до $0 (пример из обучающего видео).",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 4 - Transfers",
+      "tags": [
+        "transfers",
+        "loyalty points",
+        "travel credits"
+      ]
+    },
+    {
+      "stable_key": "ta.cruises.booking_mechanics",
+      "category": "booking",
+      "title": "Cruises — этапы поиска и платные дополнения",
+      "content": "Поиск круиза идёт пошагово: регион → порт отправления → круизная линия → длительность/даты, каждый шаг сужает дальнейшие варианты. У части маршрутов доступны 360°/видео-просмотр судна, планы палуб и 360°-просмотр каюты. Тип каюты (inside/outside/balcony/suite) выбирается после выбора маршрута, цена фиксируется на ограниченное время (таймер обратного отсчёта). Платные дополнения на оформлении: интернет-пакет (цена за устройство/ночь), пакет посещения specialty-ресторанов, фотопакет; чаевые/сервисный сбор по части круизов уже включены в цену (указывается по конкретному круизу), круизные налоги показываются отдельной строкой.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 5 - Cruises",
+      "tags": [
+        "cruises",
+        "booking",
+        "add-ons"
+      ]
+    },
+    {
+      "stable_key": "ta.life_experiences.shared_occupancy",
+      "category": "life_experiences",
+      "title": "Life Experiences — Life Experience Host и shared occupancy",
+      "content": "Дополняет уже существующее описание Life Experiences: подтверждены две линейки (standard и Deluxe, в Deluxe больше активностей в программе). Life Experience обычно включает Life Experience Host на месте (помогает с заселением и сопровождает участников) и welcome mixer для участников одного заезда. Shared occupancy: участник без своего второго путешественника может выбрать shared occupancy при бронировании; первый забронировавший получает shared booking code, который второй, независимо бронирующий участник вводит в своё бронирование, чтобы быть поселённым вместе с первым. После оплаты баллами бронирование Life Experience отображается в статусе \"pending\" до даты ближе к поездке, когда переходит в confirmed — это описано как нормальное поведение, а не ошибка.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 6 - Life Experiences",
+      "tags": [
+        "life experience",
+        "shared occupancy",
+        "life experience host"
+      ]
+    },
+    {
+      "stable_key": "ta.lifestyle_mall",
+      "category": "lifestyle_mall",
+      "title": "Lifestyle Mall",
+      "content": "Онлайн-магазин модуль Travel Advantage. Доступность товаров зависит от выбранной страны доставки (несколько складов по миру, не каждый товар доставляется в каждую страну). Один заказ может объединять товары с разных складов (приходят отдельными посылками) без доплаты за доставку при сумме заказа от $150. Покупки в Lifestyle Mall начисляют Travel Credits, и Elite-участники могут применять Loyalty Points для дополнительной скидки — тот же механизм, что и на бронированиях путешествий. Flash Deals внутри Mall — это скидки 50-70%+ на отдельные брендовые позиции.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 7 - Lifestyle Mall",
+      "tags": [
+        "lifestyle mall",
+        "shopping",
+        "travel credits",
+        "loyalty points"
+      ]
+    },
+    {
+      "stable_key": "ta.resorts.all_inclusive_mandatory_fee",
+      "category": "booking",
+      "title": "Resorts — скрытая mandatory all-inclusive fee",
+      "content": "Часть резортов помечены как \"all inclusive mandatory\": цена, показанная при поиске, НЕ включает обязательный all-inclusive сбор — он указан отдельной строкой на странице предложения и взимается по прибытии в резорт, а не при бронировании. Это важный момент для участника, чтобы не было сюрприза при заселении.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 8 - Resorts",
+      "tags": [
+        "resorts",
+        "all inclusive",
+        "mandatory fee"
+      ]
+    },
+    {
+      "stable_key": "ta.travel_credits.posting_delay.academy_corroboration",
+      "category": "travel_credits",
+      "title": "Travel Credits — подтверждение срока зачисления (Academy, Hotels)",
+      "content": "Независимый официальный источник (обучающее видео Academy, Hotels) прямо называет срок зачисления Travel Credits: 5-7 дней после завершения проживания в отеле. Это КОРРОБОРИРУЕТ (не заменяет) уже существующий в базе факт ta.travel_credits.not_reconfirmed_posting_delay (FAQ 2025: \"обычно в течение недели\", ранее не переподтверждённый на публичной странице 2026 года) — теперь есть второй, отдельный официальный источник с тем же порядком величины срока. Старый факт не изменён и не удалён; это дополняющая запись.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 1 - Hotels / 'these travel credits will get back to you five to seven days after you complete your stay'",
+      "tags": [
+        "travel credits",
+        "posting delay",
+        "corroboration"
+      ]
+    },
+    {
+      "stable_key": "ta.travel_credits.car_rentals.conflict_note",
+      "category": "compliance_notes",
+      "title": "КОНФЛИКТ: Travel Credits на Car Rentals — Academy видео vs live-проверка 2026-10-06",
+      "content": "ОБНАРУЖЕН КОНФЛИКТ, НЕ РАЗРЕШЁН АВТОМАТИЧЕСКИ. Обучающее видео Academy (Car Rentals, создано ориентировочно 2026-04-02 по метаданным Wistia) прямо показывает начисление Travel Credits за бронирование car rental (\"you will see how many travel credits you will earn on this reservation\"). Это прямо противоречит более новому, live-подтверждённому факту ta.travel_credits.not_earned_car_rentals (источник: xlife-advisor-synthesis, 2026-10-06, \"Travel Credits не начисляются на Car Rentals\"). Существующий факт НЕ изменён и НЕ перезаписан — он новее по дате и ранее был отдельно live-проверен. Эта запись только фиксирует конфликт для последующей проверки человеком по актуальному официальному источнику; не использовать это видео как опровержение более нового live-подтверждённого правила.",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "source_ref": "Lesson 3 - Car Rentals / 'you will see how many travel credits you will earn on this reservation'",
+      "tags": [
+        "travel credits",
+        "car rentals",
+        "conflict",
+        "needs review"
+      ]
+    }
+  ],
+  "facts": [
+    {
+      "stable_key": "ta.hotels.travel_credits.posting_delay",
+      "item_key": "ta.hotels.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "travel_credits_posting_timing",
+      "subject_type": "service_category",
+      "subject_key": "hotels",
+      "value_text": "Travel Credits за бронирование отеля поступают на счёт через 5-7 дней после завершения проживания.",
+      "source_ref": "Lesson 1 - Hotels"
+    },
+    {
+      "stable_key": "ta.hotels.taxes_collected_at_checkin",
+      "item_key": "ta.hotels.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "fee_collection_timing",
+      "subject_type": "service_category",
+      "subject_key": "hotels",
+      "qualifier_key": "fee_type",
+      "qualifier_value": "local_taxes",
+      "value_text": "Местные/курортные налоги взимаются при заселении (check-in), а не при онлайн-бронировании, одинаково для всех уровней membership.",
+      "source_ref": "Lesson 1 - Hotels"
+    },
+    {
+      "stable_key": "ta.hotels.wishlist_feature",
+      "item_key": "ta.hotels.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "platform_feature",
+      "subject_type": "service_category",
+      "subject_key": "hotels",
+      "value_text": "Доступен wish list: отель можно сохранить для последующего завершения бронирования без повторного поиска/фильтрации.",
+      "source_ref": "Lesson 1 - Hotels"
+    },
+    {
+      "stable_key": "ta.flights.max_layover_hours",
+      "item_key": "ta.flights.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "search_limit",
+      "subject_type": "service_category",
+      "subject_key": "flights",
+      "qualifier_key": "limit_type",
+      "qualifier_value": "max_layover",
+      "value_number": 24,
+      "unit": "hours",
+      "source_ref": "Lesson 2 - Flights"
+    },
+    {
+      "stable_key": "ta.flights.max_trip_duration_hours",
+      "item_key": "ta.flights.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "search_limit",
+      "subject_type": "service_category",
+      "subject_key": "flights",
+      "qualifier_key": "limit_type",
+      "qualifier_value": "max_trip_duration",
+      "value_number": 72,
+      "unit": "hours",
+      "source_ref": "Lesson 2 - Flights"
+    },
+    {
+      "stable_key": "ta.flights.all_airports_search_option",
+      "item_key": "ta.flights.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "platform_feature",
+      "subject_type": "service_category",
+      "subject_key": "flights",
+      "value_text": "Опция поиска \"All Airports\" для города ищет и сравнивает цены по всем ближайшим аэропортам одновременно.",
+      "source_ref": "Lesson 2 - Flights"
+    },
+    {
+      "stable_key": "ta.flights.checkin_done_on_airline_site",
+      "item_key": "ta.flights.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "process_rule",
+      "subject_type": "service_category",
+      "subject_key": "flights",
+      "value_text": "Check-in на рейс выполняется на сайте/в приложении авиакомпании по коду бронирования из письма подтверждения, не на Travel Advantage.",
+      "source_ref": "Lesson 2 - Flights"
+    },
+    {
+      "stable_key": "ta.flights.booking_passenger_rule",
+      "item_key": "ta.flights.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "booking_rule",
+      "subject_type": "service_category",
+      "subject_key": "flights",
+      "value_text": "В каждом бронировании хотя бы один пассажир должен быть владельцем аккаунта или зарегистрированным additional traveler; остальные пассажиры бронирования могут быть неограниченным числом one-time guests.",
+      "source_ref": "Lesson 2 - Flights"
+    },
+    {
+      "stable_key": "ta.car_rentals.payment_at_pickup",
+      "item_key": "ta.car_rentals.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "payment_timing",
+      "subject_type": "service_category",
+      "subject_key": "car_rentals",
+      "value_text": "Оплата аренды автомобиля взимается при получении машины у поставщика на месте, не в момент онлайн-бронирования.",
+      "source_ref": "Lesson 3 - Car Rentals"
+    },
+    {
+      "stable_key": "ta.car_rentals.addons_paid_locally",
+      "item_key": "ta.car_rentals.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "payment_timing",
+      "subject_type": "service_category",
+      "subject_key": "car_rentals",
+      "qualifier_key": "item",
+      "qualifier_value": "addons",
+      "value_text": "Дополнительные опции (навигатор, детское кресло, доп. страховка) оплачиваются на месте при получении автомобиля, не включены в онлайн-бронирование.",
+      "source_ref": "Lesson 3 - Car Rentals"
+    },
+    {
+      "stable_key": "ta.transfers.can_be_fully_covered_by_points_credits",
+      "item_key": "ta.transfers.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "redemption_capability",
+      "subject_type": "service_category",
+      "subject_key": "transfers",
+      "value_text": "Loyalty Points и/или Travel Credits можно применить к трансферу вплоть до снижения цены до $0 в благоприятном случае.",
+      "source_ref": "Lesson 4 - Transfers"
+    },
+    {
+      "stable_key": "ta.transfers.not_limited_to_airport_routes",
+      "item_key": "ta.transfers.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "scope_clarification",
+      "subject_type": "service_category",
+      "subject_key": "transfers",
+      "value_text": "Трансферы применимы для любого перемещения точка-точка, включая поездки внутри одного города на ежедневной основе, не только аэропорт-отель.",
+      "source_ref": "Lesson 4 - Transfers"
+    },
+    {
+      "stable_key": "ta.cruises.addon_internet_package",
+      "item_key": "ta.cruises.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "platform_feature",
+      "subject_type": "service_category",
+      "subject_key": "cruises",
+      "qualifier_key": "addon",
+      "qualifier_value": "internet_package",
+      "value_text": "Интернет-пакет на круизе доступен как платное дополнение при оформлении, цена указывается за устройство/ночь.",
+      "source_ref": "Lesson 5 - Cruises"
+    },
+    {
+      "stable_key": "ta.cruises.cabin_types",
+      "item_key": "ta.cruises.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "product_structure",
+      "subject_type": "service_category",
+      "subject_key": "cruises",
+      "value_text": "Типы кают: inside, outside, balcony, suite — выбираются после выбора маршрута круиза.",
+      "source_ref": "Lesson 5 - Cruises"
+    },
+    {
+      "stable_key": "ta.life_experiences.shared_occupancy.mechanism",
+      "item_key": "ta.life_experiences.shared_occupancy",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "booking_mechanism",
+      "subject_type": "product",
+      "subject_key": "life_experiences",
+      "value_text": "Первый забронировавший получает shared booking code; второй участник вводит этот код в своё бронирование, чтобы быть поселённым в одной комнате с первым (shared occupancy).",
+      "source_ref": "Lesson 6 - Life Experiences"
+    },
+    {
+      "stable_key": "ta.life_experiences.host_role",
+      "item_key": "ta.life_experiences.shared_occupancy",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "inclusion",
+      "subject_type": "product",
+      "subject_key": "life_experiences",
+      "qualifier_key": "inclusion_type",
+      "qualifier_value": "life_experience_host",
+      "value_text": "Life Experience Host присутствует на месте, помогает с заселением и сопровождает участников во время программы.",
+      "source_ref": "Lesson 6 - Life Experiences"
+    },
+    {
+      "stable_key": "ta.life_experiences.pending_status_normal",
+      "item_key": "ta.life_experiences.shared_occupancy",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "status_clarification",
+      "subject_type": "product",
+      "subject_key": "life_experiences",
+      "value_text": "Статус \"pending\" после оплаты баллами — нормальное поведение; бронирование переходит в confirmed ближе к дате поездки.",
+      "source_ref": "Lesson 6 - Life Experiences"
+    },
+    {
+      "stable_key": "ta.lifestyle_mall.free_shipping_threshold_usd",
+      "item_key": "ta.lifestyle_mall",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "shipping_threshold",
+      "subject_type": "product",
+      "subject_key": "lifestyle_mall",
+      "value_number": 150,
+      "currency": "USD",
+      "condition_text": "Бесплатная доставка при сумме заказа от этого порога, даже если товары приходят из разных складов отдельными посылками.",
+      "source_ref": "Lesson 7 - Lifestyle Mall"
+    },
+    {
+      "stable_key": "ta.lifestyle_mall.earns_travel_credits",
+      "item_key": "ta.lifestyle_mall",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "earning_rule",
+      "subject_type": "product",
+      "subject_key": "lifestyle_mall",
+      "value_text": "Покупки в Lifestyle Mall начисляют Travel Credits.",
+      "source_ref": "Lesson 7 - Lifestyle Mall"
+    },
+    {
+      "stable_key": "ta.lifestyle_mall.loyalty_points_applicable",
+      "item_key": "ta.lifestyle_mall",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "redemption_capability",
+      "subject_type": "product",
+      "subject_key": "lifestyle_mall",
+      "value_text": "Elite-участники могут применять Loyalty Points для дополнительной скидки на покупки в Lifestyle Mall.",
+      "source_ref": "Lesson 7 - Lifestyle Mall"
+    },
+    {
+      "stable_key": "ta.lifestyle_mall.shipping_depends_on_country",
+      "item_key": "ta.lifestyle_mall",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "availability_rule",
+      "subject_type": "product",
+      "subject_key": "lifestyle_mall",
+      "value_text": "Доступность товаров и доставка зависят от выбранной страны получения — не каждый товар доставляется в каждую страну.",
+      "source_ref": "Lesson 7 - Lifestyle Mall"
+    },
+    {
+      "stable_key": "ta.resorts.all_inclusive_mandatory_fee.not_in_shown_price",
+      "item_key": "ta.resorts.all_inclusive_mandatory_fee",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "fee_disclosure_rule",
+      "subject_type": "service_category",
+      "subject_key": "resorts",
+      "qualifier_key": "resort_type",
+      "qualifier_value": "all_inclusive_mandatory",
+      "value_text": "Для резортов с mandatory all-inclusive цена при поиске не включает обязательный all-inclusive сбор — он отдельно указан на предложении и оплачивается по прибытии.",
+      "source_ref": "Lesson 8 - Resorts"
+    },
+    {
+      "stable_key": "ta.activities.scope_includes_home_city",
+      "item_key": "ta.hotels.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "scope_clarification",
+      "subject_type": "service_category",
+      "subject_key": "activities",
+      "value_text": "Activities доступны не только в путешествии, но и в собственном городе участника, на повседневной основе.",
+      "source_ref": "Lesson 9 - Activities"
+    },
+    {
+      "stable_key": "ta.activities.loyalty_points_can_cover_full_cost",
+      "item_key": "ta.hotels.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "redemption_capability",
+      "subject_type": "service_category",
+      "subject_key": "activities",
+      "value_text": "В зависимости от баланса, Loyalty Points могут полностью покрыть стоимость некоторых activities.",
+      "source_ref": "Lesson 9 - Activities"
+    },
+    {
+      "stable_key": "ta.stays.alternative_to_hotels",
+      "item_key": "ta.hotels.booking_mechanics",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "product_structure",
+      "subject_type": "service_category",
+      "subject_key": "stays",
+      "value_text": "Stays — это дома/апартаменты целиком (часто с кухней и гостиной) как альтернатива номеру в отеле/резорте, ориентировано на семьи и долгое проживание.",
+      "source_ref": "Lesson 10 - Stays"
+    },
+    {
+      "stable_key": "ta.travel_credits.posting_delay.academy_value",
+      "item_key": "ta.travel_credits.posting_delay.academy_corroboration",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "travel_credits_posting_timing",
+      "subject_type": "product",
+      "subject_key": "travel_credits",
+      "qualifier_key": "source",
+      "qualifier_value": "academy_hotels_lesson",
+      "range_min": 5,
+      "range_max": 7,
+      "unit": "days",
+      "condition_text": "Корроборирующее значение из независимого источника (Academy, Hotels) для уже существующего неподтверждённого факта ta.travel_credits.not_reconfirmed_posting_delay (FAQ 2025: примерно неделя). Старый факт не изменён.",
+      "source_ref": "Lesson 1 - Hotels"
+    },
+    {
+      "stable_key": "ta.car_rentals.travel_credits.conflict_flag",
+      "item_key": "ta.travel_credits.car_rentals.conflict_note",
+      "source_key": "mwr_hub.academy.mastering_travel_advantage_en.2026_10_07",
+      "fact_type": "unresolved_conflict",
+      "subject_type": "service_category",
+      "subject_key": "car_rentals",
+      "qualifier_key": "conflicting_claim",
+      "qualifier_value": "travel_credits_earned",
+      "value_text": "Academy-видео (~2026-04-02) показывает начисление Travel Credits на car rental; более новый live-подтверждённый факт (2026-10-06) утверждает обратное. Конфликт зафиксирован, не разрешён автоматически, требует проверки человеком.",
+      "source_ref": "Lesson 3 - Car Rentals"
+    }
+  ],
+  "examples": []
+}

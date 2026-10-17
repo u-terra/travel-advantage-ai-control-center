@@ -1,0 +1,158 @@
+{
+  "dataset_version": 1,
+  "sources": [
+    {
+      "stable_key": "ta.enrollment_checkout.live.2026_10_05",
+      "title": "Travel Advantage — официальная страница enrollment/checkout (наблюдение 2026-10-05)",
+      "source_type": "official_live_checkout_page",
+      "source_name": "Travel Advantage enrollment/checkout, наблюдение владельцем 2026-10-05",
+      "source_reference": "knowledge/travel_advantage/sources/travel-advantage-enrollment-checkout-2026-10-05.md",
+      "version": "live-2026-10-05",
+      "effective_date": "2026-10-05",
+      "verification_status": "verified_official",
+      "content_hash": "dd217a289116eda484c75aaf15cfbfce1e2002b4589e99eecb103d38b7b91d9d"
+    },
+    {
+      "stable_key": "mwr.ambassador_business_model.support.live.2026_10_05",
+      "title": "MWR Life — официальная страница support/business model (наблюдение 2026-10-05)",
+      "source_type": "official_live_support_page",
+      "source_name": "MWR Life support / business model page, наблюдение владельцем 2026-10-05",
+      "source_reference": "knowledge/travel_advantage/sources/mwr-life-ambassador-business-model-support-2026-10-05.md",
+      "version": "live-2026-10-05",
+      "effective_date": "2026-10-05",
+      "verification_status": "verified_official",
+      "content_hash": "af6f302070800bcb2924b1ac13d42c1e6d9db60003afb63042223336b367808d"
+    }
+  ],
+  "items": [
+    {
+      "stable_key": "ta.membership",
+      "category": "memberships",
+      "title": "Membership Travel Advantage",
+      "content": "Рабочая модель включает VIP, VIP 180 (подтверждён активным дополнительной live-проверкой 2026-10-05, что делает устаревшим более ранний legacy-статус из partner training delta), Elite и Turbo Travel Advantage как одноразовый add-on/upgrade к Elite. Числовые значения стоимости хранятся только в связанных facts.",
+      "source_key": "ta.enrollment_checkout.live.2026_10_05",
+      "source_ref": "Membership plans overview",
+      "tags": ["membership", "vip", "elite", "vip 180", "turbo upgrade"]
+    },
+    {
+      "stable_key": "ta.membership.vip_180",
+      "category": "memberships",
+      "title": "VIP 180",
+      "content": "Отдельный 6-месячный вариант VIP-плана. Активен на текущем официальном checkout — подтверждено дополнительной live-проверкой 2026-10-05. Это делает устаревшим (superseded) более раннее утверждение из partner training delta о том, что VIP180 является неиспользуемым legacy variant; статус Elite180 этой проверкой не переверифицирован.",
+      "source_key": "ta.enrollment_checkout.live.2026_10_05",
+      "source_ref": "VIP 180",
+      "tags": ["vip 180", "legacy conflict"]
+    },
+    {
+      "stable_key": "ta.membership.turbo_addon",
+      "category": "memberships",
+      "title": "Turbo Travel Advantage (Upgrade/Add-on)",
+      "content": "Надстройка/upgrade к membership, доступная для Elite или Plus; не является самостоятельным ежемесячным membership plan.",
+      "source_key": "ta.enrollment_checkout.live.2026_10_05",
+      "source_ref": "Turbo Travel Advantage",
+      "tags": ["turbo upgrade", "add-on"]
+    },
+    {
+      "stable_key": "ta.membership.cancellation",
+      "category": "cancellation_refund",
+      "title": "Membership Cancellation & Refund",
+      "content": "Правила отмены membership и условия refund, подтверждённые официальным checkout на 2026-10-05.",
+      "source_key": "ta.enrollment_checkout.live.2026_10_05",
+      "source_ref": "Cancellation / Refund",
+      "tags": ["cancellation", "refund"]
+    },
+    {
+      "stable_key": "mwr.member_vs_ambassador",
+      "category": "ambassador_compensation",
+      "title": "Travel Advantage Member vs Lifestyle Ambassador",
+      "content": "Member и Ambassador — разные роли/сущности; официальный support допускает ambassador-only enrollment без выбора travel service.",
+      "source_key": "mwr.ambassador_business_model.support.live.2026_10_05",
+      "source_ref": "Member vs Ambassador",
+      "tags": ["member", "ambassador", "roles"]
+    },
+    {
+      "stable_key": "mwr.business_model_structure",
+      "category": "ambassador_compensation",
+      "title": "MWR Life Ambassador Business Model (структурно)",
+      "content": "Структурное описание модели: sharing membership, sharing business opportunity, развитие команды, eligibility к нескольким категориям бонусов (без подтверждения конкретных сумм).",
+      "source_key": "mwr.ambassador_business_model.support.live.2026_10_05",
+      "source_ref": "Business model (структурно, без сумм)",
+      "tags": ["business model", "bonus categories"]
+    },
+    {
+      "stable_key": "ta.compliance_live_confirmation_2026_10_05",
+      "category": "compliance_notes",
+      "title": "Compliance — подтверждение 2026-10-05",
+      "content": "Подтверждение действующих compliance-правил по официальным материалам, наблюдаемым 2026-10-05.",
+      "source_key": "mwr.ambassador_business_model.support.live.2026_10_05",
+      "source_ref": "Compliance (подтверждение действующих правил)",
+      "tags": ["compliance", "disclosure"]
+    },
+    {
+      "stable_key": "mwr.compensation_plan.v3_review_note",
+      "category": "ambassador_compensation",
+      "title": "Compensation Plan v3 — статус проверки на 2026-10-05",
+      "content": "Проверка 2026-10-05 подтверждает только существование перечисленных категорий бонусов на официальной странице; полная таблица сумм и рангов dataset-v3 не переверифицирована и требует отдельного подтверждения по актуальному официальному Compensation Plan документу.",
+      "source_key": "mwr.ambassador_business_model.support.live.2026_10_05",
+      "source_ref": "Business model (структурно, без сумм)",
+      "tags": ["compensation plan", "review pending", "dataset-v3"]
+    },
+    {
+      "stable_key": "mwr.claims_and_staleness_compliance",
+      "category": "compliance_notes",
+      "title": "Claims and Current Information Compliance",
+      "content": "Machine-retrievable safety rules по доходу, продукту и актуальности.",
+      "source_key": "ta.enrollment_checkout.live.2026_10_05",
+      "source_ref": "VIP 180 / обновление относительно ранее зафиксированного противоречия",
+      "status": "active",
+      "sort_order": 240,
+      "tags": ["compliance", "income disclosure statement", "staleness", "legacy"]
+    }
+  ],
+  "facts": [
+    {"stable_key":"ta.membership.vip.total_price.usd","item_key":"ta.membership","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_recurring_fee","subject_type":"membership","subject_key":"membership.vip","value_number":19.97,"currency":"USD","period":"monthly","source_ref":"VIP / membership monthly fee"},
+    {"stable_key":"ta.membership.elite.total_price.usd","item_key":"ta.membership","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_total_due_today","subject_type":"membership","subject_key":"membership.elite","value_number":239.97,"currency":"USD","condition_text":"Total due today = $119.97 monthly membership + $120 one-time activation, как отображается на текущем checkout.","source_ref":"Elite / total due today"},
+
+    {"stable_key":"ta.membership.elite.monthly_fee.usd","item_key":"ta.membership","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_recurring_fee","subject_type":"membership","subject_key":"membership.elite","value_number":119.97,"currency":"USD","period":"monthly","source_ref":"Elite / monthly plan fee"},
+    {"stable_key":"ta.membership.elite.activation_fee.usd","item_key":"ta.membership","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_activation_fee","subject_type":"membership","subject_key":"membership.elite","value_number":120,"currency":"USD","period":"one_time","source_ref":"Elite / one-time activation"},
+    {"stable_key":"ta.membership.vip.activation_fee_displayed.usd","item_key":"ta.membership","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_activation_fee_displayed","subject_type":"membership","subject_key":"membership.vip","value_number":20,"currency":"USD","period":"one_time","condition_text":"Отображается на checkout как отдельная строка; итоговый total due today для VIP не подтверждён как единое значение — не использовать как подтверждённую сумму первого списания.","source_ref":"VIP / displayed one-time activation line"},
+    {"stable_key":"ta.membership.vip.total_due_today.unverified","item_key":"ta.membership","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"verification_pending_note","subject_type":"membership","subject_key":"membership.vip","value_text":"Поле Total Due Today отображается равным membership fee ($19.97), при этом отдельно показана строка one-time activation $20 — неясно, включена ли activation в фактическое первое списание. Ниже зафиксированы только буквально отображаемые значения полей; итоговая сумма не рассчитывается самостоятельно и не считается подтверждённой как единое значение первого списания.","source_ref":"VIP / total due today ambiguity"},
+    {"stable_key":"ta.membership.vip.total_due_today_displayed.usd","item_key":"ta.membership","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_total_due_today_displayed","subject_type":"membership","subject_key":"membership.vip","value_number":19.97,"currency":"USD","condition_text":"Буквально отображаемое значение поля Total Due Today на checkout; см. verification_pending_note о неоднозначности относительно отдельно показанной activation-строки $20.","source_ref":"VIP / Total Due Today (displayed)"},
+
+    {"stable_key":"ta.membership.vip_180.price.usd","item_key":"ta.membership.vip_180","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_plan_price","subject_type":"membership","subject_key":"membership.vip_180","qualifier_key":"term_months","qualifier_value":"6","value_number":99,"currency":"USD","condition_text":"Подтверждено дополнительной live-проверкой 2026-10-05 как активный план; ранее зафиксированное противоречие с partner training delta снято (см. mwr.claims_and_staleness_compliance / ta.membership.legacy_variants).","source_ref":"VIP 180"},
+    {"stable_key":"ta.membership.vip_180.activation_fee_displayed.usd","item_key":"ta.membership.vip_180","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_activation_fee_displayed","subject_type":"membership","subject_key":"membership.vip_180","value_number":20,"currency":"USD","period":"one_time","condition_text":"Отображается на checkout как отдельная строка; см. verification_pending_note.vip_180 о соотношении с полем Total Due Today.","source_ref":"VIP 180 / displayed one-time activation line"},
+    {"stable_key":"ta.membership.vip_180.total_due_today_displayed.usd","item_key":"ta.membership.vip_180","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_total_due_today_displayed","subject_type":"membership","subject_key":"membership.vip_180","value_number":99,"currency":"USD","condition_text":"Буквально отображаемое значение поля Total Due Today на checkout; та же внутренняя неоднозначность относительно activation-строки $20, что и у VIP monthly.","source_ref":"VIP 180 / Total Due Today (displayed)"},
+    {"stable_key":"ta.membership.vip_180.total_due_today.unverified","item_key":"ta.membership.vip_180","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"verification_pending_note","subject_type":"membership","subject_key":"membership.vip_180","value_text":"Поле Total Due Today отображается равным membership fee ($99), при этом отдельно показана строка one-time activation $20 — неясно, включена ли activation в фактическое первое списание. Итоговая сумма не рассчитывается самостоятельно и не считается подтверждённой как единое значение первого списания.","source_ref":"VIP 180 / total due today ambiguity"},
+
+    {"stable_key":"ta.membership.turbo_addon.price.usd","item_key":"ta.membership.turbo_addon","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"addon_price","subject_type":"membership_addon","subject_key":"membership.turbo_addon","qualifier_key":"availability","qualifier_value":"elite_members","value_number":249.97,"currency":"USD","period":"one_time","condition_text":"Представлен как Turbo Upgrade/add-on, предлагаемый Elite Members; не является самостоятельным ежемесячным membership plan.","source_ref":"Turbo Travel Advantage"},
+    {"stable_key":"ta.membership.elite_turbo.total_price.usd","item_key":"ta.membership","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"membership_plan_superseded_notice","subject_type":"membership","subject_key":"membership.elite_turbo","value_text":"Superseded: ранее этот факт описывал 'Elite Turbo' как отдельный тарифный план с общей стоимостью $598.97. Дополнительная live-проверка 2026-10-05 показывает, что Turbo Travel Advantage — это одноразовый addon/upgrade ($249.97, см. ta.membership.turbo_addon.price.usd) к Elite membership, а не самостоятельный ежемесячный план. Это описание следует считать неактуальным.","source_ref":"Turbo Travel Advantage / supersede elite_turbo legacy plan fact"},
+
+    {"stable_key":"ta.membership.cancellation.allowed","item_key":"ta.membership.cancellation","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"cancellation_rule","subject_type":"membership","subject_key":"membership_general","value_text":"Membership можно отменить.","source_ref":"Cancellation / Refund / отмена"},
+    {"stable_key":"ta.membership.refund.14_day_window","item_key":"ta.membership.cancellation","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"refund_eligibility_window","subject_type":"membership","subject_key":"membership_general","qualifier_key":"window_days","qualifier_value":"14","value_text":"Полный refund возможен при отмене membership в этот период после activation.","source_ref":"Cancellation / Refund / 14-дневное окно"},
+    {"stable_key":"ta.membership.refund.forfeited_if_booking_or_purchase","item_key":"ta.membership.cancellation","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"refund_forfeiture_rule","subject_type":"membership","subject_key":"membership_general","value_text":"Если в течение 14-дневного окна совершён booking или purchase через Travel Advantage, право на refund теряется.","source_ref":"Cancellation / Refund / условие потери права"},
+
+    {"stable_key":"mwr.member_vs_ambassador.distinct_roles","item_key":"mwr.member_vs_ambassador","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"role_distinction","subject_type":"role_pair","subject_key":"member_and_ambassador","value_text":"Travel Advantage Member и Lifestyle Ambassador — разные роли/сущности.","source_ref":"Member vs Ambassador / разграничение"},
+    {"stable_key":"mwr.ambassador.registration_without_travel_service","item_key":"mwr.member_vs_ambassador","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"registration_rule","subject_type":"role","subject_key":"lifestyle_ambassador","value_text":"Официальный support допускает регистрацию как Ambassador без выбора travel service (ambassador-only enrollment).","condition_text":"Формулировка ограничена тем, что прямо говорит официальный источник; не обобщать шире.","source_ref":"Member vs Ambassador / ambassador-only enrollment"},
+    {"stable_key":"mwr.membership.not_mandatory_for_ambassador_registration","item_key":"mwr.member_vs_ambassador","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"requirement_clarification","subject_type":"role","subject_key":"lifestyle_ambassador","value_text":"Travel membership не должен описываться как обязательное условие самой регистрации Ambassador, если официальный flow допускает ambassador-only enrollment.","condition_text":"Не отменяет отдельные требования активности/квалификации для участия в Compensation Plan.","source_ref":"Member vs Ambassador / обязательность membership"},
+
+    {"stable_key":"mwr.business_model.sharing_membership","item_key":"mwr.business_model_structure","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"business_model_component","subject_type":"business_model","subject_key":"ambassador_business_model","qualifier_key":"component","qualifier_value":"sharing_membership","value_text":"Sharing membership.","source_ref":"Business model / sharing membership"},
+    {"stable_key":"mwr.business_model.sharing_opportunity","item_key":"mwr.business_model_structure","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"business_model_component","subject_type":"business_model","subject_key":"ambassador_business_model","qualifier_key":"component","qualifier_value":"sharing_business_opportunity","value_text":"Sharing business opportunity.","source_ref":"Business model / sharing opportunity"},
+    {"stable_key":"mwr.business_model.team_development","item_key":"mwr.business_model_structure","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"business_model_component","subject_type":"business_model","subject_key":"ambassador_business_model","qualifier_key":"component","qualifier_value":"team_development","value_text":"Развитие команды (team development).","source_ref":"Business model / team development"},
+
+    {"stable_key":"mwr.business_model.bonus_exists.customer","item_key":"mwr.business_model_structure","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"bonus_category_existence","subject_type":"compensation_plan","subject_key":"mwr_life_compensation_plan","qualifier_key":"bonus_category","qualifier_value":"customer_bonus","value_text":"Категория бонуса подтверждена как существующая на официальной странице (без подтверждения конкретных сумм).","source_ref":"Business model / eligibility to bonus categories"},
+    {"stable_key":"mwr.business_model.bonus_exists.builder","item_key":"mwr.business_model_structure","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"bonus_category_existence","subject_type":"compensation_plan","subject_key":"mwr_life_compensation_plan","qualifier_key":"bonus_category","qualifier_value":"builder_bonus","value_text":"Категория бонуса подтверждена как существующая на официальной странице (без подтверждения конкретных сумм).","source_ref":"Business model / eligibility to bonus categories"},
+    {"stable_key":"mwr.business_model.bonus_exists.dual_team_residual","item_key":"mwr.business_model_structure","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"bonus_category_existence","subject_type":"compensation_plan","subject_key":"mwr_life_compensation_plan","qualifier_key":"bonus_category","qualifier_value":"dual_team_residual_bonus","value_text":"Категория бонуса подтверждена как существующая на официальной странице (без подтверждения конкретных сумм).","source_ref":"Business model / eligibility to bonus categories"},
+    {"stable_key":"mwr.business_model.bonus_exists.car","item_key":"mwr.business_model_structure","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"bonus_category_existence","subject_type":"compensation_plan","subject_key":"mwr_life_compensation_plan","qualifier_key":"bonus_category","qualifier_value":"car_bonus","value_text":"Категория бонуса подтверждена как существующая на официальной странице (без подтверждения конкретных сумм).","source_ref":"Business model / eligibility to bonus categories"},
+    {"stable_key":"mwr.business_model.bonus_exists.presidential","item_key":"mwr.business_model_structure","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"bonus_category_existence","subject_type":"compensation_plan","subject_key":"mwr_life_compensation_plan","qualifier_key":"bonus_category","qualifier_value":"presidential_bonus","value_text":"Категория бонуса подтверждена как существующая на официальной странице (без подтверждения конкретных сумм).","source_ref":"Business model / eligibility to bonus categories"},
+
+    {"stable_key":"ta.compliance.no_guaranteed_income.2026_10_05","item_key":"ta.compliance_live_confirmation_2026_10_05","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"compliance_rule","subject_type":"compliance","subject_key":"income_claims","value_text":"Нельзя обещать гарантированный доход.","source_ref":"Compliance / гарантированный доход"},
+    {"stable_key":"ta.compliance.no_alternative_compensation_scheme.2026_10_05","item_key":"ta.compliance_live_confirmation_2026_10_05","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"compliance_rule","subject_type":"compliance","subject_key":"compensation_scheme","value_text":"Нельзя использовать альтернативную (отличную от официальной) compensation-схему.","source_ref":"Compliance / альтернативная схема"},
+    {"stable_key":"ta.compliance.no_misleading_marketing.2026_10_05","item_key":"ta.compliance_live_confirmation_2026_10_05","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"compliance_rule","subject_type":"compliance","subject_key":"marketing","value_text":"Нельзя использовать misleading/deceptive маркетинг.","source_ref":"Compliance / misleading marketing"},
+    {"stable_key":"ta.compliance.official_materials_priority.2026_10_05","item_key":"ta.compliance_live_confirmation_2026_10_05","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"compliance_rule","subject_type":"compliance","subject_key":"official_materials","value_text":"Официальный Compensation Plan и официальные материалы MWR Life/Travel Advantage имеют приоритет над любым пересказом.","source_ref":"Compliance / приоритет официальных материалов"},
+    {"stable_key":"ta.compliance.personal_marketing_disclosure.2026_10_05","item_key":"ta.compliance_live_confirmation_2026_10_05","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"compliance_rule","subject_type":"compliance","subject_key":"personal_marketing","value_text":"Персональные маркетинговые материалы Ambassador должны ясно показывать, что их автор — Independent Lifestyle Ambassador, а не официальный сайт MWR Life/Travel Advantage, там где это применимо.","source_ref":"Compliance / раскрытие статуса автора"},
+
+    {"stable_key":"ta.membership.legacy_variants","item_key":"mwr.claims_and_staleness_compliance","source_key":"ta.enrollment_checkout.live.2026_10_05","fact_type":"legacy_material_rule_superseded","subject_type":"membership_model","subject_key":"travel_advantage_memberships","qualifier_key":"legacy_variants","qualifier_value":"vip180_elite180","value_text":"Superseded 2026-10-05: исходный факт (источник ta.source.partner_training_delta.2026_08) утверждал, что VIP180 и Elite180 не используются в текущей рабочей модели и считаются legacy material. Дополнительная live-проверка 2026-10-05 официального checkout подтверждает, что VIP 180 сейчас активен как действующий план. Утверждение о VIP180 следует считать устаревшим (superseded) относительно текущего live-состояния. Эта проверка НЕ переверифицирует статус Elite180 — отдельного подтверждения по Elite180 нет.","source_ref":"VIP 180 / обновление относительно ранее зафиксированного противоречия"},
+    {"stable_key":"mwr.compensation_plan.v3.review_pending_note","item_key":"mwr.compensation_plan.v3_review_note","source_key":"mwr.ambassador_business_model.support.live.2026_10_05","fact_type":"verification_pending_note","subject_type":"dataset","subject_key":"mwr.compensation_plan.official.v3","value_text":"Проверка 2026-10-05 подтверждает только существование категорий бонусов на официальной странице; полная таблица сумм и 18 рангов dataset-v3 не переверифицирована и требует отдельного подтверждения по актуальному официальному Compensation Plan документу.","source_ref":"Business model / review pending для dataset-v3"}
+  ],
+  "examples": []
+}

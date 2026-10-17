@@ -238,6 +238,26 @@ def _retrieval_policy(
     # so "booking" stays a required core for its own real topic.
     if "booking" in query and not membership_intent:
         required.extend(("ta.booking_status_inventory", "ta.support"))
+        # 2026-10-08: a plain booking-capability question ("клиент может
+        # просто зайти и забронировать отель?") implicates the club/
+        # membership-access model of this product just as much as an
+        # explicit membership_intent question does - it must not only
+        # surface booking-infrastructure facts (pending/support routing).
+        # This brings in ta.platform's own confirmed platform_use fact
+        # ("бронирование участниками", i.e. by members) and the club-
+        # membership generation constraint (see
+        # app.services.knowledge_generation_context). Scoped to the SAME
+        # "not membership_intent" branch as the line above (not a bare
+        # "if booking" check) - when membership_intent is already True,
+        # ta.membership is already required and carries the same club
+        # constraint on its own; also adding ta.platform there would pull
+        # in ta.booking_status_inventory as one of ITS related items too
+        # (see retrieval-readiness-relations.v1.sql), diluting a focused
+        # membership-value answer with generic booking-status facts it
+        # explicitly should not have (see
+        # test_membership_intent_suppresses_only_the_generic_booking_
+        # catch_all in tests/test_knowledge_retrieval_membership_intent.py).
+        required.append("ta.platform")
     if "commission" in query:
         required.append("ta.payments_and_support_routing")
     if "registration team" in query or "dual team" in query or (
@@ -375,7 +395,16 @@ def _canonical_token(token: str) -> str:
     if token in aliases:
         return aliases[token]
     for prefix, replacement in (
-        ("комисс", "commission"), ("бронир", "booking"), ("брон", "booking"), ("гостев", "guest"),
+        ("комисс", "commission"),
+        # "забронировать"/"забронировал"/"забронируй" etc. start with the
+        # "за-" perfective prefix, so they never matched the bare "бронир"/
+        # "брон" prefixes below - a real gap (2026-10-08: "Клиент может
+        # просто зайти и забронировать отель?" fell through retrieval
+        # entirely, matching zero items). Checked before "бронир"/"брон"
+        # only for readability; order doesn't matter since both would
+        # resolve to "booking" anyway.
+        ("забронир", "booking"),
+        ("бронир", "booking"), ("брон", "booking"), ("гостев", "guest"),
         ("регистрацион", "registration"), ("двойн", "dual"), ("команд", "team"),
         ("крипт", "crypto"), ("процент", "percent"), ("гарант", "guarantee"),
     ):

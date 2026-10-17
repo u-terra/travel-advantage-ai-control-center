@@ -100,6 +100,47 @@ _COMPENSATION_CONSTRAINT = (
     "гарантию фактического дохода конкретного человека и не указывай срок, "
     "за который пользователь якобы обязательно достигнет такого результата."
 )
+# Live prod bug (2026-10-08, confirmed in a real Web dialogue): asked "что
+# такое Travel Advantage и как рассказать об этом клиенту?", the model
+# answered as if it were an open booking site (anyone can search/book) and
+# only gave the correct club/membership framing after a user's follow-up
+# pushed it there. Root cause was a prompt-priority gap, not a missing fact:
+# ta.platform's own core-definition fact (platform_type, "OTA / Online Travel
+# Agency") carries zero club nuance on its own, and ta.platform.use.
+# search_booking already says booking is done "участниками" (BY MEMBERS) but
+# that one word is easy for a model to read past without being told what it
+# implies. advisor-product-structure-brief.md / partner-training-official-
+# delta-2026-08.md already confirm the underlying model (an additional
+# traveler "получает собственный доступ", "основной держатель membership
+# остаётся владельцем аккаунта") - this constraint only makes the model draw
+# the conclusion that was already implicit in confirmed facts, it does not
+# add a new fact, price, refund rule, or Ambassador capability.
+_CLUB_MEMBERSHIP_ITEM_KEYS = frozenset({"ta.platform"})
+# Deliberately NOT "ta.membership" too: a deep membership-VALUE question
+# from someone who already pays ("я плачу каждый месяц, что я получаю?")
+# demotes ta.platform out of `items` on its own (see
+# tests/test_knowledge_generation_context_membership_value.py point 5) and
+# needs its tiny, already-contested fact budget for the actual current
+# benefits (Loyalty Points/Travel Credits/Life Experiences), not a repeat of
+# "this is a club" - that framing matters for explaining Travel Advantage to
+# someone who does NOT have access yet (what the live prod bug this
+# constraint fixes was actually about), not for re-explaining it to an
+# existing member. Keying on ta.platform alone (the generic "what is this"
+# item, which survives in `items` for exactly those explain-it-from-scratch
+# questions) targets precisely that case without reopening the SOURCE FACTS
+# budget fight already fought over the membership-value question.
+#
+# Kept short (budget-constrained alongside _COMPENSATION_CONSTRAINT and the
+# source facts themselves - see generation_request_builder's 6000-char
+# limit; an earlier, far longer draft of this string silently pushed the
+# whole [SOURCE FACTS - DATA] section out of the prompt budget).
+_CLUB_MEMBERSHIP_CONSTRAINT = (
+    "Travel Advantage - клубная платформа: доступ и бронирование требуют собственного "
+    "membership участника, а не открытого визита без аккаунта. Объясняя клиенту, что это "
+    "такое, сначала скажи это, и только потом переходи к возможностям платформы. Партнёр "
+    "не бронирует за клиента из своего аккаунта - его роль: помочь понять продукт и "
+    "подобрать сценарий. Member и партнёрская роль/Ambassador - разные статусы."
+)
 
 
 @dataclass(frozen=True)
@@ -161,9 +202,26 @@ def build_knowledge_generation_context(bundle: KnowledgeBundle) -> KnowledgeGene
         f"[{fact.stable_key}; источник: {fact.source_ref}]: {_fact_statement(fact)}"
         for fact in bundle.compliance_facts
     )
-    if any(fact.fact_type in _COMPENSATION_FACT_TYPES for fact in facts):
-        constraints = (*constraints, _COMPENSATION_CONSTRAINT)
+    constraints = (*constraints, *advisory_judgment_constraints(items, facts))
     return KnowledgeGenerationContext(source_facts, verified_claims, constraints)
+
+
+def advisory_judgment_constraints(
+    items: tuple[Any, ...], facts: tuple[KnowledgeFact, ...],
+) -> tuple[str, ...]:
+    """The hand-written judgment constraints (as opposed to the ones
+    mechanically derived from bundle.compliance_facts above) - factored out
+    so a caller that renders compliance_facts separately (Web's own
+    _knowledge_context(), see app/web_api.py) can pull in just these without
+    duplicating the official-compliance-fact text a second time in a
+    different wording. Single source of truth for both channels - see
+    _COMPENSATION_CONSTRAINT/_CLUB_MEMBERSHIP_CONSTRAINT above."""
+    result: list[str] = []
+    if any(fact.fact_type in _COMPENSATION_FACT_TYPES for fact in facts):
+        result.append(_COMPENSATION_CONSTRAINT)
+    if any(item.stable_key in _CLUB_MEMBERSHIP_ITEM_KEYS for item in items):
+        result.append(_CLUB_MEMBERSHIP_CONSTRAINT)
+    return tuple(result)
 
 
 def _localize_jargon(text: str | None) -> str | None:
