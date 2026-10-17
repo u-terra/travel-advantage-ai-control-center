@@ -13,6 +13,7 @@ from app.services.business_profile_context import (
     build_limited_content_context,
 )
 from app.services.llm.models import SourceAnalysisPayload
+from app.services.source_freshness import SourceFreshness
 from app.services.knowledge_generation_context import build_knowledge_generation_context
 from app.services.knowledge_service import KnowledgeBundle
 
@@ -555,6 +556,33 @@ _TA_CLUB_EXPLAINER_FORMAT_CONSTRAINTS = (
 # business profile, personal style or the publication text itself (the
 # request packer then had to drop them). Every prohibition of the earlier
 # version is kept, stated once.
+# Added to the Radar constraints ONLY for a source that is stale or undated AND
+# contains expiring material (see source_freshness). Evergreen content of such
+# a source stays usable; only the expiring statements are held back.
+_STALE_SOURCE_CONSTRAINT = (
+    "Источник устарел или не датирован (см. «Дата публикации источника» в "
+    "[SOURCE FACTS - DATA] и в начале [UNTRUSTED SOURCE CONTENT]). Цены, "
+    "скидки, акции, тарифы, условия бонусных программ и баллов, визовые и "
+    "въездные правила, расписания, рейсы и сроки действия из этого источника "
+    "нельзя подавать как действующие: не называй такие числа и условия в "
+    "тексте и не утверждай, что они актуальны сегодня. Пиши только то, что от "
+    "даты не зависит (описание места, маршрута, общие советы), и не придумывай "
+    "замену опущенным цифрам."
+)
+
+
+def _source_freshness_facts(freshness: SourceFreshness | None) -> dict[str, Any]:
+    """Explicit meta fields for the model: it must not guess the age of the
+    source from the article text."""
+    if freshness is None:
+        return {}
+    return {
+        "source_publication": freshness.context_line,
+        "source_age_days": freshness.age_days,
+        "stale_time_sensitive_source": freshness.stale_time_sensitive,
+    }
+
+
 _RADAR_CONSTRAINTS = (
     "Черновик требует ручной проверки перед использованием.",
     "Результат — самостоятельный готовый пост для соцсети, а не ответ "
@@ -840,6 +868,10 @@ class MaterialOrchestrationService:
         # artifact_type - "post" (по умолчанию, обратная совместимость с
         # существующим Telegram-вызовом) или "client_message".
         artifact_type: str = "post",
+        # Age of the source and whether its expiring facts are stale (see
+        # app.services.source_freshness). None = caller did not assess: the
+        # spec is exactly what it was before.
+        source_freshness: SourceFreshness | None = None,
     ) -> GenerationSpec:
         trusted_context, tone_preferences, verified, unverified, revision = (
             _profile_generation_values(workspace_id, profile)
@@ -868,16 +900,26 @@ class MaterialOrchestrationService:
                 "reason": reason,
                 "disputed_claims": disputed_claims,
                 "warnings": analysis_warnings,
+                **_source_freshness_facts(source_freshness),
             },
             trusted_business_context=trusted_context,
             untrusted_source_content="\n".join(
-                value for value in (title, summary, (body or "")[:3000]) if value
+                value for value in (
+                    # The date goes first, in the part that is never dropped by
+                    # the request budget (source_facts can be).
+                    source_freshness.context_line if source_freshness else "",
+                    title, summary, (body or "")[:3000],
+                ) if value
             ),
             tone_preferences=tone_preferences,
             personal_style=_personal_style_values(user_preferences),
             verified_claims_allowed=verified,
             unverified_claims_requiring_caution=unverified,
-            constraints=_RADAR_CONSTRAINTS,
+            constraints=(
+                _RADAR_CONSTRAINTS + (_STALE_SOURCE_CONSTRAINT,)
+                if source_freshness is not None and source_freshness.stale_time_sensitive
+                else _RADAR_CONSTRAINTS
+            ),
             profile_revision_used=revision,
         )
 

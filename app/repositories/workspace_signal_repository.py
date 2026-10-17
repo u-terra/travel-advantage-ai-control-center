@@ -68,6 +68,11 @@ class WorkspaceSignalRecord:
     item_summary: str
     item_url: str
     source_name: str
+    # When the ORIGINAL publication went out (lead_signals.published_at, as the
+    # source declared it: ISO for VK/Telegram, RFC 822 for RSS). raw_created_at
+    # is when WE collected it, which says nothing about the age of the facts.
+    # "" = unknown. Defaulted so every existing constructor keeps working.
+    published_at: str = ""
 
 
 class WorkspaceSignalRepository:
@@ -280,10 +285,17 @@ class WorkspaceSignalRepository:
             f"file:{self.radar_db_path.resolve().as_posix()}?mode=ro", uri=True
         ) as radar:
             radar.row_factory = aiosqlite.Row
+            columns = {
+                row[1] for row in await (
+                    await radar.execute("PRAGMA table_info(lead_signals)")
+                ).fetchall()
+            }
+            # Older Radar schemas have no published_at: unknown, not an error.
+            published_column = "published_at" if "published_at" in columns else "NULL AS published_at"
             raw_rows = await (await radar.execute(
                 f"SELECT id, created_at, source_type, origin_type, item_title, "
-                f"item_summary, item_url, source_name FROM lead_signals "
-                f"WHERE id IN ({placeholders})",
+                f"item_summary, item_url, source_name, {published_column} "
+                f"FROM lead_signals WHERE id IN ({placeholders})",
                 raw_ids,
             )).fetchall()
         raw_by_id = {row["id"]: row for row in raw_rows}
@@ -321,6 +333,7 @@ def _record(row, raw) -> WorkspaceSignalRecord:
         source_type=raw["source_type"] or "", origin_type=raw["origin_type"] or "",
         item_title=raw["item_title"] or "", item_summary=raw["item_summary"] or "",
         item_url=raw["item_url"] or "", source_name=raw["source_name"] or "",
+        published_at=raw["published_at"] or "",
     )
 
 

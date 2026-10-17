@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 from app.services.web_source_discovery import (
@@ -171,7 +172,11 @@ def parse_published_at(raw: str | None) -> str | None:
         try:
             parsed = datetime.strptime(value[:10], "%Y-%m-%d")
         except ValueError:
-            return None
+            # RSS declares dates in RFC 822 ("Wed, 06 May 2026 07:50:57 +0000").
+            try:
+                parsed = parsedate_to_datetime(value)
+            except (TypeError, ValueError, IndexError):
+                return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc).isoformat()

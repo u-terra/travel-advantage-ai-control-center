@@ -513,7 +513,7 @@ def test_radar_calls_source_analysis_before_generation():
         ))
     assert events == ["analyze", "generate"]
     provider.analyze_source.assert_called_once_with(
-        source_text="Тема\n" + RADAR_SUMMARY + " Описание источника"
+        source_text="Дата публикации источника: неизвестна.\nТема\n" + RADAR_SUMMARY + " Описание источника"  # radar_record has no published_at: freshness puts its meta line first
     )
 
 

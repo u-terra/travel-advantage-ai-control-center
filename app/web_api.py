@@ -104,6 +104,10 @@ from app.services.competitor_intelligence import (
 from app.services.assistant_tail_cleanup import strip_assistant_tail
 from app.services.content_factory import ContentFactoryConfig
 from app.services.draft_sanitizer import sanitize_draft_text
+from app.services.source_freshness import (
+    apply_freshness_to_analysis,
+    assess_source_freshness,
+)
 from app.services.generation_request_builder import (
     build_client_reply_provider_request,
     build_provider_generation_request,
@@ -2497,8 +2501,14 @@ async def _create_material_from_web_signal(
             principal.workspace_id, principal.telegram_user_id,
         )
 
+        freshness = assess_source_freshness(
+            getattr(record, "published_at", "") or "",
+            record.title, record.summary, record.body or "",
+        )
         web_source_text = "\n".join(
-            value for value in (record.title, record.summary, record.body) if value
+            value for value in (
+                freshness.context_line, record.title, record.summary, record.body,
+            ) if value
         )[:6000]
         if not signal_material_is_sufficient(
             record.title, record.summary, record.body, record.source_name,
@@ -2532,6 +2542,9 @@ async def _create_material_from_web_signal(
                 "material": None,
             }
 
+        analysis = apply_freshness_to_analysis(
+            analysis, freshness, record.title, record.summary, record.body or "",
+        )
         spec = material_orchestration_service.build_radar_generation_spec(
             principal.workspace_id, profile,
             title=record.title, summary=record.summary,
@@ -2540,6 +2553,7 @@ async def _create_material_from_web_signal(
             reason=f"Материал с сайта-источника: {record.source_name}",
             analysis=analysis, user_preferences=user_preferences,
             artifact_type=request.action, body=record.body,
+            source_freshness=freshness,
         )
         # Material quota applies only to a "post" (material) action - see
         # the identical gate in create_material_from_competitor_opportunity.
@@ -2690,8 +2704,14 @@ async def create_material_from_signal(
             principal.workspace_id, principal.telegram_user_id,
         )
 
+        freshness = assess_source_freshness(
+            getattr(record, "published_at", "") or "",
+            record.item_title, record.item_summary,
+        )
         radar_source_text = "\n".join(
-            value for value in (record.item_title, record.item_summary) if value
+            value for value in (
+                freshness.context_line, record.item_title, record.item_summary,
+            ) if value
         )
         if not source_content_is_sufficient(record.item_title, record.item_summary, record.source_name):
             await record_event(
@@ -2723,6 +2743,9 @@ async def create_material_from_signal(
                 "material": None,
             }
 
+        analysis = apply_freshness_to_analysis(
+            analysis, freshness, record.item_title, record.item_summary,
+        )
         spec = material_orchestration_service.build_radar_generation_spec(
             principal.workspace_id, profile,
             title=record.item_title, summary=record.item_summary,
@@ -2731,6 +2754,7 @@ async def create_material_from_signal(
             reason=record.ai_reason or signal.action_reason,
             analysis=analysis, user_preferences=user_preferences,
             artifact_type=request.action,
+            source_freshness=freshness,
         )
         # Material quota applies only to a "post" (material) action - see
         # the identical gate in create_material_from_competitor_opportunity.

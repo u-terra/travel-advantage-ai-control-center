@@ -73,6 +73,10 @@ from app.repositories.web_signal_repository import WebSignalRepository
 from app.repositories.workspace_signal_repository import WorkspaceSignalRepository
 from app.services.conversation_state_service import ConversationStateService
 from app.services.draft_sanitizer import sanitize_draft_text
+from app.services.source_freshness import (
+    apply_freshness_to_analysis,
+    assess_source_freshness,
+)
 from app.services.article_pages import url_looks_like_catalog
 from app.services.generation_request_builder import (
     build_budgeted_provider_request,
@@ -840,6 +844,9 @@ async def on_web_post_selected(
         item_url=web_record.item_url, source_type="web", origin_type="web_source",
         ai_category="", ai_reason=f"Материал с сайта-источника: {web_record.source_name}",
         source_name=web_record.source_name, body=web_record.body,
+        # Previously dropped here: the date the page declared never reached
+        # generation (2020 article presented as current).
+        published_at=getattr(web_record, "published_at", "") or "",
     )
     signal = SimpleNamespace(title=web_record.title, action_reason=record.ai_reason)
     await _generate_radar_post(
@@ -979,9 +986,18 @@ async def _generate_radar_post(
     # Analysis (тот же llm_provider.analyze_source(), что и в обычном
     # Content Factory flow) до генерации черновика, а не отдельный
     # параллельный механизм.
+    # Freshness: the model gets the publication date as an explicit meta line
+    # instead of guessing the age from the article text; an old/undated source
+    # with expiring facts (prices, discounts, tariffs, rules) is handled below.
+    source_body = getattr(record, "body", "") or ""
+    freshness = assess_source_freshness(
+        getattr(record, "published_at", "") or "",
+        record.item_title, record.item_summary, source_body,
+    )
     radar_source_text = "\n".join(
         value for value in (
-            record.item_title, record.item_summary, getattr(record, "body", ""),
+            freshness.context_line, record.item_title, record.item_summary,
+            source_body,
         ) if value
     )[:6000]
     analysis = await asyncio.to_thread(
@@ -996,6 +1012,13 @@ async def _generate_radar_post(
             await callback.message.answer(_RADAR_ANALYSIS_UNAVAILABLE)
         return
 
+    # Fail-closed for stale/undated time-sensitive sources: their expiring
+    # statements join disputed_claims, which the spec, the sanitizer and the
+    # safety block below all read from this same ``analysis``.
+    analysis = apply_freshness_to_analysis(
+        analysis, freshness, record.item_title, record.item_summary, source_body,
+    )
+
     spec = MaterialOrchestrationService().build_radar_generation_spec(
         workspace_context.workspace_id,
         profile,
@@ -1009,6 +1032,7 @@ async def _generate_radar_post(
         analysis=analysis,
         user_preferences=user_preferences,
         body=getattr(record, "body", "") or "",
+        source_freshness=freshness,
     )
     if plan_quota_service is not None:
         decision = await plan_quota_service.check_material_quota(
