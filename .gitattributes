@@ -1,0 +1,4 @@
+# knowledge/ manifests store SHA-256 of the source bytes (content_hash, checked in
+# app/services/knowledge_import.py). Keep these files LF on checkout regardless
+# of core.autocrlf, otherwise the hashes mismatch on Windows.
+knowledge/** text eol=lf
